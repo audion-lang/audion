@@ -62,7 +62,7 @@ fn main() {
 ```
 <audio controls>
   <source src="assets/readme.mp3" type="audio/mpeg">
-  Your browser does not support the audio element. [Download or open the audio file](assets/audio.mp3)
+  Your browser does not support the audio element.
 </audio>
 
 ---

@@ -68,7 +68,7 @@ fn main() {
                 }
                 let note = melody[i];
                 if (note != nil) {
-                    synth("bell", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.4);
+                    synth("bell", freq: mtof(note, "../../scala_scales/1-natural-minor-et.scl"), amp: 0.4);
                 }
                 wait(1/2);
                 i = i + 1;

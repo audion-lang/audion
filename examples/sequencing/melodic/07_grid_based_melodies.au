@@ -50,7 +50,7 @@ fn main() {
             loop {
                 let note = array_loop_forward(melody3);
                 if (note != nil) {
-                    synth("pad", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.3);
+                    synth("pad", freq: mtof(note, "../../scala_scales/1-natural-minor-et.scl"), amp: 0.3);
                     wait(1/2);
                 }
             }

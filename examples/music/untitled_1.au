@@ -61,8 +61,8 @@ bpm(90);
 
 root_note = 0;
 fn tune(note) {
-    // return mtof(root_note + note, "../scala_scales_common/6-lydian-et.scl"); // similar to include paths, relative to this script: keep resources together
-    return mtof(root_note + note, "../scala_scales_common/5-phrygian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    // return mtof(root_note + note, "../scala_scales/6-lydian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    return mtof(root_note + note, "../scala_scales/5-phrygian-et.scl"); // similar to include paths, relative to this script: keep resources together
     // return mtof(note, "./2-harmonic-minor-et.scl"); // similar to include paths, relative to this script: keep resources together
 }
 

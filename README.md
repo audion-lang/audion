@@ -67,12 +67,12 @@ Listen to the [result here](assets/readme.mp3)
 
 ## Why Audion
 
-Most creative coding tools make you choose: learn a domain-specific environment that can't do proper general programming, or wrestle a general-purpose language into doing creative work. Audion aims to have just the right amount of built-ins to let you just do what you want: work in the creative space. If you don't see what you need yet, please check the [Roadmap](docs/ROADMAP.md) and if still not there, feature requests welcome!
+Most creative coding tools make you choose: learn a domain-specific environment that can't do proper general programming, or wrestle a general-purpose language into doing creative work. Audion aims to feel like a language you already know and give you just the right amount of built-ins to let you focus on the creative space. If you don't see what you need yet, please check the [Roadmap](docs/ROADMAP.md) and if still not there, feature requests welcome!
 
 
 - **Sound** -- full SuperCollider synthesis, custom SynthDefs, sample playback, disk streaming
 - **MIDI** -- full I/O with clock sync
-- **OSC** -- talk to Max/MSP patches, TouchDesigner, Resolume, Processing, or anything else
+- **OSC** -- talk to Max/MSP or Plugdata patches, TouchDesigner, Resolume, Processing, or anything else
 - **Network** -- TCP, UDP, HTTP/S built in. Control hardware, call APIs, stream data
 - **Timing** -- BPM-aware clock with drift compensation, Ableton Link sync across devices
 - **Threads** -- spawn concurrent patterns with a single keyword. They stay in time

@@ -2,15 +2,6 @@
 
 bpm(100);
 
-
-fn array_loop_forward(arr) {
-    item = array_next(arr);
-    if (item == nil) {
-        return array_beginning(arr);
-    }
-    return item;
-}
-
 define pluck(freq, amp, gate, samplefile)
 {
     let sig = sine(freq) * env(gate, 0.001, 0, 0.2);

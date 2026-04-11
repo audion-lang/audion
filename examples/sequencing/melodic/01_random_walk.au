@@ -2,15 +2,6 @@
 
 bpm(90);
 
-fn array_loop_forward(arr) {
-    item = array_next(arr);
-    if (item == nil) {
-        return array_beginning(arr);
-    }
-    return item;
-}
-
-
 // Simple synth for playing melodies
 define melody(freq, amp, gate, samplefile)
 {
@@ -37,7 +28,7 @@ fn main() {
     thread player {
 
         loop {
-            let note = array_loop_forward(walk2);
+            let note = array_next(walk2);
             if (note != nil) {
                 synth("melody", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.3);
                 wait(1/3);

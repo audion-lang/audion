@@ -1,11 +1,11 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="graphics/logo.png">
-  <img src="graphics/logo.png" alt="Audion" height="70">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo.png">
+  <img src="assets/logo.png" alt="Audion" height="70">
 </picture>
 
 # Audion Programming Language
 
-Let's hack music. A batteries-included language for stuff that ticks. 
+Let's hack music. A batteries-included language for stuff that ticks.
 
 Deal with comms and sync to and from any hardware and software. Synthesizers, MIDI, lighting rigs and anything that speaks OSC or sits on a network. Its concurrency model is syncronised by default. Audion is friendly to anyone with a familiar syntax that's quick to pick up.
 
@@ -60,6 +60,10 @@ fn main() {
     }
 }
 ```
+<audio controls>
+  <source src="assets/readme.mp3" type="audio/mpeg">
+  Your browser does not support the audio element. [Download or open the audio file](assets/audio.mp3)
+</audio>
 
 ---
 

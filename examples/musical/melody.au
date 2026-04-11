@@ -1,0 +1,39 @@
+// Simple sequential melody
+// Plays a series of notes in a loop
+
+bpm(140);
+
+fn play_note(freq, dur)
+{
+    let node = synth("default", freq : freq, amp : 0.5);
+    wait(dur);
+    free(node);
+    wait(0.1); // small gap between notes
+}
+
+fn main()
+{
+    print("melody starting...");
+
+    loop
+    {
+        // C major scale-ish
+        play_note(261, rand(1.0, 10.0)); // C4
+        play_note(293, rand(1.0, 10.0)); // D4
+        play_note(329, rand(1.0, 10.0)); // E4
+        play_note(349, rand(1.0, 10.0)); // F4
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(392, rand(1.0, 10.0)); // G4 (held longer)
+        play_note(349, rand(1.0, 10.0)); // F4
+        play_note(329, rand(1.0, 10.0)); // E4
+        play_note(293, rand(1.0, 10.0)); // D4
+        play_note(261, rand(1.0, 10.0)); // C4 (held longer)
+        wait(1);             // pause between loops
+    }
+}

@@ -1,0 +1,155 @@
+name: Nightly Release
+
+on:
+  schedule:
+    # 3 AM UTC daily
+    - cron: "0 3 * * *"
+  workflow_dispatch: # manual trigger for testing
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Step 1: Skip if no changes since last nightly ──────────────────
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for tag comparison
+
+      - name: Check for changes since last nightly
+        id: check
+        run: |
+          if git rev-parse nightly >/dev/null 2>&1; then
+            LAST_NIGHTLY=$(git rev-parse nightly)
+            HEAD=$(git rev-parse HEAD)
+            if [ "$LAST_NIGHTLY" = "$HEAD" ]; then
+              echo "No new commits since last nightly."
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "New commits found since last nightly."
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No previous nightly tag — first nightly build."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Step 2: Run tests ──────────────────────────────────────────────
+  test:
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake g++ libclang-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
+
+  # ── Step 3: Build release binaries ─────────────────────────────────
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: audion
+            archive: audion-nightly-linux-x86_64.zip
+            install: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake g++ libclang-dev
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: audion
+            archive: audion-nightly-macos-aarch64.zip
+            install: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: audion.exe
+            archive: audion-nightly-windows-x86_64.zip
+            install: choco install cmake llvm -y
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package zip (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
+          cp LICENSE staging/
+          cp -r examples staging/
+          cp -r docs staging/
+          ./staging/${{ matrix.binary }} spec > staging/docs/AGENTS.md
+          cd staging && zip -r ../${{ matrix.archive }} .
+
+      - name: Package zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staging
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
+          Copy-Item LICENSE staging/
+          Copy-Item -Recurse examples staging/
+          Copy-Item -Recurse docs staging/
+          & .\staging\${{ matrix.binary }} spec | Out-File -Encoding utf8 staging\docs\AGENTS.md
+          Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  # ── Step 4: Create/update nightly release ──────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Delete existing nightly release & tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date -u +"%Y-%m-%d")
+          SHA=$(git rev-parse --short HEAD)
+          gh release create nightly \
+            artifacts/* \
+            --title "Nightly Build ($DATE)" \
+            --notes "Automated nightly build from \`main\` at [\`$SHA\`](../../commit/$SHA) on $DATE." \
+            --prerelease

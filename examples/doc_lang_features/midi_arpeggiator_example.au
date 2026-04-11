@@ -1,0 +1,83 @@
+// MIDI Arpeggiator Example
+// This example uses midi_listen() to create an arpeggiator
+// It stores incoming notes and arpeggiate them
+
+print("MIDI Arpeggiator Example");
+print("Play chords on your MIDI controller!");
+print("");
+
+// Set BPM
+bpm(120);
+
+// Array to store currently held notes
+let held_notes = [];
+
+// Thread to listen for MIDI input
+thread midi_input {
+    midi_listen(0, fn(event) {
+        let type = event[0];
+
+        if type == "note_on" {
+            let note = event["note"];
+            let vel = event["vel"];
+
+            // Add note to held notes if velocity > 0
+            if vel > 0 {
+                push(held_notes, note);
+                print("Note added: " + str(note) + " (total: " + str(count(held_notes)) + ")");
+            }
+
+        } else if type == "note_off" {
+            let note = event["note"];
+
+            // Remove note from held notes
+            let i = 0;
+            loop {
+                if i >= count(held_notes) {
+                    break;
+                }
+                if held_notes[i] == note {
+                    remove(held_notes, i);
+                    print("Note removed: " + str(note) + " (total: " + str(count(held_notes)) + ")");
+                    break;
+                }
+                i += 1;
+            }
+        }
+    });
+}
+
+// Arpeggiator thread
+thread arpeggiator {
+    let arp_index = 0;
+
+    loop {
+        let note_count = count(held_notes);
+
+        if note_count > 0 {
+            // Play current note in the arpeggio
+            let note = held_notes[arp_index];
+            let freq = mtof(note);
+            synth("default", freq: freq, amp: 0.6);
+
+            // Move to next note
+            arp_index += 1;
+            if arp_index >= note_count {
+                arp_index = 0;
+            }
+        }
+
+        // Arpeggiate at 16th note rate
+        wait(0.25);
+    }
+}
+
+print("Arpeggiator started!");
+print("Play some notes and they will be arpeggiated");
+print("Press Ctrl+C to exit");
+print("");
+
+// Main loop
+loop {
+    wait(1);
+}

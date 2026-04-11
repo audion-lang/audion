@@ -1,0 +1,79 @@
+// Integer Partitions for Rhythmic Variety
+// Explores different ways to subdivide time using polyrhythmic patterns
+
+bpm(300);
+
+// Define tom synths using SuperCollider's default synth with different frequencies
+define tom1(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0, 0.3) * amp);
+}
+
+define tom2(freq, amp, gate) {
+    out(0, sine(freq * 1.5) * env(gate, 0.01, 0, 0.3) * amp);
+}
+
+define tom3(freq, amp, gate) {
+    out(0, sine(freq * 2) * env(gate, 0.01, 0, 0.3) * amp);
+}
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+    // Generate all partitions of 8 into 3 parts
+    let partitions = array_seq_partitions_m_parts(8, 3);
+
+    print("Partitions of 8 into 3 parts:");
+    for (i = 0; i < count(partitions); i += 1) {
+        print("  ", partitions[i]);
+    }
+
+    // Use the first partition to create a polyrhythm
+    let partition = partitions[0];  // e.g., [1, 1, 6]
+    print("\nPlaying polyrhythm with partition: ", partition);
+
+    let dur1 = partition[0];
+    let dur2 = partition[1];
+    let dur3 = partition[2];
+
+    // Each tom plays at its own rate based on partition
+    thread tom1_thread {
+        loop {
+            synth("tom1", freq: 100, amp: 0.7);
+            wait(dur1);
+        }
+    }
+
+    thread tom2_thread {
+        loop {
+            synth("tom2", freq: 150, amp: 0.7);
+            wait(dur2);
+        }
+    }
+
+    thread tom3_thread {
+        loop {
+            synth("tom3", freq: 200, amp: 0.7);
+            wait(dur3);
+        }
+    }
+
+    // Cycle through different partitions every 16 beats
+    thread partition_changer {
+        partition_index = 0;
+        loop {
+            wait(16);
+            partition_index = (partition_index + 1) % count(partitions);
+            partition = partitions[partition_index];
+            print("Changing to partition: ", partition);
+            dur1 = partition[0];
+            dur2 = partition[1];
+            dur3 = partition[2];
+        }
+    }
+}

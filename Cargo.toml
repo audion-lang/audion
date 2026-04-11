@@ -1,0 +1,28 @@
+[package]
+name = "audion"
+version = "0.0.8"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "A general purpose language for audiovisual art, performance and installation"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rosc = "0.11"
+rustyline = "14"
+ctrlc = "3.4"
+serde_json = "1"
+ureq = "2"
+midir = "0.10"
+regex = "1"
+chrono = "0.4"
+sha2 = "0.10"
+md-5 = "0.10"
+digest = "0.10"
+rpassword = "7"
+crossterm = "0.28"
+sysinfo = "0.32"
+hostname = "0.4"
+whoami = "1"
+dirs = "5"
+rusty_link = "0.4"
+rusqlite = { version = "0.31", features = ["bundled"] }

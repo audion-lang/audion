@@ -1,0 +1,86 @@
+// String to Melody - Convert text to musical patterns
+
+bpm(120);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define bell(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.005, 0, 0.4);
+    out(0, sig * amp);
+}
+
+fn indices_to_scale(indices, scale) {
+    // Map note indices to actual MIDI notes from a scale
+    let result = [];
+    let i = 0;
+    while (i < count(indices)) {
+        let idx = indices[i];
+        let note = scale[idx];
+        array_push(result, note);
+        i = i + 1;
+    }
+    return result;
+}
+
+fn main() {
+    // C major scale (one octave)
+    let c_major = [60, 62, 64, 65, 67, 69, 71];
+
+    // Convert strings to melodies
+    let pattern1 = array_mel_string_to_indices("abcdefg", 7);
+    print("Pattern 1 indices:", pattern1);
+
+    let pattern2 = array_mel_string_to_indices("0123210", 7);
+    print("Pattern 2 indices:", pattern2);
+
+    let pattern3 = array_mel_string_to_indices("cafebabe", 7);
+    print("Pattern 3 (hex-like):", pattern3);
+    let pattern3 = array_mel_string_to_indices("julene iratxe", 7);
+
+    // // Map to actual notes
+    let melody1 = indices_to_scale(pattern1, c_major);
+    let melody2 = indices_to_scale(pattern2, c_major);
+    let melody3 = indices_to_scale(pattern3, c_major);
+
+    print("Melody 1:", melody1);
+    print("Melody 2:", melody2);
+    print("Melody 3:", melody3);
+
+    // // Play the first melody
+    thread player {
+        loop {
+            let note = array_loop_forward(melody3);
+            if (note != nil) {
+
+                // see how with a little random we can spice up the melody
+                let pitch_action = rand(1,100);
+                if (pitch_action > 80) {
+                    note = note + 12;
+                } else if (pitch_action > 90) {
+                    note = note + 7;
+                } else {
+
+                }
+
+                synth("bell", freq: mtof(note), amp: 0.3);
+
+                // see how with a little random we can spice up the rhythm changing the waits
+                if (rand(1,100) > 70) {
+                    wait(1/2);
+                } else if (rand(1,100) > 80) {
+                    wait(1.5);
+                } else {
+                    wait(1);
+                }
+
+            }
+        }
+    }
+}

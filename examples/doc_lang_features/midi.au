@@ -1,0 +1,65 @@
+// midi.au — MIDI output examples
+//
+// Before running, make sure you have a MIDI device or virtual port available.
+// On macOS, enable "IAC Driver" in Audio MIDI Setup for a virtual loopback.
+
+bpm(120);
+
+fn main() {
+    // List available MIDI ports
+    let ports = midi_config();
+
+    if (count(ports) == 0) {
+        print("no MIDI ports found — enable IAC Driver or connect a device");
+        return;
+    }
+
+    // Connect to the first available port
+    midi_config(0);
+
+    // --- Send some notes ---
+
+    print("playing C major scale...");
+    let scale = [60, 62, 64, 65, 67, 69, 71, 72];
+    for (let i = 0; i < count(scale); i += 1) {
+        midi_note(scale[i], 100);
+        wait(0.5);
+        midi_note(scale[i], 0);
+    }
+
+    // --- CC and program change ---
+
+    midi_program(0);         // select program 0
+    midi_cc(1, 64);          // mod wheel to 50%
+    midi_cc(7, 100);         // volume
+    midi_cc(10, 64);         // pan center
+
+    // --- MIDI clock sync ---
+    // Send 24 PPQN clock ticks so external gear syncs to our BPM
+
+    print("sending MIDI clock for 4 bars...");
+    thread clock_out {
+        midi_start();
+        // 4 bars at 4/4 = 16 beats, each beat = 24 ticks
+        for (let i = 0; i < 16 * 24; i += 1) {
+            midi_clock();
+            wait(1/24);
+        }
+        midi_stop();
+    }
+
+    // --- Parallel: play a pattern while clock runs ---
+
+    thread pattern {
+        let notes = [36, 38, 42, 38];  // kick, snare, hat, snare
+        let vels  = [120, 90, 60, 90];
+        for (let bar = 0; bar < 400; bar += 1) {
+            for (let i = 0; i < count(notes); i += 1) {
+                print("playing " + notes[i]);
+                midi_note(notes[i], vels[i], 10);  // channel 10 (drums)
+                wait(1);
+                midi_note(notes[i], 0, 10); // off
+            }
+        }
+    }
+}

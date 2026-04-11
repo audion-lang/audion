@@ -1,0 +1,71 @@
+// Grid-Based Melodies - Map lattice paths directly to note grids
+
+bpm(100);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define pad(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.1, 0.2, 0.4);
+    out(0, sig * amp);
+}
+
+fn main() {
+    // Create a 4x4 grid of MIDI notes (pentatonic scale)
+    let note_grid = [
+        [60, 62, 64, 67],  // C D E G
+        [69, 60, 62, 64],  // A C D E
+        [67, 69, 60, 62],  // G A C D
+        [64, 67, 69, 60]   // E G A C
+    ];
+
+    print("\n=== Basic Grid Melody ===");
+    // Walk right, right, up, up, right
+    let melody1 = array_mel_lattice_to_melody(note_grid, "rruurd", 0, 0);
+    print("Melody from path 'rruurd':", melody1);
+
+    print("\n=== Melody With Repetitions ===");
+    // Stay in place to repeat notes
+    let melody2 = array_mel_lattice_to_melody(note_grid, "rssrussl", 0, 0);
+    print("Melody with stops:", melody2);
+
+    print("\n=== Using Random Walk ===");
+    // Generate a random walk path and convert to melody
+    let walks = array_mel_lattice_walk_square(4, 4, 0, 0, 3, 3, 8);
+    if (count(walks) > 0) {
+        let path = walks[0];
+        print("Generated path:", path);
+        let melody3 = array_mel_lattice_to_melody(note_grid, path, 0, 0);
+        print("Resulting melody:", melody3);
+
+        // Play it
+        thread player {
+            array_beginning(melody3);
+            loop {
+                let note = array_loop_forward(melody3);
+                if (note != nil) {
+                    synth("pad", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.3);
+                    wait(1/2);
+                }
+            }
+        }
+    }
+
+    print("\n=== Triangular Lattice (with diagonals) ===");
+    // Triangular walks include diagonal moves ('v' and 'e')
+    let tri_walks = array_mel_lattice_walk_tri(3, 3, 0, 0, 2, 2, 3);
+    print("Found", count(tri_walks), "triangular paths");
+
+    if (count(tri_walks) > 0) {
+        let tri_path = tri_walks[0];
+        print("First triangular path:", tri_path);
+        let tri_melody = array_mel_lattice_to_melody(note_grid, tri_path, 0, 0);
+        print("Diagonal melody:", tri_melody);
+    }
+}

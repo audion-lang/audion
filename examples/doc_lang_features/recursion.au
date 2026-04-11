@@ -1,0 +1,106 @@
+print("recursion and tail call optimization");
+
+/*
+    audion has tail call optimization (TCO)
+    when a function's last action is `return f(args);`
+    it reuses the stack frame instead of growing the stack
+    this means recursive patterns can run forever without overflow
+*/
+
+// -- basic recursion --
+
+fn factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+
+print("10! = " + factorial(10));
+
+
+// -- tail recursive with accumulator --
+// this is the TCO-friendly version: the recursive call is in tail position
+
+fn factorial_tco(n, acc) {
+    if (n <= 1) { return acc; }
+    return factorial_tco(n - 1, n * acc);
+}
+
+print("10! (tco) = " + factorial_tco(10, 1));
+
+
+// -- countdown: runs 100,000 deep without stack overflow --
+
+fn countdown(n) {
+    if (n <= 0) { return 0; }
+    return countdown(n - 1);
+}
+
+let result = countdown(100000);
+print("countdown from 100000 finished: " + result);
+
+
+// -- fibonacci with accumulator --
+
+fn fib(n, a, b) {
+    if (n <= 0) { return a; }
+    return fib(n - 1, b, a + b);
+}
+
+print("fib(30) = " + fib(30, 0, 1));
+
+
+// -- mutual recursion: is_even / is_odd --
+// TCO works across different functions too
+
+fn is_even(n) {
+    if (n == 0) { return true; }
+    return is_odd(n - 1);
+}
+
+fn is_odd(n) {
+    if (n == 0) { return false; }
+    return is_even(n - 1);
+}
+
+print("10000 is even: " + str(is_even(10000)));
+print("10001 is odd: " + str(is_odd(10001)));
+
+
+// -- tail recursion with objects --
+// return make_obj() is a tail call, return this is not (and doesn't need to be)
+
+fn Range(lo, hi) {
+    let items = [];
+    fn collect(n) {
+        if (n > hi) { return items; }
+        push(items, n);
+        return collect(n + 1);
+    }
+    let items = collect(lo);
+    fn get() { return items; }
+    return this;
+}
+
+let r = Range(1, 10);
+print("range 1..10:");
+print(r.get());
+
+
+// -- heavy CPU: 1 million iterations via tail recursion --
+// without TCO this would instantly crash the stack
+// with TCO it runs in constant stack space, like a loop
+
+fn sum_to(n, acc) {
+    if (n <= 0) { return acc; }
+    return sum_to(n - 1, acc + n);
+}
+
+let t0 = timestamp_ms();
+let total = sum_to(1000000, 0);
+let elapsed = timestamp_ms() - t0;
+print("sum of 1..1,000,000 = " + total + " (" + elapsed + "ms)");
+
+
+fn main() {
+    print("done");
+}

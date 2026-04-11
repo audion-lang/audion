@@ -1,0 +1,80 @@
+// send_reply example
+// A synth monitors its own output amplitude and sends it back to Audion.
+// Audion reads the values and uses them to steer a filter in real time.
+// osc_listen(port, scsynth_addr) registers with scsynth so SendReply messages
+// are routed back to our port.
+
+
+/*
+seems like there is no way to have SC listen for more clients than itself,
+so
+In SC IDE: File → Open startup file, add:
+
+Server.default.options.maxLogins = 4;
+
+
+or just run this in sc manually
+Server.default.options.maxLogins = 4;
+Server.default.reboot;
+
+see osc messages
+Server.default.dumpOSC(3);
+
+*/
+
+define drone(freq, amp, gate, ffreq)
+{
+    let sig = lpf(saw(freq) * env(gate, 0.1, 0, 2.0) * amp, ffreq);
+    let level = amplitude(sig);
+    // send a reply 20-times per second, fractions are fine here, so 1/60 would be once a minute
+    // to not DOS yourself, there is a silent ceiling on frequency, 100/second is a hardcoded limit, see "send_reply" in synthdef.rs
+    send_reply(20, "/drone_amp", array(level)); // send data back to audion from supercollider
+    out(0, pan(0, sig));
+    out(1, pan(0, sig));
+}
+
+fn main()
+{
+
+    /*
+    three things in one call:
+        Binds a UDP socket on port 57121 — this is where Audion will receive incoming OSC messages
+        Sends /notify 0 to scsynth from that socket — deregisters any stale entry from a previous run on the same port
+        Sends /notify 1 to scsynth from that same socket — registers Audion as a client, so scsynth knows to send SendReply/SendTrig data back to port 57121
+
+        The key detail for SC: the /notify must be sent from the same socket that's listening. scsynth uses the source address of the UDP packet to know where to reply. If you sent /notify from a different socket, replies would go to the wrong port.
+        The second argument is optional — osc_listen(57121) still works for pure Audion-to-Audion or third-party OSC, just without the scsynth registration.
+    */
+    osc_listen(57121, "127.0.0.1:57110");
+
+    ffreq = 800;
+    thread amp_reader {
+        loop {
+            msg = osc_recv();
+            // print("msg", msg);
+            // osc_recv returns ["/address", arg0, arg1, ...] or nil
+            if (msg != nil) {
+                // SendReply format: ["/reply", cmdName, nodeID, replyID, value...]
+                if (msg[1] == "/drone_amp") {
+                    level = msg[4];
+                    print("received from SC:", level);
+
+
+                    // steer filter: louder → open filter, quieter → close it
+                    ffreq = 400 + (level * 8000);
+                    set(d, ffreq: ffreq);
+                }
+            }
+            wait(1/40);
+        }
+    }
+
+    thread melody {
+        notes = [55, 58, 62, 65, 67, 70];
+        loop {
+            synth("drone", freq: mtof(array_rand(notes)), amp: 0.4, ffreq: ffreq);
+            wait(array_rand([1, 2, 0.5, 1.5]));
+        }
+    }
+}
+

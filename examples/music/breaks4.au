@@ -1,0 +1,290 @@
+define wav1(freq, loop_startn, amp, gate, attack, release, ffreq, send1, pann)
+{
+    let sig = lpf(sample("/Volumes/worx/samples/kit_synths_wavetable/wave01.wav", loop: 1, start : loop_startn, root : 60), ffreq / 2) * env(gate, attack, 0, release) * amp * 0.35;
+    out(6, pan(pann, sig * 0.15));
+    out(send1, pan(pann, sig * 0.15));
+}
+
+define wav2(freq, loop_startn, amp, gate, attack, release, ffreq, send1, pann)
+{
+    let sig = lpf(sample("/Volumes/worx/samples/kit_synths_wavetable/wave02.wav", loop: 1, start : loop_startn, root : 60), ffreq / 2) * env(gate, attack, 0, release) * amp;
+    out(6, pan(pann, sig * 0.15));
+    out(send1, pan(pann, sig * 0.15));
+}
+
+define wav3(freq, loop_startn, amp, gate, attack, release, ffreq, send1, pann)
+{
+    let sig = lpf(sample("/Volumes/worx/samples/kit_synths_wavetable/wave04.wav", loop: 1, start : loop_startn, root : 60), ffreq / 2) * env(gate, attack, 0, release) * amp;
+    out(6, pan(pann, sig * 0.15));
+    out(send1, pan(pann, sig * 0.15));
+}
+
+define wav4(freq, amp, gate, attack, release, ffreq, fq, send1, pann)
+{
+    let sig =
+        bpf(
+            var_saw(freq / 2.001, 0.2 * lfo_noise2(3.123), 1.0, 1),
+            ffreq,
+            0.5
+        )
+        * env(gate, 0.01, 0.0, release)
+        * amp * 0.45;
+    out(6, pan(pann, sig * 0.5));
+    out(send1, pan(pann, sig * 0.5));
+}
+
+
+// Effect 1: Short reverb (small room, subtle)
+define reverb_short(bus) {
+    let sig = in(bus, 2);
+    out(6,  gverb(sig * 0.15, 51, 11, 0.95));
+    out(7,  gverb(sig * 0.15, 61, 51, 0.95));
+}
+
+// Effect 2: Long reverb (cathedral, huge space)
+define reverb_long(bus) {
+    let sig = in(bus, 2);
+    out(6,  gverb(sig, 330, 9110, 0.65, 0.5, 70) * 0.2);
+    out(7,  gverb(sig, 342, 9115, 0.65, 0.5, 70) * 0.25);
+    out(0,  gverb(sig, 342, 9115, 0.65, 0.5, 70) * 0.25);
+}
+
+define some_delay(in_bus, decay) {
+    let input = in(in_bus, 2);
+    let delrd = local_in(4);
+    let output = input[0] + input[1] + (delrd[0] + delrd[1]) * 0.4;
+    let delayed0 = delay_c(output, 0.10, 0.3);
+    let delayed2 = delay_c(output, 0.11, 0.4);
+    let delayed1 = delay_c(output, 0.12, 0.5);
+    let delayed3 = delay_c(output, 0.13, 0.6);
+    local_out(array(delayed0, delayed1, delayed2, delayed3));
+    out(6, output * 0.45);
+    out(7, output * 0.45);
+
+}
+
+// FDN Reverb - reads from input bus, outputs to main
+define fdn_reverb(in_bus, decay, freq) {
+    // Read input from bus (stereo)
+    let input = in(in_bus, 2);
+
+    // Read our 4-channel delayed signals back from the feedback loop
+    let delrd = local_in(4);
+
+    // Mix input with feedback
+    let output = input + delrd[0] + delrd[1];
+
+    // Cross-fertilise the four delay lines with each other (Hadamard-like matrix):
+    // This creates the diffusion that makes it sound like reverb
+    let sum_lr = output[0] + output[1];
+    let diff_lr = output[0] - output[1];
+    let sum_fb = delrd[2] + delrd[3];
+    let diff_fb = delrd[2] - delrd[3];
+
+    // Mix and attenuate in one step (decay values control reverb time)
+    let sig0 = (sum_lr + sum_fb) * (0.4 * decay * lfo_noise2(3.123));
+    let sig1 = (diff_lr + diff_fb) * (0.3 * decay);
+    let sig2 = (sum_lr - sum_fb) * (0.2 * decay * lfo_noise2(4.123));
+    let sig3 = (diff_lr - diff_fb) * (0.1 * decay);
+
+
+    // Prime number delay times in seconds for dense, non-metallic reverb
+    // 101ms, 143ms, 165ms, 177ms
+    let time0 = 0.50;
+    let time1 = 0.160;
+    let time2 = 0.270;
+    let time3 = 0.380;
+
+    // Apply delays - DelayC is cubic interpolation delay
+    let delayed0 = delay_c(sig0, 0.90, time0);
+    let delayed1 = freq_shift(delay_c(sig1, 0.100, time1), freq / 2 * lfo_noise2(12.123), 0);
+    let delayed2 = delay_c(sig2, 0.210, time2);
+    let delayed3 = delay_c(sig3, 0.320, time3);
+
+    // Feed back into the delay network
+    local_out(array(delayed0, delayed1, delayed2, delayed3));
+
+    // Output stereo to main
+    out(6, output * 0.65);
+}
+
+define comp(bus) {
+    let sig1 = in(bus, 2);
+    let sig2 = in(bus, 3);
+    let compsig = compander(sig1, sig2, 0.3, 1, 0.5, 0.01, 0.3);
+    out(0, compsig);
+    // out(1, compsig);
+
+    // Compander.ar(z, z,
+    //     thresh: MouseX.kr(0.01, 1),
+    //     slopeBelow: 1,
+    //     slopeAbove: 0.5,
+    //     clampTime:  0.01,
+    //     relaxTime:  0.01
+    // )
+}
+
+synth("reverb_short", bus: 2);
+synth("reverb_long", bus: 4);
+synth("comp", bus: 6);
+reverb = synth("fdn_reverb", in_bus: 8, decay: 0.89, freq: 440);
+synth("some_delay", bus: 10);
+
+
+
+
+
+bpm(193);
+
+backup_beat = main_beat = [
+    ["wav1",  1/4, "a" => [1.5, 1.5], "r" => [0.3, 1.4], "note" => 10],
+    ["wav2",  1/4, "a" => [0.2, 1.5], "r" => [0.3, 1.4], "note" => 12],
+    ["wav1",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 2.4], "note" => 10],
+    ["wav1",  1/4, "a" => [0.2, 1.5], "r" => [0.3, 1.4], "note" => 10],
+    ["wav3",  1/4, "a" => [0.5, 1.5], "r" => [0.3, 1.4], "note" => 12],
+    ["wav1",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 4.4], "note" => 10],
+    ["wav2",  1/4, "a" => [0.2, 1.5], "r" => [0.3, 1.4], "note" => 10],
+    ["wav3",  1/4, "a" => [1.2, 1.0], "r" => [0.3, 1.4], "note" => 10],
+    ["wav4",  1/4, "a" => [0.5, 1.0], "r" => [0.3, 3.4], "note" => 10],
+    ["wav4",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 1.4], "note" => 10],
+    ["wav2",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 1.4], "note" => 17],
+    ["wav1",  1/4, "a" => [0.2, 0.5], "r" => [0.3, 7.4], "note" => 10],
+    ["wav2",  1/4, "a" => [2.5, 0.2], "r" => [0.3, 1.4], "note" => 10],
+    ["wav1",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 1.4], "note" => 12],
+    ["wav2",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 9.4], "note" => 10],
+    ["wav2",  1/4, "a" => [0.2, 1.0], "r" => [0.3, 1.4], "note" => 10],
+];
+
+seed("what you want it to be");
+let tune_walk = array_mel_random_walk(0, -6, 6, 7, 64);
+print(tune_walk);
+let next_tune_walk = 0;
+
+fn tune(n) {
+    // return mtof(n, "./2-harmonic-minor-et.scl");
+    // return mtof(n, "../scala_scales_common/7-mixolydian-et.scl");
+    // return mtof(n, "/Volumes/worx/soft/audion/examples/ignore_scala_scales/starling.scl");
+    // scale_file = "../scala_scales_common/4-dorian-et.scl";
+    scale_file = "../scala_scales_common/7-mixolydian-et.scl";
+    return mtof(math_clamp((n + next_tune_walk) / 1.2, 54, 75), scale_file);
+}
+
+fn tune2(n) {
+    // return mtof(n, "./2-harmonic-minor-et.scl");
+    // return mtof(n, "../scala_scales_common/7-mixolydian-et.scl");
+    // return mtof(n, "/Volumes/worx/soft/audion/examples/ignore_scala_scales/starling.scl");
+    // scale_file = "../scala_scales_common/4-dorian-et.scl";
+    scale_file = "../scala_scales_common/7-mixolydian-et.scl";
+    return mtof(n / 1.2, scale_file);
+}
+
+
+fn main()
+{
+
+
+    thread tune_walker {
+        loop {
+            next_tune_walk = math_round(array_next(tune_walk));
+            print("next_tune_walk", next_tune_walk);
+            wait(16);
+        }
+    }
+
+
+    main_beat_short_wait = 1;
+    main_beat_long_wait = 1;
+
+    thread main_beat_waits_walker {
+        seed("may you be at peace");
+        divisors = [11, 12, 13, 2, 5];
+        multipliers = [1, 0.8, 1];
+        main_beat_wait_sequencer = [2, 3, 2, 4];
+        loop {
+            wait(array_next(main_beat_wait_sequencer));
+            divisor = array_next(divisors);
+            multiplier = array_next(multipliers);
+            main_beat_short_wait = (1/divisor)*multiplier;
+            print("main_beat_short_wait", main_beat_short_wait);
+            main_beat_long_wait = (multiplier/divisor)*multiplier;
+            print("main_beat_long_wait", main_beat_long_wait);
+        }
+    }
+
+    thread main_beat {
+        seed("yo-julene-mama");
+        breaks_seq = array_seq_euclidean(5, 24);
+        root_notes = array_mel_random_walk(65, 50, 82, 15, 64);
+        filter_walk = array_mel_random_walk(1200, 870, 4500, 35, 128);
+        amp_walk = array_mel_random_walk(0.1, 0.01, 2.0, 0.25, 254);
+        loop {
+            print("array_next(amp_walk)", array_next(amp_walk));
+            next = array_next(main_beat);
+            next_break = array_next(breaks_seq);
+            send1_to = array_rand([0, 10, 8, 2, 8, 2, 2, 4, 4, 4, 4, ]);
+            synth(
+                next[0],
+                loop_startn: rand(0.01 * 4000, 5.99 * 4000),
+                freq: tune(array_next(root_notes)),
+                attack: array_rand([0.2, 0.9, 0]),
+                amp: array_next(amp_walk),
+                release: rand(next.r[0], next.r[1]),
+                ffreq: array_next(filter_walk),
+                fq: rand(0.07, 0.09),
+                send1: send1_to,
+                pann: rand(-1.0, 1.0)
+            );
+            if (next_break == 0) {
+                wait(main_beat_short_wait);
+            } else {
+                wait(main_beat_long_wait);
+            }
+        }
+    }
+
+
+
+    thread second_mel {
+        seed("yo-aasss");
+        breaks_seq = array_seq_euclidean(7, 16);
+        root_notes = array_mel_random_walk(65, 50, 82, 15, 16);
+        filter_walk = array_mel_random_walk(200, 200, 4500, 50, 128);
+
+        loop {
+            next = array_next(backup_beat);
+            next_break = array_next(breaks_seq);
+            send1_to = array_rand([0, 2, 8, 2, 2, 8, 8, 4, 4, 8, 8, 8, 8, 0, 0, 4, 4, 2]);
+            next_note = array_next(root_notes);
+            synth(
+                next[0],
+                loop_startn: rand(0.01 * 4000, 5.99 * 4000),
+                freq: tune2(next_note),
+                amp: rand(next.a[0], next.a[1]),
+                release: rand(next.r[0] * 2, next.r[1] * 2),
+                ffreq: array_next(filter_walk),
+                fq: rand(0.07, 0.09),
+                send1: send1_to,
+                pann: rand(-1.0, 1.0)
+            );
+            set(reverb, decay: rand(0.0001, 1.0), freq: tune(next_note) + rand(1,25));
+            if (next_break == 0) {
+                wait(1/2);
+            } else {
+                if (rand() > 0.8) {
+                    wait(3);
+                }
+                wait(1);
+            }
+        }
+    }
+
+
+}
+
+
+
+
+
+
+
+

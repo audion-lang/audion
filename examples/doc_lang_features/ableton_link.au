@@ -1,0 +1,20 @@
+print("run ableton and click on link first, +info: https://www.ableton.com/en/link/");
+
+link_enable();
+bpm(50);
+print("peers:", link_peers());
+
+
+define kick(freq, amp, gate, samplefile)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_909_pulse/BassDrum/BassDrum_Bereze.wav", root : 60), 120) * env(gate, 0.001, 0, 0.93) * amp);
+}
+
+thread drums {
+    loop {
+        wait(1);  // synced with all Link peers
+        synth("kick");
+        wait(1);  // synced with all Link peers
+        synth("kick");
+    }
+}

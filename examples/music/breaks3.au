@@ -1,0 +1,242 @@
+define kick(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_kicks/tight/kick_layercake.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp * 0.5);
+}
+
+define snare(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_dvoinoi11/BB15.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp);
+}
+
+define hat1(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_dvoinoi11/NOI1.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp);
+}
+
+define hat2(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_dvoinoi11/BB11.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp);
+}
+
+define hat3(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_dvoinoi11/BB9.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp);
+}
+
+define hat4(freq, amp, gate, attack, release, ffreq)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_dvoinoi11/BB7.wav", root : 60), ffreq) * env(gate, attack, 0, release) * amp);
+}
+
+define wav1(freq, amp, gate, attack, release, ffreq, fq)
+{
+    let sig =
+        bpf(
+            var_saw(freq / 2, 0.2 * lfo_noise2(3.123), 1.0, 1),
+            ffreq,
+            0.5
+        )
+        * env(gate, 0.01, 0.0, release)
+        * amp;
+    out(0, sig * 0.15);
+    out(1, sig * 0.15);
+    out(4, sig * 0.5);
+}
+
+define bas1(freq, amp, gate, atk, sus, release, ffreq, fq, send1, send1_gain)
+{
+    let sig =
+    bpf(
+    square(freq / 2.001) * env(gate, atk * lfo_noise2(0.123), 0, release) * amp,
+    ffreq,
+    0.5
+    );
+
+    out(0, sig * 0.3);
+    out(1, sig * 0.3);
+    out(send1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+    out(send1+1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+
+}
+
+// Effect 1: Short reverb (small room, subtle)
+define reverb_short(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.15, 51, 11, 0.95));
+    out(1,  gverb(sig * 0.15, 61, 51, 0.95));
+}
+
+// Effect 2: Long reverb (cathedral, huge space)
+define reverb_long(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.2, 130, 9110, 0.95) * 0.5);
+    out(1,  gverb(sig * 0.2, 142, 9115, 0.95) * 0.5);
+}
+
+synth("reverb_short", bus: 2);
+synth("reverb_long", bus: 4);
+
+
+
+bpm(170);
+
+backup_beat = main_beat = [
+    ["kick", 1/4, "a" => fn(){return rand(0.7, 0.9);}, "r" => fn(){return rand(2.01, 2.3);}, "note" => 60],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.6);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 59],
+    ["kick", 1/4, "a" => fn(){return rand(0.7, 0.9);}, "r" => fn(){return rand(1.01, 2.3);}, "note" => 60],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat2", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.4);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["none", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 62],
+    ["snare",1/4, "a" => fn(){return rand(0.5, 0.6);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 60],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat4", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 62],
+    ["hat2", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 70],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat2", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat1", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+    ["hat2", 1/4, "a" => fn(){return rand(0.2, 0.3);}, "r" => fn(){return rand(0.01, 0.3);}, "note" => 72],
+];
+
+
+main_mel = [
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 73],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 73],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 75],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 74],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 73],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 75],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 79],
+    ["none", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 79],
+    ["none", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 69],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 69],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 57],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 79],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 66],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 69],
+    ["wav1", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 71],
+    ["none", 1/2, "a" => fn(){return rand(0.1, 0.2);}, "r" => fn(){return rand(0.2, 0.7);}, "note" => 73],
+];
+
+fn tune(n) {
+    return mtof(n, "./2-harmonic-minor-et.scl");
+}
+
+fn arpy(times, next) {
+    print("arpy");
+    thread arpy1 {
+        for(i = 0; i < times; i+=1) {
+            synth(next[0], freq: tune(next.note), amp: next.a(), release: next.r(), ffreq: 5500);
+            wait(1/8);
+        }
+    }
+}
+
+fn arpy_rand_time(times, next) {
+    print("arpy_rand_time");
+    thread arpy1 {
+        for(i = 0; i < times; i+=1) {
+            synth(next[0], freq: tune(next.note), amp: next.a(), release: next.r(), ffreq: 5500);
+            wait(array_rand([1/16, 1/4]));
+        }
+    }
+}
+
+fn arpy_rand_mel(times, next) {
+    thread arpy1 {
+        mel = array_mel_random_walk(next.note, next.note - 12, next.note, 7, 32);
+        for(i = 0; i < times; i+=1) {
+            synth(next[0], freq: tune(array_next(mel)), amp: next.a() * 0.6, release: next.r(), ffreq: rand(600, 5000));
+            wait(array_rand([1, 2, 4, 6, 8]));
+        }
+    }
+}
+
+fn main()
+{
+
+bass_break_train = breaks_train = [];
+
+thread main_beat {
+    seed("yo-man");
+    breaks_seq = array_seq_euclidean(7, 16);
+    print(breaks_seq);
+    loop {
+        next = array_next(main_beat);
+        next_break = array_next(breaks_seq);
+        if (next_break && rand() > 0.95 && next[0] != "kick" && next[0] != "snare") {
+            next = array_rand(main_beat);
+        }
+        synth(next[0], freq: tune(next.note), amp: next.a() * 0.5, release: next.r(), ffreq: rand(3000, 4500), fq: rand(0.07, 0.09));
+        if (next[0] != "kick" && next[0] != "snare") {
+            arp_option = rand();
+            if (next_break && arp_option > 0.95) {
+                print("arpy1!");
+                arp_options = ["arpy_rand_time", "arpy"];
+                array_rand(arp_options)(array_rand(array_mel_random_walk(4, 0, 9, 4, 16)), next);
+                wait(next[1]);
+                array_push(breaks_train, next[1]);
+            }
+            if (next_break && arp_option > 0.85 && arp_option < 0.90) {
+                print("arpy2!");
+                arpy(16, ["nothing",1/4, "a" => fn(){return 0;}, "r" => fn(){return 0;}, "note" => 52]);
+                wait(next[1]);
+                array_push(breaks_train, next[1]);
+            }
+            wait(next[1]);
+        } else {
+            wait(next[1]);
+        }
+    }
+}
+
+
+
+thread main_mel {
+    seed("yo");
+    breaks_seq = array_seq_euclidean(7, 16);
+    wait(1/4);
+    loop {
+        next = array_next(main_mel);
+        break_seq = array_next(breaks_seq);
+        if (break_seq == 0) {
+            // synth(next[0], freq: tune(next.note - 12), amp: next.a() * 2, release: next.r() * 2, ffreq: rand(200, 1500), fq: rand(0.07, 0.9));
+        }
+        if (count(breaks_train)) {
+            arpy_rand_mel(array_rand([64, 32, 16, 12, 7, 9, 3, 4, 8]), next);
+            // synth(next[0], freq: tune(next.note - 5), amp: next.a(), release: next.r() * 12, ffreq: 2500);
+            for (a=0; a<count(breaks_train); a+=1) {
+                synth(next[0], freq: tune(next.note - 7), amp: next.a(), release: next.r() * 12, ffreq: 2500);
+                wait(breaks_train[a]);
+            }
+            bass_break_train = breaks_train; // pass it on!
+            breaks_train = [];
+        }
+        wait(next[1]);
+    }
+}
+
+
+thread bas_mel {
+    seed("yobas");
+    // bassline = array_mel_random_walk(44, 40, 60, 12, 16);
+    bassline = [50, 50, 54, 54, 66, 55, 54, 62, 51, 59, 55, 57, 55];
+    wait(1/4);
+    loop {
+        synth("bas1", freq: tune(array_next(bassline)), amp: 0.32852, release: 1.5, ffreq: rand(200, 500), fq: rand(0.07, 0.9));
+        wait(1/2);
+        if (count(bass_break_train)) {
+            for (a=0; a<count(bass_break_train); a+=1) {
+                wait(bass_break_train[a]);
+            }
+            bass_break_train = [];
+        }
+    }
+}
+
+
+}
+
+
+

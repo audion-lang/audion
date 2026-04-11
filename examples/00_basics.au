@@ -1,0 +1,110 @@
+// single line comments
+/*
+    Multi-line comments, sorry they don't nest, if you want this, please help :)
+*/
+
+// print statements, they accept any data type we have, more on that later
+print(123.456);
+a = fn() {
+    return 1;
+};
+b = [1,2,3];
+c = "Hello, World!";
+print(a, b, c);
+
+// BPM
+// beats per minute, baked deep into the language,
+// can be re-set and called from anywhere (TODO check),
+// threads are syncronised in time (more on these later)
+bpm(140); // 140 beats per minute
+
+// wait
+// so now that we know how many beats per minute, we can define how long 1 bar can be
+// wais 1 bar
+wait(1);
+// or wait in miliseconds
+wait_ms(100);
+
+// DATATYPES
+// All numbers are 64-bit floats
+// you also have string, bool, nil, function, array, object
+// bam, thassit. oh namespaces too, more on that later
+
+// ARRAYS
+// use the let to define something, its not necessary but helps visually
+// arrays are O(1) for inserts/access, are deep copied, optional indexing, can contain any value type
+// yay!
+let notes = [
+    0 => [1, 2, 3],
+    "string_key" => ["a", "b", "c"],
+    "callables" => ["a" => a, fn(){return rand(1,100);}]
+];
+print(notes);
+
+// OBJECTS
+// functions/closures can return their context and this way become objects,
+// also deep copied:
+fn make_counter()
+{
+    let count = 0;
+    let strategy = nil;
+    let increment = fn()
+    {
+        count += 1;
+        return count;
+    };
+    let get = fn()
+    {
+        return count;
+    };
+    let set_strategy = fn(ob)
+    {
+        strategy = ob;
+    };
+    let call_strategy = fn(prefix)
+    {
+        return prefix + strategy();
+    };
+    return this;
+}
+counter = make_counter();
+counter.increment(); // dot syntax for inner methods
+counterb = counter;
+counter.increment();
+print("counter.get() is now: " + counter.get());
+print("counterb.get() is now: " + counterb.get());
+// compose objects, this would be a strategy pattern (see  "Design Patterns: Elements of Reusable Object-Oriented Software" by Erich Gamma et.al.):
+return_random = fn(){return rand(1,100);};
+counter.set_strategy(return_random);
+print("counter.rand()", counter.call_strategy("something "));
+// audion does not have inheritance (yet!) but you can make factories and compose objects like you want
+// TODO observer pattern
+
+// a file can have a fn main() { which will be the main entry point .. but its not necessary as you have already seen
+// loops
+// this is a speed test for array inserts
+print(time());
+let array_bag = [];
+let counter_integer = 0;
+loop {
+    array_bag[counter_integer] = counter_integer;
+    counter_integer += 1;
+    if (counter_integer > 1000000) { // 10000 should take +~half a second
+        break;
+    }
+}
+print(time());
+
+// execute external programs, get results:
+let result = exec("echo", "hello");
+if (result) {
+    print(result);
+}
+
+// ok the juicy stuff (for me at least)
+// audion takes a bit from javascript but
+// will keep you from pulling your hair in most cases:
+// these will fail:
+// >> 13 + !0; // runtime error: cannot apply Add to number and bool
+// >> (13 + "1") * 2; // runtime error: cannot apply Mul to string and number
+

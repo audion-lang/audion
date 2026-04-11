@@ -1,0 +1,263 @@
+
+define bass1(freq, amp, gate, atk, sus, rel, lpffreq, send1, send1_gain)
+{
+    let sig = pm_osc(freq, freq * lfo_noise2(5.5123), 1.0, 1) * env(gate, atk * lfo_noise2(0.123), sus, rel) * amp;
+    out(0, sig * 0.1);                  // Dry signal to main output (20%)
+    out(1, sig * 0.1);                  // Dry signal to main output (20%)
+    out(send1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+    out(send1+1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+}
+
+define bass2(freq, amp, gate) {
+    let sig = pm_osc(freq, freq, 1.0, 1) * env(gate, 0.01, 0.0, 4.8) * amp;
+    out(0, sig * 0.05);
+    out(1, sig * 0.05);
+    out(4, sig * 0.1);
+}
+
+define bass3(freq, amp, gate) {
+    let sig = var_saw(freq, 0.2 * lfo_noise2(3.123), 1.0, 1) * env(gate, 0.01, 0.0, 4.8) * amp;
+    out(0, sig * 0.05);
+    out(1, sig * 0.05);
+    out(4, sig * 0.1);
+}
+
+
+// Effect 1: Short reverb (small room, subtle)
+define reverb_short(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.15, 51, 11, 0.95));
+    out(1,  gverb(sig * 0.15, 61, 51, 0.95));
+}
+
+// Effect 2: Long reverb (cathedral, huge space)
+define reverb_long(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.15, 30, 110, 0.95));
+    out(1,  gverb(sig * 0.15, 42, 115, 0.95));
+}
+
+synth("reverb_short", bus: 2);
+synth("reverb_long", bus: 4);
+
+
+// recursive_rhythms.au — generative music using recursive algorithms
+// requires scsynth running on port 57110
+
+bpm(120);
+
+/*
+    Bjorklund's algorithm: distribute k hits across n steps as evenly as possible
+    this is the algorithm behind euclidean rhythms, widely used in electronic music
+    the recursion mirrors how Euclid's algorithm computes GCD
+
+    bjorklund(5, 8) => [1,0,1,0,1,0,1,0] => after distribution => [1,0,1,1,0,1,0,1]
+    these patterns appear in traditional music worldwide:
+    (3,8) = cuban tresillo, (5,8) = cuban cinquillo, (7,12) = west african bell
+*/
+
+fn bjorklund(hits, steps) {
+    // build initial groups: k groups of [1], (n-k) groups of [0]
+    let groups = [];
+    for (let i = 0; i < steps; i += 1) {
+        if (i < hits) {
+            push(groups, [1]);
+        } else {
+            push(groups, [0]);
+        }
+    }
+    return bjorklund_distribute(groups, hits, steps - hits);
+}
+
+fn bjorklund_distribute(groups, left_count, right_count) {
+    // base case: nothing left to distribute
+    if (right_count <= 1) { return bjorklund_flatten(groups); }
+
+    let new_groups = [];
+    let min_count = left_count;
+    if (right_count < min_count) { min_count = right_count; }
+
+    // append one remainder group onto each left group
+    for (let i = 0; i < min_count; i += 1) {
+        let merged = [];
+        let left = groups[i];
+        let right = groups[left_count + i];
+        for (let j = 0; j < count(left); j += 1) { push(merged, left[j]); }
+        for (let j = 0; j < count(right); j += 1) { push(merged, right[j]); }
+        push(new_groups, merged);
+    }
+
+    // carry over unmatched groups
+    if (left_count > right_count) {
+        for (let i = min_count; i < left_count; i += 1) {
+            push(new_groups, groups[i]);
+        }
+        return bjorklund_distribute(new_groups, min_count, left_count - right_count);
+    } else {
+        for (let i = left_count + min_count; i < left_count + right_count; i += 1) {
+            push(new_groups, groups[i]);
+        }
+        return bjorklund_distribute(new_groups, min_count, right_count - min_count);
+    }
+}
+
+fn bjorklund_flatten(groups) {
+    let result = [];
+    for (let i = 0; i < count(groups); i += 1) {
+        let group = groups[i];
+        for (let j = 0; j < count(group); j += 1) {
+            push(result, group[j]);
+        }
+    }
+    return result;
+}
+
+/*
+    recursive melodic subdivision
+    start with a note, recursively split intervals to build a phrase
+    at each level: either keep the note, or split into two notes
+    moving up/down by an interval — creates fractal-like melodies
+*/
+
+fn subdivide_melody(note, steps, depth, scale) {
+    if (depth <= 0) {
+        // base case: return single note repeated for remaining steps
+        let phrase = [];
+        for (let i = 0; i < steps; i += 1) { push(phrase, note); }
+        return phrase;
+    }
+    if (steps <= 1) {
+        return [note];
+    }
+
+    // split: first half moves up by a scale degree, second half moves down
+    let half = math_floor(steps / 2);
+    let interval = scale[int(math_abs(note)) % count(scale)];
+    let left = subdivide_melody(note + interval, half, depth - 1, scale);
+    let right = subdivide_melody(note - interval, steps - half, depth - 1, scale);
+
+    // merge
+    for (let i = 0; i < count(right); i += 1) { push(left, right[i]); }
+    return left;
+}
+
+
+root_note = 0;
+fn tune(note) {
+    // return mtof(root_note + note, "../scala_scales_common/6-lydian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    return mtof(root_note + note, "../scala_scales_common/5-phrygian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    // return mtof(note, "./2-harmonic-minor-et.scl"); // similar to include paths, relative to this script: keep resources together
+}
+
+// ── play ──
+
+fn main() {
+
+    // print the euclidean patterns
+    print("tresillo (3,8): " + str(bjorklund(3, 8)));
+    print("cinquillo (5,8): " + str(bjorklund(5, 8)));
+    print("west african bell (7,12): " + str(bjorklund(7, 12)));
+
+    // generate a recursive melody using minor-ish intervals
+    let scale_intervals = [2, 3, 5, 7, 2, 4, 3];
+    let melody = subdivide_melody(60, 16, 3, scale_intervals);
+
+    let melody1 = subdivide_melody(60, 12, 2, scale_intervals);
+    print("melody: " + str(melody));
+
+    // bass on cinquillo
+    let bass_pattern = bjorklund(5, 8);
+    let bass_pattern1 = bjorklund(3, 12);
+
+    thread bass {
+        seed("bass");
+
+        let bass_slow_walk = array_mel_random_walk(60, 48, 64, 5, 16);
+        let bass_note_on_pattern = array_seq_euclidean(12, 18);
+        let bass_pause_pattern = array_seq_euclidean(5, 32);
+        let bass_release_patt = array_mel_random_walk(1.0, 0.125, 3, 0.25, 32);
+        let bass_lpff_patt = array_mel_random_walk(600, 600, 4000, 225, 64);
+        let bass_synth_id = nil;
+        let bass_instrument_patt = array_seq_euclidean(9, 32);
+        let bass_instrument_weight = [1, 1, 2, 3, 1, 1, 9, 1, 2, 3, 15, 18, 20, 26];
+        let bass_slow_loop_counter = 0;
+        let long_pauses_patt = [1/2, 1/4, 1/7, 2/3, 1/8, 1/2, 1/3, 1/6, 1/6, 1/3, 0.01];
+        let attack_patt = array_mel_random_walk(3, 3, 12, 0.33, 256);
+        let amp_patt = array_mel_random_walk(0.1, 0.05, 0.2, 0.03, 256);
+
+        loop {
+            let step = array_next(bass_pattern, true);
+            let note = array_next(melody, true);
+            if (step) {
+                // synth("bass1", freq: mtof(note - 12), amp: 0.2);
+
+                bass_slow_loop_counter += 1;
+                if (bass_slow_loop_counter % 32 == 0) {
+                    bass_instrument_patt = array_seq_euclidean(array_next(bass_instrument_weight, true), 32);
+                }
+                next_note = array_next(bass_slow_walk, true);
+                instrument = "bass1";
+                instrument_choice = array_next(bass_instrument_patt, true);
+                if (instrument_choice) {
+                    // instrument = "bass1";
+                    instrument = array_rand(["bass1", "bass3", "bass3", "bass2"]);
+                } else {
+                    instrument = "bass2";
+                }
+
+                bass_synth_id = synth(instrument, freq: tune((note - 12) + array_rand([0, 0, 0, 0, 12, -7, 7, 3])),
+                    gate: 1,
+                    atk: array_next(attack_patt, true),
+                    sus: 0.9,
+                    rel: array_next(bass_release_patt, true),
+                    send1: array_rand([2,4]),
+                    send1_gain: 0.4,
+                    amp: array_next(amp_patt, true),
+                    lpffreq: array_next(bass_lpff_patt, true)
+                );
+            }
+            next_pause = array_next(bass_pause_pattern, true);
+            if (next_pause) {
+                wait(array_next(long_pauses_patt, true));
+            } else {
+                wait(array_rand([0.5, 0.25, 0.25, 0.25]));
+            }
+            if (step && bass_synth_id) {
+                set(bass_synth_id, gate:0);
+            }
+        }
+    }
+
+    // regenerate melody every 8 bars with increasing depth
+    thread composer {
+        let depth = 2;
+        loop {
+            wait(8 * 4);
+            depth += 1;
+            if (depth > 6) { depth = 2; }
+            melody = subdivide_melody(60, 16, depth, scale_intervals);
+            print("new melody (depth " + depth + "): " + str(melody));
+            wait(4);
+            bass_pattern = bjorklund(array_rand([5, 6, 7, 8, 9, 10]), array_rand([11, 12, 14, 16]));
+            print("new bass_pattern: ", bass_pattern);
+        }
+    }
+
+    thread composer_root_note {
+        total_bars = 0;
+        loop {
+            wait(1);
+            total_bars += 1;
+
+            if (total_bars % 32 == 0) {
+                if (root_note > 0) {
+                    root_note = 0;
+                } else {
+                    root_note = array_rand([3,5,7,12]);
+                }
+                print("root_note", root_note);
+            }
+
+        }
+    }
+}

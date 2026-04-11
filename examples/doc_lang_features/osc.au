@@ -1,0 +1,52 @@
+// osc.au — OSC protocol examples
+//
+// OSC (Open Sound Control) lets you send/receive messages to/from
+// any OSC-compatible software: Max/MSP, TouchDesigner, Processing,
+// another audion instance, etc.
+
+bpm(120);
+
+fn main() {
+    // --- Sending OSC messages ---
+
+    // Configure target (host:port)
+    osc_config("127.0.0.1:9001");
+
+    // Send messages with any number of arguments
+    osc_send("/synth/freq", 440);
+    osc_send("/synth/amp", 0.5);
+    osc_send("/synth/note", 60, 100, 0.25);
+    osc_send("/label", "hello from audion");
+
+    // --- Receiving OSC messages ---
+
+    // Start listening on a port
+    osc_listen(8000);
+
+    // Poll for incoming messages (non-blocking)
+    thread listener {
+        loop {
+            let msg = osc_recv();
+            if (msg) {
+                print("received:", msg[0]);  // address
+                for (let i = 1; i < count(msg); i += 1) {
+                    print("  arg:", msg[i]);
+                }
+            }
+            wait_ms(10);  // poll interval
+        }
+    }
+
+    // --- Send a pattern over OSC ---
+
+    thread sender {
+        let notes = [60, 64, 67, 72];
+        for (let bar = 0; bar < 4; bar += 1) {
+            for (let i = 0; i < count(notes); i += 1) {
+                osc_send("/note", notes[i], 100);
+                wait(0.5);
+                osc_send("/note", notes[i], 0);
+            }
+        }
+    }
+}

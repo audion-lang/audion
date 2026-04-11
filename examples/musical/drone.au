@@ -1,0 +1,36 @@
+// Evolving drone — a sustained synth that slowly changes
+// Demonstrates set() to modify running synths
+
+bpm(160);
+
+// Detuned saw pad with filter and reverb
+define lush_pad(freq, amp, gate, out)
+{
+    out(out, reverb(
+                 lpf(saw(freq) + saw(freq * 1.01), freq * 6) * env(gate, 0.5, 1, 2) * amp,
+                 0.5, 0.8, 0.3));
+}
+
+fn main()
+{
+    let node = synth("default", freq : 110, amp : 0.3);
+    print("drone started, node:", node);
+
+    let freq = 110;
+    let direction = 1;
+
+    loop
+    {
+        freq = freq + direction * 10;
+        if (freq > 440)
+        {
+            direction = -1;
+        }
+        if (freq < 110)
+        {
+            direction = 1;
+        }
+        set(node, freq : freq);
+        wait(0.2);
+    }
+}

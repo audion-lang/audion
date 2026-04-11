@@ -1,0 +1,64 @@
+
+/*
+>>> 1 / 16
+.06250000000000000000
+>>> 1 / 32
+.03125000000000000000
+>>> 1 / 64
+.01562500000000000000
+>>> 1 / 128
+.00781250000000000000
+>>> 1 / 8
+.12500000000000000000
+>>> 1 / 4
+.25000000000000000000
+>>> 1 / 2
+.50000000000000000000
+*/
+
+fn file_random(dir) {
+    let files = dir_scan(dir);
+    let idx = rand(0, count(files));
+    return dir + files[idx];
+}
+
+fn seq_low_high(length, low, high) {
+    result = [];
+    for (i = 0; i < length; i += 1) {
+        result[i] = rand(low, high);
+    }
+    return result;
+}
+
+fn array_loop_fwd(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+
+fn seq_rand_walk(low, high, max_step) {
+    let _current = low;
+    let _low = low;
+    let _high = high;
+    let _max_step = max_step;
+    fn next() {
+        next_value = rand(0, _max_step);
+        if (rand(1,100) > 50) {
+            _current += next_value;
+        } else {
+            _current -= next_value;
+        }
+        if (_current < _low) {
+            _current = _low;
+        }
+        if (_current > _high) {
+            _current = _high;
+        }
+        return _current;
+    }
+
+    return this;
+}

@@ -1,0 +1,27 @@
+bpm(30);
+
+define ambient(bufnum, amp, gate, out)
+{
+    out(out, reverb(
+                 stream_disk(bufnum, loop : 1) * env(gate, 2, 1, 4) * amp,
+                 0.6, 0.9, 0.4));
+}
+
+fn main()
+{
+    let buf = buffer_stream_open("/Volumes/worx/samples/field_03/221225-141502.wav");
+    // wait_ms(500);
+
+    let node = synth("ambient", bufnum : buf, amp : 0.3);
+
+    // Let it play forever — Ctrl+C to stop
+    loop
+    {
+        wait(60);
+    }
+
+    // Cleanup (reached on shutdown)
+    free(node);
+    buffer_stream_close(buf);
+    print("finished");
+}

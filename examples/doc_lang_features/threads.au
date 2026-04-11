@@ -1,0 +1,81 @@
+// basics of threads, declaration and scope
+
+
+bpm(1400);
+let counter = 0;
+
+// thread can be declared in any scope
+thread A
+{
+    loop
+    {
+        counter += 1; // access to top level scope
+        print("thread a " + counter);
+        wait(0.25);
+        if (counter >= 4) {
+            // exit out of the loop
+            // and thread finishes too, theres nothing else
+            print("exiting thread A");
+            print("A----------------");
+            break;
+        }
+    }
+}
+
+thread B
+{
+    let counter = 10;
+    loop
+    {
+        counter += 1; // local (thread B) scope
+        print("thread b: " + counter);
+        wait(1);
+        if (counter >= 14) {
+            // exit out of the loop
+            // and thread finishes too, theres nothing else
+            print("exiting thread B");
+            print("B----------------");
+            break;
+        }
+    }
+}
+
+fn spawn(name, start_counting_at) {
+    print("about to spawn a thread named: " + name);
+    thread name {
+        let counter = start_counting_at;
+        loop {
+            counter += 1; // local (thread B) scope
+            print("thread named: " + name + " counter: " + counter);
+            wait(1);
+            if (counter >= (start_counting_at + 4)) {
+                print("exiting thread " + name);
+                print(name + "----------------");
+                break;
+            }
+        }
+    }
+}
+
+// note the order,
+print("before main()");
+
+fn main()
+{
+    let counter = 100;
+    spawn("spawned_counterA", 1000);
+    spawn("spawned_counterB", 2000);
+    loop
+    {
+        counter += 1; // uses fn main() scope
+        print("main: " + counter);
+        wait(1);
+        if (counter >= 104) {
+            print("exiting main() ");
+            print("main----------------");
+            break;
+        }
+    }
+}
+
+print("after main()");

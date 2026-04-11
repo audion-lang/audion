@@ -1,0 +1,386 @@
+// granular.au — Granular Synthesis
+// Inspired by Robert Henke's Granulator II.
+// Samples are sliced into tiny grains (1ms–500ms), each pitched, positioned,
+// and scattered across the stereo field independently.
+// Control over density, spray, pitch randomization, and filtering
+// turns any sample into an evolving cloud of sound.
+
+bpm(110);
+
+// ============================================================
+// SYNTH DEFINITIONS
+// ============================================================
+
+// --- Basic Grain Player ---
+// Simple granular with core controls. Good starting point.
+// bufnum: buffer ID from buffer_load()
+// pos: position in sample (0–1)
+// spray: random position deviation per grain
+// gdur: grain duration in seconds
+// density: grains per second (4–100+)
+// rate: playback rate (1 = original pitch, 0.5 = octave down, 2 = octave up)
+define grain_basic(amp, gate, bufnum,
+                   pos, spray, gdur, density, rate,
+                   atk, sus, rel) {
+    let trig = Dust(density);
+    let g_pos = Clip(pos + TRand(0 - spray, spray, trig), 0, 1);
+    let grains = GrainBuf(2, trig, gdur, bufnum, rate, g_pos, 2, 0);
+    out(0, grains * env(gate, atk, sus, rel) * amp);
+}
+
+// --- Full Granulator (Henke-grade) ---
+// All the parameters you'd expect from a serious granular engine.
+//
+// Position controls:
+//   pos:          center position in sample (0–1)
+//   spray:        random position offset per grain (0–0.5)
+//   scan_speed:   LFO speed for automatic position scanning
+//   scan_depth:   how far the scan LFO sweeps (0–0.5)
+//
+// Grain controls:
+//   gdur:         grain duration in seconds (0.01–0.5)
+//   gdur_rand:    random grain duration offset (0–0.2)
+//   density:      grains per second (1–200)
+//
+// Pitch controls:
+//   rate:         base playback rate (1 = original)
+//   pitch_rand:   random pitch deviation per grain (0 = none, 0.5 = ±50%)
+//
+// Stereo + filter:
+//   width:        stereo spread of grains (0 = mono center, 1 = full stereo)
+//   filt:         lowpass filter cutoff (200–20000)
+//   filt_q:       filter resonance (0.1–1.0, lower = more resonant)
+//
+// Envelope:
+//   atk, sus, rel: master amplitude envelope
+define granulator(amp, gate, bufnum,
+                  pos, spray, scan_speed, scan_depth,
+                  gdur, gdur_rand, density,
+                  rate, pitch_rand,
+                  width, filt, filt_q,
+                  atk, sus, rel) {
+    let trig = Dust(density);
+    // Position: center + scan LFO + per-grain random spray
+    let scan = lfo_tri(scan_speed) * scan_depth;
+    let g_pos = Wrap(pos + scan + TRand(0 - spray, spray, trig), 0, 1);
+    // Duration: base + random variation
+    let g_dur = gdur + TRand(0, gdur_rand, trig);
+    // Pitch: base rate + random deviation
+    let g_rate = rate * TRand(1 - pitch_rand, 1 + pitch_rand, trig);
+    // Stereo: random pan position per grain
+    let g_pan = TRand(0 - width, width, trig);
+    // Generate grains
+    let grains = GrainBuf(2, trig, g_dur, bufnum, g_rate, g_pos, 2, g_pan);
+    // Filter and envelope
+    let sig = rlpf(grains, filt, filt_q);
+    out(0, sig * env(gate, atk, sus, rel) * amp);
+}
+
+// --- Granular Cloud with reverb + delay ---
+// Self-contained ambient granular texture.
+// Adds built-in delay and reverb for instant atmosphere.
+define grain_cloud(amp, gate, bufnum,
+                   pos, spray, scan_speed, scan_depth,
+                   gdur, density,
+                   rate, pitch_rand,
+                   width, filt,
+                   del_time, del_decay,
+                   rmix, rroom, rdamp,
+                   atk, sus, rel) {
+    let trig = Dust(density);
+    let scan = lfo_sine(scan_speed) * scan_depth;
+    let g_pos = Wrap(pos + scan + TRand(0 - spray, spray, trig), 0, 1);
+    let g_rate = rate * TRand(1 - pitch_rand, 1 + pitch_rand, trig);
+    let g_pan = TRand(0 - width, width, trig);
+    let grains = GrainBuf(2, trig, gdur, bufnum, g_rate, g_pos, 2, g_pan);
+    let filtered = lpf(grains, filt);
+    let delayed = delay(filtered, del_time, del_decay);
+    let wet = reverb(filtered + delayed * 0.4, rmix, rroom, rdamp);
+    out(0, wet * env(gate, atk, sus, rel) * amp);
+}
+
+// --- Rhythmic Granular ---
+// Uses Impulse instead of Dust for metrically locked grain triggers.
+// density = grains per second, but evenly spaced (steady pulse).
+// Good for rhythmic granular textures and glitch.
+// define grain_pulse(amp, gate, bufnum,
+//                    pos, spray, gdur,
+//                    density, rate, pitch_rand,
+//                    width, filt,
+//                    atk, sus, rel) {
+//     let trig = Impulse(density);
+//     let g_pos = Wrap(pos + TRand(0 - spray, spray, trig), 0, 1);
+//     let g_rate = rate * TRand(1 - pitch_rand, 1 + pitch_rand, trig);
+//     let g_pan = TRand(0 - width, width, trig);
+//     let grains = GrainBuf(2, trig, gdur, bufnum, g_rate, g_pos, 2, g_pan);
+//     out(0, rlpf(grains, filt, 0.5) * env(gate, atk, sus, rel) * amp);
+// }
+
+// --- Dual-Layer Granular ---
+// Two independent grain streams from the same buffer at different positions.
+// Creates thick, evolving textures. pos2 and rate2 control the second layer.
+// define grain_dual(amp, gate, bufnum,
+//                   pos, pos2, spray,
+//                   gdur, density,
+//                   rate, rate2, pitch_rand,
+//                   width, filt,
+//                   mix,
+//                   atk, sus, rel) {
+//     // Layer 1
+//     let trig1 = Dust(density);
+//     let gp1 = Wrap(pos + TRand(0 - spray, spray, trig1), 0, 1);
+//     let gr1 = rate * TRand(1 - pitch_rand, 1 + pitch_rand, trig1);
+//     let layer1 = GrainBuf(2, trig1, gdur, bufnum, gr1, gp1, 2, TRand(0 - width, width, trig1));
+//     // Layer 2
+//     let trig2 = Dust(density * 0.7);
+//     let gp2 = Wrap(pos2 + TRand(0 - spray, spray, trig2), 0, 1);
+//     let gr2 = rate2 * TRand(1 - pitch_rand, 1 + pitch_rand, trig2);
+//     let layer2 = GrainBuf(2, trig2, gdur * 1.5, bufnum, gr2, gp2, 2, TRand(0 - width, width, trig2));
+//     // Mix and filter
+//     let sig = layer1 * (1 - mix) + layer2 * mix;
+//     out(0, lpf(sig, filt) * env(gate, atk, sus, rel) * amp);
+// }
+
+
+// ============================================================
+// MUSICAL EXAMPLE
+// ============================================================
+
+fn main() {
+    // Load samples into scsynth buffers
+    buf1 = buffer_load("/Volumes/worx/samples/brown.wav");
+    buf2 = buffer_load("/Volumes/worx/samples/kit_wavetables2/fm/fm-sinefolds.wav");
+    buf3 = buffer_load("/Volumes/worx/samples/kit_wavetables2/fm/fm-subgrits.wav");
+    wait_ms(3000);
+
+    // Shared node references
+    cloud_node = nil;
+    grain_node = nil;
+
+
+    thread basic {
+
+        // basic_node = synth("grain_basic",
+        //     amp:0.5,
+        //     gate:1,
+        //     bufnum: buf1,
+        //     pos: 0.1,
+        //     spray: 0.1,
+        //     gdur: 0.05,
+        //     density: 20,
+        //     rate: 1,
+        //     atk:0.5,
+        //     sus:0.5,
+        //     rel:3
+        // );
+        loop {
+            wait(1);
+            // set(basic_node,
+            //     amp:1,
+            //     gate:1,
+            //     pos: rand(0, 0.8),
+            //     spray: rand(0.02, 0.25),
+            //     gdur: rand(0.015, 0.08),
+            //     density: rand(12, 40),
+            //     rate: rand(0.5, 2)
+            // );
+        }
+
+    }
+
+
+    // // --- Ambient grain cloud: slowly scanning through FX_Fuser ---
+    thread cloud {
+        print("cloud");
+        seed("grain_drift");
+        // cloud_node = synth("grain_cloud",
+        //     amp: 0.15,
+        //     gate: 1,
+        //     bufnum: buf1,
+        //     pos: 0.2,
+        //     spray: 0.1,
+        //     scan_speed: 0.05,
+        //     scan_depth: 0.3,
+        //     gdur: 0.12,
+        //     density: 20,
+        //     rate: 1,
+        //     pitch_rand: 0.08,
+        //     width: 0.9,
+        //     filt: 4000,
+        //     del_time: 0.375,
+        //     del_decay: 3,
+        //     rmix: 0.6,
+        //     rroom: 0.9,
+        //     rdamp: 0.3,
+        //     atk: 3,
+        //     sus: 1,
+        //     rel: 5
+        // );
+        // Let it evolve
+        loop {
+            wait(4);
+            // set(cloud_node,
+            //     pos: rand(0, 0.8),
+            //     spray: rand(0.02, 0.25),
+            //     filt: rand(1500, 8000),
+            //     pitch_rand: rand(0, 0.15),
+            //     density: rand(12, 40)
+            // );
+        }
+    }
+
+    // // --- Rhythmic granular pulse on FX_Substance ---
+    // thread pulse {
+    //     seed("grain_rhythm");
+    //     grain_node = synth("grain_pulse",
+    //         amp: 0.1,
+    //         gate: 1,
+    //         bufnum: buf2,
+    //         pos: 0.3,
+    //         spray: 0.05,
+    //         gdur: 0.08,
+    //         density: 8,
+    //         rate: 1,
+    //         pitch_rand: 0.02,
+    //         width: 0.6,
+    //         filt: 6000,
+    //         atk: 0.5,
+    //         sus: 1,
+    //         rel: 2
+    //     );
+    //     loop {
+    //         // Sweep position through the sample
+    //         set(grain_node,
+    //             pos: rand(0, 1),
+    //             gdur: rand(0.03, 0.15),
+    //             rate: array_rand([0.5, 1, 1, 1.5, 2]),
+    //             filt: rand(2000, 12000)
+    //         );
+    //         wait(2);
+    //     }
+    // }
+
+    // // --- Dual-layer granular texture with FX_Nawty ---
+    // thread dual {
+    //     seed("grain_dual_layer");
+    //     wait(8);
+    //     dual_node = synth("grain_dual",
+    //         amp: 0.08,
+    //         gate: 1,
+    //         bufnum: buf3,
+    //         pos: 0.1,
+    //         pos2: 0.6,
+    //         spray: 0.15,
+    //         gdur: 0.1,
+    //         density: 30,
+    //         rate: 0.5,
+    //         rate2: 1.5,
+    //         pitch_rand: 0.1,
+    //         width: 1,
+    //         filt: 5000,
+    //         mix: 0.5,
+    //         atk: 4,
+    //         sus: 1,
+    //         rel: 6
+    //     );
+    //     loop {
+    //         wait(3);
+    //         set(dual_node,
+    //             pos: rand(0, 0.7),
+    //             pos2: rand(0.3, 1),
+    //             mix: rand(0, 1),
+    //             rate: array_rand([0.25, 0.5, 0.75, 1]),
+    //             rate2: array_rand([1, 1.5, 2, 3]),
+    //             filt: rand(1000, 10000)
+    //         );
+    //     }
+    // }
+
+    // // --- Full granulator with Henke-style parameter sweeps ---
+    thread henke {
+        seed("granulator_pro");
+        // wait(16);
+        h_node = synth("granulator",
+            amp: 0.12,
+            gate: 1,
+            bufnum: buf1,
+            pos: 0,
+            spray: 0.03,
+            scan_speed: 0.02,
+            scan_depth: 0.4,
+            gdur: 0.06,
+            gdur_rand: 0.04,
+            density: 50,
+            rate: 1,
+            pitch_rand: 0.05,
+            width: 0.7,
+            filt: 8000,
+            filt_q: 0.5,
+            atk: 2,
+            sus: 1,
+            rel: 8
+        );
+        h_node1 = synth("granulator",
+            amp: 0.12,
+            gate: 1,
+            bufnum: buf1,
+            pos: 0,
+            spray: 0.03,
+            scan_speed: 0.02,
+            scan_depth: 0.4,
+            gdur: 0.06,
+            gdur_rand: 0.04,
+            density: 50,
+            rate: 1,
+            pitch_rand: 0.05,
+            width: 0.7,
+            filt: 8000,
+            filt_q: 0.5,
+            atk: 2,
+            sus: 1,
+            rel: 8
+        );
+        h_node2 = synth("granulator",
+            amp: 0.12,
+            gate: 1,
+            bufnum: buf1,
+            pos: 0,
+            spray: 0.03,
+            scan_speed: 0.02,
+            scan_depth: 0.4,
+            gdur: 0.06,
+            gdur_rand: 0.04,
+            density: 50,
+            rate: 1,
+            pitch_rand: 0.05,
+            width: 0.7,
+            filt: 8000,
+            filt_q: 0.5,
+            atk: 2,
+            sus: 1,
+            rel: 8
+        );
+        // Continuously morph all parameters — the Henke way
+        loop {
+            wait(1);
+            set(h_node,
+                spray: rand(0.01, 0.3),
+                gdur: rand(0.02, 0.25),
+                gdur_rand: rand(0, 0.1),
+                density: rand(10, 80),
+                pitch_rand: rand(0, 0.2),
+                width: rand(0.3, 1),
+                filt: rand(800, 15000),
+                filt_q: rand(0.2, 0.8),
+                scan_speed: rand(0.01, 0.2),
+                scan_depth: rand(0.05, 0.5)
+            );
+            // Occasionally swap the source buffer
+            if (rand() > 0.85) {
+                set(h_node, bufnum: array_rand([buf1, buf2, buf3]));
+            }
+        }
+    }
+
+
+}

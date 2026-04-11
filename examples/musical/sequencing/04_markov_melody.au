@@ -1,0 +1,80 @@
+// Markov Chain Melody Generator
+// Creates melodies using probabilistic state transitions
+
+bpm(120);
+
+define lead(freq, amp, gate) {
+    out(0, saw(freq) * env(gate, 0.01, 0, 0.3) * amp);
+}
+
+// Define a scale (C major pentatonic: C D E G A)
+let scale = [60, 62, 64, 67, 69];  // MIDI notes
+
+// Markov transition matrix for melodic movement
+// States: 0=C, 1=D, 2=E, 3=G, 4=A
+//
+// Matrix[i][j] = probability of going from note i to note j
+// Each row sums to approximately 1.0
+//
+// This matrix creates:
+// - Stepwise motion is favored (high probabilities for adjacent notes)
+// - Occasional leaps
+// - C (0) and G (3) are "anchor" notes (more stable)
+
+let transition_matrix = [
+    // To: C    D    E    G    A
+    [0.3, 0.4, 0.2, 0.1, 0.0],  // From C (0)
+    [0.2, 0.2, 0.4, 0.1, 0.1],  // From D (1)
+    [0.1, 0.2, 0.3, 0.3, 0.1],  // From E (2)
+    [0.2, 0.1, 0.2, 0.3, 0.2],  // From G (3)
+    [0.0, 0.2, 0.2, 0.3, 0.3]   // From A (4)
+];
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+    print("Markov Melody Generator");
+    print("Scale: C D E G A (MIDI notes: ", scale, ")");
+
+    // Seed for reproducible results
+    seed(12345);
+
+    // Generate a melody sequence of 64 notes, starting from C (state 0)
+    let melody_states = array_seq_markov(transition_matrix, 0, 64);
+    print("\nGenerated melody (scale degrees):");
+    print(melody_states);
+
+    // Convert states to MIDI notes
+    let melody_notes = [];
+    for (i = 0; i < count(melody_states); i += 1) {
+        let state = melody_states[i];
+        let midi_note = scale[state];
+        push(melody_notes, midi_note);
+    }
+
+    thread melody {
+        loop {
+            next_state = array_loop_forward(melody_states);
+            let midi = scale[next_state];
+            let freq = mtof(midi);
+            synth("lead", freq: freq, amp: 0.5);
+            wait(0.5);
+        }
+    }
+
+    // Add a bass thread playing root notes
+    thread bass {
+        loop {
+            synth("lead", freq: mtof(48), amp: 0.3);  // C2
+            wait(4);
+            synth("lead", freq: mtof(55), amp: 0.3);  // G2
+            wait(4);
+        }
+    }
+}

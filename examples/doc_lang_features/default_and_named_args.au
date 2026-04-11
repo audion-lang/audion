@@ -1,0 +1,43 @@
+print("default and named arguments");
+
+// -- default arguments --
+// params can have a default value, used when the caller omits them
+
+fn greet(name, greeting = "Hello") {
+    return greeting + ", " + name + "!";
+}
+
+print(greet("world"));           // Hello, world!
+print(greet("world", "Hey"));    // Hey, world!
+
+
+// -- multiple defaults --
+
+fn note(pitch, vel = 80, dur = 0.5) {
+    return "pitch=" + pitch + " vel=" + vel + " dur=" + dur;
+}
+
+print(note(60));           // vel and dur use defaults
+print(note(60, 100));      // dur uses default
+print(note(60, 100, 1.0)); // all supplied
+
+
+// -- named arguments --
+// call with param names to pass them in any order
+
+fn pan_mix(source, gain = 1.0, pan = 0.0) {
+    return source + " gain=" + gain + " pan=" + pan;
+}
+
+print(pan_mix("kick", pan: -0.5));           // skip gain, set pan by name
+print(pan_mix("snare", pan: 0.8, gain: 0.7)); // both named, any order
+
+
+// -- skipping middle defaults --
+
+fn envelope(attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.3) {
+    return "a=" + attack + " d=" + decay + " s=" + sustain + " r=" + release;
+}
+
+print(envelope(release: 1.0));              // only override release
+print(envelope(0.05, sustain: 99.5));        // positional attack + named sustain

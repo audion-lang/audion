@@ -1,0 +1,237 @@
+// sampling.au — sample playback demo using kick.wav
+//
+// sample() named params:
+//   root      — root MIDI note, original pitch (default 60)
+//   start     — start position in frames (default 0)
+//                to convert ms to frames: ms * (sample_rate / 1000)
+//                e.g. 44.1kHz: 200ms * 44.1 = 8820 frames
+//                e.g. 48kHz:   200ms * 48   = 9600 frames
+//   loop      — enable looping: 1 = on, 0 = off (default 0)
+//   loop_start / loop_end — loop point in frames
+//   detune    — detune in cents (default 0)
+//   vel_lo / vel_hi — velocity range 0-127 (default 0-127)
+//   key_lo / key_hi — key range 0-127 (default 0-127)
+//
+// example with all params:
+//   sample("/path/to/file.wav",
+//       root: 60, start: 8820, loop: 1,
+//       loop_start: 8820, loop_end: 44100,
+//       detune: 5, vel_lo: 0, vel_hi: 127,
+//       key_lo: 0, key_hi: 127
+//   )
+
+bpm(140);
+
+
+fn file_random(dir) {
+    let files = dir_scan(dir);
+    let idx = rand(0, count(files));
+    return dir + files[idx];
+}
+
+// Kick sampler: sample() plays back the wav file
+// root: 60 = original pitch at middle C (261.63 Hz)
+// env with sus: 0 = percussive envelope (Env.perc)
+define kick(freq, amp, gate, samplefile)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_909_pulse/BassDrum/BassDrum_Bereze.wav", root : 60), 120) * env(gate, 0.001, 0, 0.93) * amp);
+}
+
+define hat(freq, amp, gate, atk, sus, rel, samplefile)
+{
+    out(0,
+        sample("/Volumes/worx/samples/kit_hats/Closed_Live_Frosted.wav", root : 60) *
+        env(gate, atk, sus, rel) * amp
+    );
+}
+
+define bassline_1(freq, amp, gate, atk, sus, rel, filter_freq)
+{
+    out(0,
+        lpf(sample("/Volumes/worx/samples/pack_subs/Acidic/Acidic_Beefo_C.wav", root : 60), filter_freq) *
+        env(gate, atk, sus, rel) * amp
+    );
+}
+
+define bassline_2(freq, amp, gate, atk, sus, rel, filter_freq)
+{
+    out(0,
+        reverb(
+        lpf(sample("/Volumes/worx/samples/pack_subs/Acidic/Acidic_Beefo_C.wav", root : 60), filter_freq) *
+        env(gate, atk, sus, rel) * amp
+        , 1, 1, 1)
+    );
+}
+
+define synth1(freq, amp, gate, atk, sus, rel, filter_freq)
+{
+    out(0,
+        reverb(
+        lpf(sample("/Volumes/worx/samples/pack_stabs/Stab_Clean_Cmin.wav", root : 60), filter_freq) *
+        env(gate, atk, sus, rel) * amp
+        , 1, 1, 1)
+    );
+}
+
+define shimmer(freq, amp, gate) {
+    let sig = lpf(saw(freq), 2000 + lfo_sine(0.3) * 1000) * env(gate, 0.1, 1, 3) * amp;
+    let wet = CombC(sig, 0.05, 0.035, 4)
+            + CombC(sig, 0.05, 0.042, 3.5)
+            + CombC(sig, 0.05, 0.048, 3.8);
+    let verb = AllpassC(AllpassC(wet * 0.925, 0.902, 0.9017, 0.91), 0.902, 0.9013, 0.91);
+    out(0, pan(lfo_tri(0.01), verb));
+}
+
+sequences = [
+    "hh_freq" => [480, 490, 590],
+    "bassline_1" => [69, 75, 66, 67, 62, 74],
+    "synth_line1" => [97, 95, 84, 77, 78, 86, 98],
+];
+
+
+fn tune(note) {
+    return mtof(note, "./examples/scala_scales/arist_softdiat4.scl");
+}
+
+
+fn main()
+{
+
+    // Wait for buffer to finish loading on scsynth
+    wait_ms(500);
+
+    thread conductor
+    {
+        loop {
+            wait(1);
+        }
+    }
+
+    thread bassd
+    {
+        count_bd = 0;
+        let n = nil;
+        loop {
+            if (n != nil) { free(n); }
+            n = synth("kick", freq : 161, amp : 0.9, gate : 1);
+            wait(1);
+            count_bd += 1;
+            print("count_bd: " + count_bd);
+        }
+    }
+
+    // wait(16);
+
+    thread hats
+    {
+        seed(123);
+        hhfi = 0;
+        let n = nil;
+        loop {
+            hhfi += 1;
+            wait(0.25);
+            if (n != nil) { free(n); }
+            let a = rand(0.001, 0.55);   // random attack
+            n = synth(
+                "hat",
+                freq : sequences["hh_freq"][hhfi % 3],
+                amp : 0.139,
+                atk: a,
+                sus: 1,
+                rel: 1
+            );
+        }
+    }
+
+    thread bassline1
+    {
+        seed(123);
+        bli = 0;
+        let n = nil;
+        let m = nil;
+        let l = nil;
+        loop {
+            bli += 1;
+            wait(0.25);
+            if (n != nil) { free(n); }
+            let a = rand(0.001, 0.55);   // random attack
+            print("bli");
+            print(bli % 3);
+            n = synth(
+                "bassline_1",
+                freq : tune(sequences["bassline_1"][bli % 6]),
+                amp : 0.139,
+                atk: a,
+                sus: 0.8,
+                rel: 10,
+                filter_freq : rand(200, 500)
+            );
+
+            // if (rand(1,20) > 17) {
+            //     if (l != nil) { free(l); }
+            //     l = synth(
+            //         "bassline_2",
+            //         freq : tune(sequences["bassline_1"][bli % 4]),
+            //         amp : 0.139,
+            //         atk: 0.01,
+            //         sus: 1,
+            //         rel: 2,
+            //         filter_freq : 1420
+            //     );
+            // }
+        }
+    }
+
+
+    thread bassline2
+    {
+        seed(123);
+        bli = 0;
+        let l = nil;
+        loop {
+            bli += 1;
+            wait(3);
+            let a = rand(0.001, 0.55);   // random attack
+            print("bli");
+            print(bli % 3);
+
+            if (l != nil) { free(l); }
+            l = synth(
+                "bassline_2",
+                freq : tune(array_rand(sequences["bassline_1"])),
+                amp : 0.139,
+                atk: 0.01,
+                sus: 1,
+                rel: 2,
+                filter_freq : 1420
+            );
+            wait(2);
+        }
+    }
+
+    // thread synth_th
+    // {
+    //     seed(123);
+    //     bli = 0;
+    //     let l = nil;
+    //     loop {
+    //         bli += 1;
+    //         wait(1);
+    //         let a = rand(0.001, 0.55);   // random attack
+    //         print("bli");
+    //         print(bli % 3);
+
+    //         if (l != nil) { free(l); }
+    //         l = synth(
+    //             "synth1",
+    //             freq : tune(array_rand(sequences["synth_line1"])),
+    //             amp : 0.139,
+    //             atk: 0.01,
+    //             sus: 1,
+    //             rel: 2,
+    //             filter_freq : 1420
+    //         );
+    //     }
+    // }
+
+}

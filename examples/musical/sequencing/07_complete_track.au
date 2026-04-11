@@ -1,0 +1,171 @@
+// Complete Generative Track
+// A full musical piece combining all sequence techniques
+
+bpm(128);
+
+// ==== Sound Definitions ====
+
+define kick(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.001, 0, 0.3) * amp);
+}
+
+define snare(freq, amp, gate) {
+    out(0, noise() * lpf(noise(), 2000) * env(gate, 0.001, 0, 0.15) * amp);
+}
+
+define hat_closed(freq, amp, gate) {
+    out(0, hpf(noise(), 10000) * env(gate, 0.001, 0, 0.03) * amp);
+}
+
+define hat_open(freq, amp, gate) {
+    out(0, hpf(noise(), 8000) * env(gate, 0.001, 0, 0.12) * amp);
+}
+
+define bass(freq, amp, gate) {
+    out(0, lpf(saw(freq), freq * 4) * env(gate, 0.01, 0, 0.3) * amp);
+}
+
+define lead(freq, amp, gate) {
+    out(0, lpf(saw(freq), freq * 6) * env(gate, 0.02, 0, 0.2) * amp);
+}
+
+// ==== Helper Functions ====
+
+fn binary_to_array(str) {
+    let arr = [];
+    let len = str_length(str);
+    for (i = 0; i < len; i += 1) {
+        push(arr, int(str_substr(str, i, 1)));
+    }
+    return arr;
+}
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+    print("=== Generating Track Sequences ===\n");
+
+    // DRUMS
+    let kick_pattern = array_seq_euclidean(4, 16);
+    print("Kick: ", kick_pattern);
+
+    let snare_necklaces = array_seq_necklaces_m_ones(8, 2);
+    let snare_pattern = binary_to_array(snare_necklaces[1]);
+    print("Snare: ", snare_necklaces[1]);
+
+    let hat_pattern = array_seq_euclidean(6, 8);
+    print("Hats: ", hat_pattern);
+
+    let hat_open_pattern = array_seq_euclidean(2, 8);
+    print("Open hats: ", hat_open_pattern);
+
+    // BASS - Markov chain
+    let bass_scale = [33, 36, 38, 40, 43];  // A0, C1, D1, E1, G1
+
+    let bass_matrix = [
+        [0.4, 0.3, 0.1, 0.1, 0.1],
+        [0.3, 0.2, 0.3, 0.1, 0.1],
+        [0.2, 0.2, 0.2, 0.3, 0.1],
+        [0.1, 0.2, 0.2, 0.2, 0.3],
+        [0.2, 0.1, 0.1, 0.2, 0.4]
+    ];
+
+    seed(42);
+    let bass_sequence = array_seq_markov(bass_matrix, 0, 64);
+    print("Bass sequence generated");
+
+    // MELODY - Different Markov chain
+    let melody_scale = [57, 60, 62, 64, 67];  // A3, C4, D4, E4, G4
+
+    let melody_matrix = [
+        [0.2, 0.3, 0.2, 0.2, 0.1],
+        [0.2, 0.2, 0.3, 0.2, 0.1],
+        [0.1, 0.3, 0.2, 0.3, 0.1],
+        [0.2, 0.2, 0.3, 0.2, 0.1],
+        [0.3, 0.2, 0.1, 0.1, 0.3]
+    ];
+
+    seed(999);
+    let melody_sequence = array_seq_markov(melody_matrix, 0, 32);
+    print("Melody sequence generated\n");
+
+    print("=== Track Running - All Parts Playing ===\n");
+
+    thread kick {
+        loop {
+            next = array_loop_forward(kick_pattern);
+            if (next == 1) {
+                synth("kick", freq: 55, amp: 1.0);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread snare {
+        loop {
+            next = array_loop_forward(snare_pattern);
+            if (next == 1) {
+                synth("snare", freq: 200, amp: 0.8);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread hat_closed {
+        loop {
+            next = array_loop_forward(hat_pattern);
+            if (next == 1) {
+                synth("hat_closed", freq: 10000, amp: 0.3);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread hat_open {
+        loop {
+            next = array_loop_forward(hat_open_pattern);
+            if (next == 1) {
+                synth("hat_open", freq: 8000, amp: 0.4);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread bass {
+        wait(0.25);
+        loop {
+            next_state = array_loop_forward(bass_sequence);
+            let midi = bass_scale[next_state];
+            synth("bass", freq: mtof(midi), amp: 0.6);
+            wait(0.5);
+        }
+    }
+
+    thread melody {
+        loop {
+            next_state = array_loop_forward(melody_sequence);
+            let midi = melody_scale[next_state];
+            synth("lead", freq: mtof(midi), amp: 0.4);
+            wait(1);
+        }
+    }
+
+    // Change snare pattern every 8 beats
+    thread pattern_changer {
+        necklace_index = 1;
+        loop {
+            wait(8);
+            necklace_index = (necklace_index + 1) % count(snare_necklaces);
+            let new_binary = snare_necklaces[necklace_index];
+            snare_pattern = binary_to_array(new_binary);
+            array_beginning(snare_pattern);
+            print("Changed snare to: ", new_binary);
+        }
+    }
+}

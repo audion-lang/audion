@@ -1,0 +1,103 @@
+// Algorithmic Composition - Automata and randomized selection
+
+bpm(110);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define pluck(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.001, 0, 0.25);
+    out(0, sig * amp);
+}
+
+fn main() {
+    print("\n=== Subset Sampling ===");
+    // Randomly select notes from a larger palette
+    let all_notes = [60, 62, 64, 65, 67, 69, 71, 72, 74, 76];
+    let selected = array_mel_subset_sample(all_notes, 5);
+    print("Selected 5 notes from palette:", selected);
+
+    // Use subset for a phrase
+    let phrase1 = [];
+    for (i = 0; i < 8; i += 1) {
+        let note_idx = int(rand(0, count(selected)));
+        array_push(phrase1, selected[note_idx]);
+    }
+    print("Generated phrase:", phrase1);
+
+    print("\n=== Finite Automaton Melodies ===");
+    // Define a simple automaton for melodic patterns
+    // State 0: can go to state 1 (output "up") or state 2 (output "down")
+    // State 1: goes back to state 0 (output "stay")
+    // State 2: goes back to state 0 (output "stay")
+    let automaton = [
+        [[1, "u"], [2, "d"]],  // State 0: go up or down
+        [[0, "s"]],            // State 1: stay
+        [[0, "s"]]             // State 2: stay
+    ];
+
+    // Generate all 4-step patterns starting and ending at state 0
+    let patterns = array_mel_automaton(automaton, 0, [0], 4);
+    print("Generated", count(patterns), "melodic patterns:");
+    for (i = 0; i < count(patterns); i += 1) {
+        print("  Pattern", i, ":", patterns[i]);
+    }
+
+    print("\n=== Probabilistic Automaton ===");
+    // Create a probabilistic automaton for more natural variation
+    // Each state has probabilistic transitions
+    let prob_automaton = [
+        [[1, "up", 0.6], [2, "down", 0.4]],      // State 0: 60% up, 40% down
+        [[0, "stay", 0.7], [1, "leap", 0.3]],    // State 1: 70% stay, 30% leap
+        [[0, "stay", 0.8], [2, "repeat", 0.2]]   // State 2: 80% stay, 20% repeat
+    ];
+
+    print("\nProbabilistic patterns:");
+    for (i = 0; i < 3; i += 1) {
+        let pattern = array_mel_probabilistic_automaton(prob_automaton, 0, 6);
+        print("  Generated:", pattern);
+    }
+
+    print("\n=== Playing a deterministic pattern ===");
+    // Convert first automaton pattern to actual notes
+    if (count(patterns) > 0) {
+        let pattern = patterns[0];
+        print("Playing pattern:", pattern);
+
+        let melody = [];
+        let current_note = 60;
+        array_push(melody, current_note);
+
+        let pattern_chars = str_explode("", pattern);
+        for (i = 0; i < count(pattern_chars); i += 1) {
+            let move = pattern_chars[i];
+            if (move == "u") {
+                current_note = current_note + 2;
+            }
+            if (move == "d") {
+                current_note = current_note - 2;
+            }
+            // "s" = stay (no change)
+            array_push(melody, current_note);
+        }
+
+        print("Resulting melody:", melody);
+
+        thread player {
+            array_beginning(melody);
+            loop {
+                let note = array_loop_forward(melody);
+                if (note != nil) {
+                    synth("pluck", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.4);
+                    wait(1/3);
+                }
+            }
+        }
+    }
+}

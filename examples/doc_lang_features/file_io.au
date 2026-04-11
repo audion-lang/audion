@@ -1,0 +1,12 @@
+// bpm(120);
+
+fn main()
+{
+    // write and read files
+    file_write("test.out", 12345);
+    readSome = file_read("test.out");
+    print(readSome);
+
+    // scan directories
+    print(dir_scan("./"));
+}

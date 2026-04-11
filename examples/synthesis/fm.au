@@ -1,0 +1,280 @@
+// fm.au — FM Synthesis
+// From simple 2-operator to 8-operator Digitone/DX7/Operator territory.
+// Each operator is a sine oscillator. Modulators feed into carrier frequencies.
+// Higher modulation index = more sidebands = brighter/harsher timbre.
+
+bpm(120);
+
+// ============================================================
+// SYNTH DEFINITIONS
+// ============================================================
+
+// --- 2-Operator FM ---
+// One modulator → one carrier. The classic FM voice.
+// ratio: modulator frequency ratio (integer = harmonic, non-integer = inharmonic/bell-like)
+// index: modulation depth (0 = pure sine, higher = more harmonics)
+// fb: modulator self-feedback (0–~1.5, adds noise/grit)
+define fm2(freq, amp, gate, ratio, index, fb, atk, sus, rel) {
+    let mf = freq * ratio;
+    let mod = SinOscFB(mf, fb) * mf * index;
+    out(0, pan(0, sine(freq + mod) * env(gate, atk, sus, rel) * amp));
+}
+
+// --- 4-Operator FM: Serial Chain ---
+// op4 → op3 → op2 → op1 (carrier)
+// Full serial chain — deeply complex spectra, metallic bells, evolving timbres.
+// r1–r4: frequency ratios, x1–x4: modulation indices, fb: op4 self-feedback
+define fm4_serial(freq, amp, gate,
+                  r1, r2, r3, r4,
+                  x1, x2, x3, x4,
+                  fb, atk, sus, rel) {
+    let f4 = freq * r4;
+    let op4 = SinOscFB(f4, fb) * f4 * x4;
+    let f3 = freq * r3;
+    let op3 = sine(f3 + op4) * f3 * x3;
+    let f2 = freq * r2;
+    let op2 = sine(f2 + op3) * f2 * x2;
+    let op1 = sine(freq * r1 + op2);
+    out(0, pan(0, op1 * env(gate, atk, sus, rel) * amp));
+}
+
+// --- 4-Operator FM: Parallel Pairs ---
+// [op2 → op1] + [op4 → op3]
+// Two independent FM voices mixed. Rich, layered sound.
+// mix: crossfade between pair A and pair B (0 = pair A only, 1 = pair B only)
+define fm4_pairs(freq, amp, gate,
+                 r1, r2, r3, r4,
+                 x2, x4,
+                 mix, fb1, fb2,
+                 atk, sus, rel) {
+    let f2 = freq * r2;
+    let op2 = sine(f2) * f2 * x2;
+    let op1 = SinOscFB(freq * r1 + op2, fb1);
+    let f4 = freq * r4;
+    let op4 = sine(f4) * f4 * x4;
+    let op3 = SinOscFB(freq * r3 + op4, fb2);
+    let sig = op1 * (1 - mix) + op3 * mix;
+    out(0, pan(0, sig * env(gate, atk, sus, rel) * amp));
+}
+
+// --- 8-Operator FM: Four Carrier/Modulator Pairs (Digitone-style) ---
+// [mod1 → car1] + [mod2 → car2] + [mod3 → car3] + [mod4 → car4]
+//
+// c1–c4: carrier frequency ratios
+// m1–m4: modulator frequency ratios
+// x1–x4: modulation indices per pair (brightness)
+// fb1–fb4: carrier self-feedback per pair (grit/noise)
+// a1–a4: output level per pair (mix balance)
+define fm8(freq, amp, gate,
+           c1, c2, c3, c4,
+           m1, m2, m3, m4,
+           x1, x2, x3, x4,
+           fb1, fb2, fb3, fb4,
+           a1, a2, a3, a4,
+           atk, sus, rel) {
+    // Pair 1
+    let mf1 = freq * m1;
+    let mod1 = sine(mf1) * mf1 * x1;
+    let car1 = SinOscFB(freq * c1 + mod1, fb1) * a1;
+    // Pair 2
+    let mf2 = freq * m2;
+    let mod2 = sine(mf2) * mf2 * x2;
+    let car2 = SinOscFB(freq * c2 + mod2, fb2) * a2;
+    // Pair 3
+    let mf3 = freq * m3;
+    let mod3 = sine(mf3) * mf3 * x3;
+    let car3 = SinOscFB(freq * c3 + mod3, fb3) * a3;
+    // Pair 4
+    let mf4 = freq * m4;
+    let mod4 = sine(mf4) * mf4 * x4;
+    let car4 = SinOscFB(freq * c4 + mod4, fb4) * a4;
+    // Sum all carriers
+    let sig = car1 + car2 + car3 + car4;
+    out(0, pan(0, sig * env(gate, atk, sus, rel) * amp));
+}
+
+// --- 8-Operator FM: Full Serial Chain ---
+// op8 → op7 → op6 → op5 → op4 → op3 → op2 → op1 (carrier)
+// Maximum modulation complexity. Deeply metallic, alien, crystalline.
+// r1–r8: frequency ratios, x1–x8: modulation indices, fb: op8 self-feedback
+define fm8_serial(freq, amp, gate,
+                  r1, r2, r3, r4, r5, r6, r7, r8,
+                  x1, x2, x3, x4, x5, x6, x7, x8,
+                  fb, atk, sus, rel) {
+    let f8 = freq * r8;
+    let op8 = SinOscFB(f8, fb) * f8 * x8;
+    let f7 = freq * r7;
+    let op7 = sine(f7 + op8) * f7 * x7;
+    let f6 = freq * r6;
+    let op6 = sine(f6 + op7) * f6 * x6;
+    let f5 = freq * r5;
+    let op5 = sine(f5 + op6) * f5 * x5;
+    let f4 = freq * r4;
+    let op4 = sine(f4 + op5) * f4 * x4;
+    let f3 = freq * r3;
+    let op3 = sine(f3 + op4) * f3 * x3;
+    let f2 = freq * r2;
+    let op2 = sine(f2 + op3) * f2 * x2;
+    let op1 = sine(freq * r1 + op2);
+    out(0, pan(0, op1 * env(gate, atk, sus, rel) * amp));
+}
+
+// --- 8-Operator FM with Reverb + LFO-modulated filter ---
+// Same 4-pair architecture but with built-in effects.
+// Good for ambient/pad use without external processing.
+define fm8_lush(freq, amp, gate,
+                c1, c2, c3, c4,
+                m1, m2, m3, m4,
+                x1, x2, x3, x4,
+                fb1, fb2, fb3, fb4,
+                a1, a2, a3, a4,
+                filt, lfo_rate, lfo_depth,
+                rmix, rroom, rdamp,
+                atk, sus, rel) {
+    let mf1 = freq * m1;
+    let mod1 = sine(mf1) * mf1 * x1;
+    let car1 = SinOscFB(freq * c1 + mod1, fb1) * a1;
+    let mf2 = freq * m2;
+    let mod2 = sine(mf2) * mf2 * x2;
+    let car2 = SinOscFB(freq * c2 + mod2, fb2) * a2;
+    let mf3 = freq * m3;
+    let mod3 = sine(mf3) * mf3 * x3;
+    let car3 = SinOscFB(freq * c3 + mod3, fb3) * a3;
+    let mf4 = freq * m4;
+    let mod4 = sine(mf4) * mf4 * x4;
+    let car4 = SinOscFB(freq * c4 + mod4, fb4) * a4;
+    let raw = car1 + car2 + car3 + car4;
+    let filtered = lpf(raw, filt + lfo_sine(lfo_rate) * lfo_depth);
+    let wet = reverb(filtered * env(gate, atk, sus, rel) * amp, rmix, rroom, rdamp);
+    out(0, pan(lfo_tri(0.07), wet));
+}
+
+
+// ============================================================
+// MUSICAL EXAMPLE
+// ============================================================
+
+fn main() {
+    wait_ms(500);
+
+    // Shared node references for cross-thread modulation
+    pad_node = nil;
+
+    // --- Evolving 8-operator FM pad ---
+    thread fm_pad {
+        seed("fm_cosmos");
+        notes = [48, 55, 60, 63, 67, 72, 60, 55];
+        ni = 0;
+        loop {
+            if (pad_node != nil) { set(pad_node, gate: 0); wait(1); free(pad_node); }
+            wait(0.05);
+            pad_node = synth("fm8_lush",
+                freq: mtof(notes[ni % count(notes)]),
+                amp: 0.06,
+                gate: 1,
+                // Carrier ratios: fundamental, octave, fifth, slight detune
+                c1: 1, c2: 2, c3: 1.498, c4: 0.999,
+                // Modulator ratios: harmonics + inharmonic color
+                m1: 3, m2: 4.01, m3: 7, m4: 0.5,
+                // Modulation indices: brightness per pair
+                x1: 0.8, x2: 0.3, x3: 0.1, x4: 1.5,
+                // Feedback: subtle warmth
+                fb1: 0.2, fb2: 0, fb3: 0.1, fb4: 0.3,
+                // Pair output levels
+                a1: 0.4, a2: 0.25, a3: 0.15, a4: 0.2,
+                // Filter + LFO
+                filt: 3000, lfo_rate: 0.15, lfo_depth: 1500,
+                // Reverb
+                rmix: 0.5, rroom: 0.85, rdamp: 0.3,
+                atk: 1.5, sus: 1, rel: 4
+            );
+            ni += 1;
+            wait(4);
+        }
+    }
+
+    /*
+    // --- Slowly evolve the pad's FM indices over time ---
+    thread fm_morph {
+        seed("morph_drift");
+        loop {
+            wait(2);
+            if (pad_node != nil) {
+                set(pad_node,
+                    x1: rand(0.2, 2.5),
+                    x2: rand(0, 1.8),
+                    x3: rand(0, 0.6),
+                    x4: rand(0.3, 2),
+                    fb1: rand(0, 0.5),
+                    fb4: rand(0, 0.6),
+                    filt: rand(1500, 6000)
+                );
+            }
+        }
+    }
+
+    // --- Metallic percussion with 4-op serial chain ---
+    thread fm_perc {
+        seed("metal_rain");
+        loop {
+            synth("fm4_serial",
+                freq: rand(200, 2000),
+                amp: rand(0.02, 0.07),
+                gate: 1,
+                r1: 1, r2: 1.41, r3: 2.76, r4: 4.07,
+                x1: 0, x2: rand(0.5, 2), x3: rand(0.1, 1), x4: rand(0.2, 0.8),
+                fb: rand(0, 0.5),
+                atk: 0.001, sus: 0, rel: rand(0.15, 1.2)
+            );
+            wait(0.25);
+        }
+    }
+
+    // --- Deep FM bass with 2-op simplicity ---
+    thread fm_bass {
+        seed("sub_pulse");
+        bass_notes = [36, 36, 38, 36, 34, 36, 31, 33];
+        bi = 0;
+        bass_node = nil;
+        loop {
+            if (bass_node != nil) { set(bass_node, gate: 0); }
+            wait(0.02);
+            bass_node = synth("fm2",
+                freq: mtof(bass_notes[bi % count(bass_notes)]),
+                amp: 0.12,
+                gate: 1,
+                ratio: 1,
+                index: rand(0.5, 2.5),
+                fb: rand(0, 0.3),
+                atk: 0.01, sus: 1, rel: 0.4
+            );
+            bi += 1;
+            wait(1);
+        }
+    }
+
+    // --- Alien texture: 8-op serial chain (sparse, long tails) ---
+    thread fm_alien {
+        seed("xenomorph");
+        alien_notes = [72, 79, 84, 88, 91, 96, 84, 79];
+        ai = 0;
+        loop {
+            synth("fm8_serial",
+                freq: mtof(alien_notes[ai % count(alien_notes)]),
+                amp: 0.03,
+                gate: 1,
+                r1: 1, r2: 1.19, r3: 2.41, r4: 3.14,
+                r5: 4.67, r6: 5.03, r7: 7.11, r8: 9.01,
+                x1: 0, x2: rand(0.01, 0.1), x3: rand(0.01, 0.08),
+                x4: rand(0.01, 0.05), x5: rand(0.01, 0.04),
+                x6: rand(0.01, 0.03), x7: rand(0.005, 0.02),
+                x8: rand(0.005, 0.015),
+                fb: rand(0, 0.3),
+                atk: 0.5, sus: 0, rel: rand(3, 8)
+            );
+            ai += 1;
+            wait(rand(2, 6));
+        }
+    }
+    */
+}

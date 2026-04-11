@@ -1,0 +1,78 @@
+// Constrained Lattice Walks - No backtracking and with pauses
+
+bpm(120);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define bell(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.001, 0.5, 0.3);
+    out(0, sig * amp);
+}
+
+fn direction_to_interval(dir) {
+    // Map directions to melodic intervals
+    if (dir == "r") { return 2; }       // right = up 2 semitones
+    if (dir == "l") { return -2; }      // left = down 2 semitones
+    if (dir == "u") { return 3; }       // up = up 3 semitones
+    if (dir == "d") { return -3; }      // down = down 3 semitones
+    if (dir == "s") { return 0; }       // stop = repeat note
+    return 0;
+}
+
+fn walk_to_melody(walk_str, start_note) {
+    let walk_array = str_explode("", walk_str);
+    let melody = [];
+    array_push(melody, start_note);
+    let current = start_note;
+    let i = 0;
+    while (i < count(walk_array)) {
+        let dir = walk_array[i];
+        current = current + direction_to_interval(dir);
+        array_push(melody, current);
+        i = i + 1;
+    }
+    return melody;
+}
+
+fn main() {
+    print("\n=== Lattice Walk Without Backtracking ===");
+    // Generate walks that never retrace the previous step
+    // More "forward-moving" melodies
+    let no_retrace = array_mel_lattice_walk_square_no_retrace(3, 3, 0, 0, 2, 2, 4);
+    print("Found", count(no_retrace), "non-backtracking paths");
+
+    print("\n=== Lattice Walk With Pauses ===");
+    // Generate walks that can stay at a position (up to 2 consecutive stops)
+    // Creates rhythmic repetition in melodies
+    let with_stops = array_mel_lattice_walk_square_with_stops(3, 3, 0, 0, 2, 2, 2, 6);
+    print("Found", count(with_stops), "paths with stops");
+
+    // Play the first walk with stops
+    if (count(with_stops) > 0) {
+        let walk = with_stops[0];
+        print("\nPlaying walk with stops:", walk);
+        let melody = walk_to_melody(walk, 60);
+
+        thread player {
+            let i = 0;
+            loop {
+                if (i >= count(melody)) {
+                    i = 0;
+                }
+                let note = melody[i];
+                if (note != nil) {
+                    synth("bell", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.4);
+                }
+                wait(1/2);
+                i = i + 1;
+            }
+        }
+    }
+}

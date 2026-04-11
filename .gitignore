@@ -1,0 +1,17 @@
+# agents
+.claude/*
+
+# builds
+/target
+
+# cruft
+/examples/ignore_*
+
+# tasks
+TODO*
+
+# fs
+**/.DS_Store
+
+# tools
+graphics/logo.af~lock~

@@ -1,0 +1,47 @@
+// Random Walk Melodies - Bounded random pitch generation
+
+bpm(90);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+
+// Simple synth for playing melodies
+define melody(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.01, 0, 0.3);
+    out(0, sig * amp);
+}
+
+fn main() {
+    seed("drama");
+    // Generate a random walk melody
+    // Starts at MIDI note 60 (C4), walks between 48-72 with max step of 2 semitones
+    let walk1 = array_mel_random_walk(60, 48, 72, 2, 16);
+    print("Random walk melody:", walk1);
+
+    // Another walk with larger steps - more dramatic
+    let walk2 = array_mel_random_walk(60, 48, 72, 5, 16);
+    print("Dramatic walk:", walk2);
+
+    // Smooth walk with tiny steps
+    let smooth_walk = array_mel_random_walk(60, 55, 65, 0.5, 16);
+    print("Smooth walk:", smooth_walk);
+
+    // Play the first walk
+    thread player {
+
+        loop {
+            let note = array_loop_forward(walk2);
+            if (note != nil) {
+                synth("melody", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.3);
+                wait(1/3);
+            }
+        }
+    }
+}

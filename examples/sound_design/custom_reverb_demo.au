@@ -1,0 +1,84 @@
+// Feedback Delay Network (FDN) Reverb
+// Based on SuperCollider's LocalIn/LocalOut feedback reverb example
+// This is a high-quality reverb using 4 delay lines cross-mixed in a matrix
+
+bpm(120);
+
+// FDN Reverb - reads from input bus, outputs to main
+define fdn_reverb(in_bus, decay, freq) {
+    // Read input from bus (stereo)
+    let input = in(in_bus, 2);
+
+    // Read our 4-channel delayed signals back from the feedback loop
+    let delrd = local_in(4);
+
+    // Mix input with feedback
+    let output = input + delrd[0] + delrd[1];
+
+    // Cross-fertilise the four delay lines with each other (Hadamard-like matrix):
+    // This creates the diffusion that makes it sound like reverb
+    let sum_lr = output[0] + output[1];
+    let diff_lr = output[0] - output[1];
+    let sum_fb = delrd[2] + delrd[3];
+    let diff_fb = delrd[2] - delrd[3];
+
+    // Mix and attenuate in one step (decay values control reverb time)
+    let sig0 = (sum_lr + sum_fb) * (0.4 * decay);
+    let sig1 = (diff_lr + diff_fb) * (0.3 * decay);
+    let sig2 = freq_shift((sum_lr - sum_fb) * (0.2 * decay), freq, 0);
+    let sig3 = (diff_lr - diff_fb) * (0.1 * decay);
+
+    // Prime number delay times in seconds for dense, non-metallic reverb
+    // 101ms, 143ms, 165ms, 177ms
+    let time0 = (0.101);
+    let time1 = (0.143);
+    let time2 = (0.165);
+    let time3 = (0.177);
+
+    // Apply delays - DelayC is cubic interpolation delay
+    let delayed0 = delay_c(sig0, 0.2, time0);
+    let delayed1 = delay_c(sig1, 0.2, time1);
+    let delayed2 = delay_c(sig2, 0.2, time2);
+    let delayed3 = delay_c(sig3, 0.2, time3);
+
+    // Feed back into the delay network
+    local_out(array(delayed0, delayed1, delayed2, delayed3));
+
+    // Output stereo to main
+    out(0, output);
+}
+
+// Simple kick that sends to reverb bus
+define kick(freq, amp, gate, send, reverb_bus) {
+    let sig = sine(freq) * env(gate, 0.001, 0, 0.4) * amp;
+
+    // Dry signal
+    out(0, sig * (1 - send));
+    out(1, sig * (1 - send));
+
+    // Wet signal to reverb
+    out(reverb_bus, sig * send);
+    out(reverb_bus+1, sig * send);
+}
+
+// Setup
+let reverb_bus = 2;
+print("Starting FDN reverb on bus " + str(reverb_bus));
+
+// Start the reverb (decay 1.0 = long reverb, 0.5 = short)
+reverb = synth("fdn_reverb", in_bus: reverb_bus, decay: 0.19, freq: 440);
+
+thread sound {
+    // Play some kicks with reverb
+    loop {
+        synth("kick", freq: 60 + rand() * 210, amp: 0.5, send: 0.8, reverb_bus: reverb_bus);
+        wait(0.5);
+    }
+}
+
+thread edit_reverb {
+    loop {
+        set(reverb, decay: rand(0.5, 0.891876), freq: rand(90, 600));
+        wait(8);
+    }
+}

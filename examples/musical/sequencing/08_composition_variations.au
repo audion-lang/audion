@@ -1,0 +1,96 @@
+// Composition Variations - Allowed Parts and Constrained Rhythms
+// Demonstrates composition algorithms with constraints
+
+bpm(130);
+
+define kick(freq, amp, gate) {
+    out(0, sine(60) * env(gate, 0.001, 0, 0.2) * amp);
+}
+
+define snare(freq, amp, gate) {
+    out(0, noise() * env(gate, 0.01, 0, 0.15) * amp);
+}
+
+define hat(freq, amp, gate) {
+    out(0, noise() * env(gate, 0.001, 0, 0.05) * amp);
+}
+
+fn main() {
+    print("=== Composition Variations ===\n");
+
+    // 1. Compositions with allowed parts only
+    // Generate compositions of 8 using only 2s and 3s
+    // Great for creating rhythmic patterns with specific note values
+    let allowed_comps = array_seq_compositions_allowed(8, [2, 3]);
+    print("Compositions of 8 using only 2s and 3s:");
+    for (i = 0; i < count(allowed_comps); i += 1) {
+        print("  ", i, ": ", allowed_comps[i]);
+    }
+    print("Total: ", count(allowed_comps), " patterns\n");
+
+    // 2. Compositions into exactly m parts
+    // Force a specific number of subdivisions
+    let m_part_comps = array_seq_compositions_m_parts(7, 3);
+    print("Compositions of 7 into exactly 3 parts:");
+    for (i = 0; i < count(m_part_comps); i += 1) {
+        print("  ", i, ": ", m_part_comps[i]);
+    }
+    print("Total: ", count(m_part_comps), " patterns\n");
+
+    // 3. Both constraints combined
+    let constrained = array_seq_compositions_allowed_m_parts(9, 3, [2, 3]);
+    print("Compositions of 9 into 3 parts using only 2s and 3s:");
+    for (i = 0; i < count(constrained); i += 1) {
+        print("  ", i, ": ", constrained[i]);
+    }
+    print("");
+
+    // 4. Random compositions for generative patterns
+    seed(12345);
+    let random_comp = array_seq_composition_random(12);
+    print("Random composition of 12: ", random_comp);
+
+    let random_m = array_seq_composition_random_m_parts(16, 4);
+    print("Random composition of 16 into 4 parts: ", random_m);
+    print("");
+
+    // Play a rhythmic pattern using allowed compositions
+    thread kick_pattern {
+        let pattern_idx = 0;
+        let patterns = array_seq_compositions_allowed(8, [1, 2, 3]);
+        let current = patterns[0];
+
+        loop {
+            for (i = 0; i < count(current); i += 1) {
+                synth("kick", amp: 0.8);
+                wait(current[i] * 0.25);
+            }
+
+            // Switch to next pattern every cycle
+            pattern_idx = (pattern_idx + 1) % count(patterns);
+            current = patterns[pattern_idx];
+        }
+    }
+
+    thread snare_accent {
+        wait(2); // Offset
+        loop {
+            synth("snare", amp: 0.4);
+            wait(2);
+        }
+    }
+
+    thread hats_random {
+        seed(42);
+        wait(0.5);
+        loop {
+            // Generate new random composition every bar
+            let rhythm = array_seq_composition_random_m_parts(8, 4);
+
+            for (i = 0; i < count(rhythm); i += 1) {
+                synth("hat", amp: rand(0.2, 0.4));
+                wait(rhythm[i] * 0.25);
+            }
+        }
+    }
+}

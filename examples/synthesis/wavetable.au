@@ -1,0 +1,298 @@
+// wavetable.au — 3D Wavetable Synthesis, TODO fix errors
+// Three samples as wavetable sources arranged in a morphing space.
+// Navigate through samples with 3 axes:
+//   X (left/right):    morph between sample 1 and sample 2
+//   Y (up/down):       morph between the X-mix and sample 3
+//   Z (forward/back):  filter sweep — spectral movement through the timbre
+//
+// Samples loop continuously, pitched to freq via root note.
+// LFO orbits through the 3D space for evolving timbres.
+
+bpm(105);
+
+// ============================================================
+// SYNTH DEFINITIONS
+// ============================================================
+
+
+// --- Basic 3-Sample Morph ---
+// Manual control: set mx, my, filt via set() from a thread.
+// mx: morph X (0 = sample 1, 1 = sample 2)
+// my: morph Y (0 = X-mix, 1 = sample 3)
+// filt: lowpass cutoff (the Z axis — spectral depth)
+define wt_morph(freq, amp, gate,
+                mx, my, filt, res,
+                atk, sus, rel) {
+    let s1 = sample("/Volumes/worx/samples/kit_wavetables2/fm/analog-arpsaw.wav", root: 90, loop: 1);
+    let s2 = sample("/Volumes/worx/samples/kit_wavetables2/fm/fm-sawfm8.wav", root: 90, loop: 1);
+    let s3 = sample("/Volumes/worx/samples/kit_wavetables2/fm/fm-sticky.wav", root: 90, loop: 1);
+
+    // X axis: blend sample 1 ↔ sample 2
+    let xy = s1 * (1 - mx) + s2 * mx;
+    // Y axis: blend X-result ↔ sample 3
+    let sig = xy * (1 - my) + s3 * my;
+    // Z axis: filter = spectral movement
+    out(0, pan(0, rlpf(sig, filt, res) * env(gate, atk, sus, rel) * amp));
+}
+
+// --- Auto-Morphing 3D Wavetable ---
+// LFOs orbit through all 3 axes automatically.
+// mx_rate, my_rate: morph LFO speeds (use different values for complex orbits)
+// filt_center, filt_depth, filt_rate: filter LFO parameters
+define wt_auto(freq, amp, gate,
+               mx_rate, my_rate,
+               filt_center, filt_depth, filt_rate,
+               rmix, rroom, rdamp,
+               atk, sus, rel) {
+    let s1 = sample("examples/samples/FX_Fuser.wav", root: 60, loop: 1);
+    let s2 = sample("examples/samples/FX_Substance.wav", root: 60, loop: 1);
+    let s3 = sample("examples/samples/FX_Nawty.wav", root: 60, loop: 1);
+    // Auto-orbiting morph position
+    let mx = lfo_sine(mx_rate) * 0.5 + 0.5;
+    let my = lfo_sine(my_rate) * 0.5 + 0.5;
+    let xy = s1 * (1 - mx) + s2 * mx;
+    let raw = xy * (1 - my) + s3 * my;
+    // Z axis: LFO-modulated filter
+    let filt = filt_center + lfo_tri(filt_rate) * filt_depth;
+    let sig = lpf(raw, filt) * env(gate, atk, sus, rel) * amp;
+    out(0, pan(lfo_sine(0.08), reverb(sig, rmix, rroom, rdamp)));
+}
+
+// --- Wavetable with Detuned Layers ---
+// Each sample plays at slightly different pitches for a thick, wide sound.
+// spread: detune amount in cents between layers
+define wt_thick(freq, amp, gate,
+                mx, my, spread,
+                filt, filt_q,
+                atk, sus, rel) {
+    // Detuned pairs of each sample for thickness
+    let dt = spread * 0.01;
+    let s1a = sample("examples/samples/FX_Fuser.wav", root: 60, loop: 1, detune: 0 - spread);
+    let s1b = sample("examples/samples/FX_Fuser.wav", root: 60, loop: 1, detune: spread);
+    let s2a = sample("examples/samples/FX_Substance.wav", root: 60, loop: 1, detune: 0 - spread);
+    let s2b = sample("examples/samples/FX_Substance.wav", root: 60, loop: 1, detune: spread);
+    let s3a = sample("examples/samples/FX_Nawty.wav", root: 60, loop: 1, detune: 0 - spread);
+    let s3b = sample("examples/samples/FX_Nawty.wav", root: 60, loop: 1, detune: spread);
+    // Stereo-widened layers
+    let s1 = s1a + s1b;
+    let s2 = s2a + s2b;
+    let s3 = s3a + s3b;
+    // 3D morph
+    let xy = s1 * (1 - mx) + s2 * mx;
+    let sig = xy * (1 - my) + s3 * my;
+    out(0, pan(0, rlpf(sig * 0.5, filt, filt_q) * env(gate, atk, sus, rel) * amp));
+}
+
+// --- Wavetable + Granular Hybrid ---
+// Looped sample morphing layered with a granular texture from the same sources.
+// Gives both the smooth wavetable morph AND grainy particle detail.
+// bufnum: buffer_load'd version of one of the samples for GrainBuf
+define wt_granular(freq, amp, gate, bufnum,
+                   mx, my, filt,
+                   gdensity, gsize, gspray,
+                   grain_mix,
+                   atk, sus, rel) {
+    // Smooth wavetable layer
+    let s1 = sample("examples/samples/FX_Fuser.wav", root: 60, loop: 1);
+    let s2 = sample("examples/samples/FX_Substance.wav", root: 60, loop: 1);
+    let s3 = sample("examples/samples/FX_Nawty.wav", root: 60, loop: 1);
+    let xy = s1 * (1 - mx) + s2 * mx;
+    let smooth = xy * (1 - my) + s3 * my;
+    // Granular layer from the buffer
+    let trig = Dust(gdensity);
+    let gpos = Wrap(lfo_saw(0.05) * 0.5 + 0.5 + TRand(0 - gspray, gspray, trig), 0, 1);
+    let grains = GrainBuf(1, trig, gsize, bufnum, 1, gpos, 2, 0);
+    // Blend smooth wavetable + granular
+    let sig = smooth * (1 - grain_mix) + grains * grain_mix;
+    out(0, pan(0, lpf(sig, filt) * env(gate, atk, sus, rel) * amp));
+}
+
+
+// ============================================================
+// MUSICAL EXAMPLE
+// ============================================================
+
+fn main() {
+    // Load a buffer for the granular hybrid
+    grain_buf = buffer_load("examples/samples/FX_Nawty.wav");
+    wait_ms(1000);
+
+    morph_node = nil;
+    thick_node = nil;
+
+    // --- Slowly evolving 3D wavetable pad ---
+    thread wt_pad {
+        seed("wt_orbit");
+        notes = [48, 50, 53, 55, 60, 62, 65, 55];
+        ni = 0;
+        loop {
+            if (morph_node != nil) { set(morph_node, gate: 0); }
+            wait(0.05);
+            morph_node = synth("wt_auto",
+                freq: mtof(notes[ni % count(notes)]),
+                amp: 0.1,
+                gate: 1,
+                mx_rate: 0.07,
+                my_rate: 0.11,
+                filt_center: 3000,
+                filt_depth: 2000,
+                filt_rate: 0.05,
+                rmix: 0.45,
+                rroom: 0.85,
+                rdamp: 0.3,
+                atk: 2,
+                sus: 1,
+                rel: 4
+            );
+            ni += 1;
+            wait(6);
+        }
+    }
+
+
+    thread wt_morpha {
+        seed("wt_morpha");
+        notes = [48, 50, 53, 55, 60, 62, 65, 55];
+        ni = 0;
+        loop {
+            if (morph_node != nil) { set(morph_node, gate: 0); }
+            wait(0.05);
+            morph_node = synth("wt_morph",
+                freq: mtof(notes[ni % count(notes)]),
+                amp: 0.1,
+                gate: 1,
+                mx_rate: 0.07,
+                my_rate: 0.11,
+                filt_center: 3000,
+                filt_depth: 2000,
+                filt_rate: 0.05,
+                rmix: 0.45,
+                rroom: 0.85,
+                rdamp: 0.3,
+                atk: 2,
+                sus: 1,
+                rel: 4
+            );
+            ni += 1;
+            wait(6);
+        }
+    }
+
+    // --- Morph the auto-pad parameters over time ---
+    thread wt_modulate {
+        seed("wt_sweep");
+        loop {
+            wait(3);
+            if (morph_node != nil) {
+                set(morph_node,
+                    mx_rate: rand(0.02, 0.2),
+                    my_rate: rand(0.02, 0.15),
+                    filt_center: rand(1500, 6000),
+                    filt_depth: rand(500, 4000)
+                );
+            }
+        }
+    }
+
+    // --- Thick detuned wavetable chords ---
+    thread wt_chords {
+        seed("wt_chords_thick");
+        chords = [
+            [48, 55, 60],
+            [50, 57, 62],
+            [53, 60, 65],
+            [48, 53, 60]
+        ];
+        ci = 0;
+        let chord_nodes = [];
+        loop {
+            if (count(chord_nodes)) {
+                // Release previous chord
+                for (j = 0; j < count(chord_nodes); j += 1) {
+                    set(chord_nodes[j], gate: 0);
+                }
+                chord_nodes = [];
+            }
+            wait(0.05);
+
+            chord = chords[ci % count(chords)];
+            mx = rand(0, 1);
+            my = rand(0, 1);
+
+            for (k = 0; k < count(chord); k += 1) {
+                chord_nodes[k] = synth("wt_thick",
+                    freq: mtof(chord[k]),
+                    amp: 0.04,
+                    gate: 1,
+                    mx: mx,
+                    my: my,
+                    spread: rand(5, 20),
+                    filt: rand(2000, 8000),
+                    filt_q: 0.4,
+                    atk: 1,
+                    sus: 1,
+                    rel: 3
+                );
+            }
+            ci += 1;
+            wait(8);
+        }
+    }
+
+    // --- Animate the chord morph position ---
+    thread chord_morph {
+        seed("chord_drift");
+        mx = 0.5;
+        my = 0.5;
+        filt = 5000;
+        let chord_nodes = [];
+        loop {
+            wait(0.5);
+            mx = mx + rand(0 - 0.08, 0.08);
+            my = my + rand(0 - 0.08, 0.08);
+            filt = filt + rand(0 - 300, 300);
+            if (mx < 0) { mx = 0; }
+            if (mx > 1) { mx = 1; }
+            if (my < 0) { my = 0; }
+            if (my > 1) { my = 1; }
+            if (filt < 800) { filt = 800; }
+            if (filt > 15000) { filt = 15000; }
+            for (n = 0; n < count(chord_nodes); n += 1) {
+                set(chord_nodes[n], mx: mx, my: my, filt: filt);
+            }
+        }
+    }
+
+    // --- Wavetable + Granular hybrid texture ---
+    thread wt_grain {
+        seed("wt_grain_hybrid");
+        wait(12);
+        hybrid = synth("wt_granular",
+            freq: mtof(rand(60,90)),
+            amp: 0.07,
+            gate: 1,
+            bufnum: grain_buf,
+            mx: 0.3, my: 0.5,
+            filt: 6000,
+            gdensity: 25,
+            gsize: 0.08,
+            gspray: 0.1,
+            grain_mix: 0.3,
+            atk: 4,
+            sus: 1,
+            rel: 6
+        );
+        loop {
+            wait(2);
+            set(hybrid,
+                mx: rand(0, 1),
+                my: rand(0, 1),
+                filt: rand(2000, 10000),
+                gdensity: rand(10, 60),
+                gsize: rand(0.03, 0.2),
+                gspray: rand(0.02, 0.3),
+                grain_mix: rand(0, 0.6)
+            );
+        }
+    }
+}

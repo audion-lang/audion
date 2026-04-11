@@ -1,0 +1,75 @@
+// Lattice Walk Melodies - Map grid walks to note sequences
+
+bpm(100);
+
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define pluck(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.001, 0, 0.2);
+    out(0, sig * amp * 0.5);
+}
+
+fn direction_to_interval(dir) {
+    // Map directions to melodic intervals
+    print("dir:", dir);                 // decide on these for yourself
+    if (dir == "r") { return 1; }       // right = up a whole step
+    if (dir == "l") { return -2; }      // left = down a whole 2 steps
+    if (dir == "u") { return 3; }       // up = up 3
+    if (dir == "d") { return -4; }      // down = down a half step
+    if (dir == "v") { return 5; }       // diagonal = up a minor third
+    if (dir == "e") { return -6; }      // diagonal = down a minor third
+    return 0;
+}
+
+fn walk_to_melody(walk_str, start_note) {
+    let walk_array = str_explode("", walk_str);
+    let melody = [];
+    array_push(melody, start_note);
+    let current = start_note;
+    let i = 0;
+    while (i < count(walk_array)) {
+        let dir = walk_array[i];
+        // TODO add some bounds
+        // if (current + direction_to_interval(dir) > 90 || rand(1,100) > 50) {
+        //     current = current - direction_to_interval(dir);
+        // } else {
+            current = current + direction_to_interval(dir);
+        // }
+        print("current:", current);
+        array_push(melody, current);
+        i = i + 1;
+    }
+    return melody;
+}
+
+fn main() {
+    // Generate walks on a 4x4 square lattice
+    // From (0,0) to (3,3) in 6 steps
+    let walks = array_mel_lattice_walk_square(12, 12, 0, 0, 6, 6, 12); // careful, bigger inputs will make you wait
+
+    print("Found", count(walks), "different paths");
+
+    // Take the first walk and convert to melody
+    for (a = 0; a < count(walks); a += 1) {
+        let walk = walks[a];
+        print("walk:", walk);
+        let melody = walk_to_melody(walk, 60);
+        print("melody:", melody);
+        for (b = 0; b < count(melody); b += 1) {
+            let note = melody[b];
+            if (note != nil) {
+                synth("pluck", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.4);
+                wait(1/3);
+            }
+        }
+    }
+
+}

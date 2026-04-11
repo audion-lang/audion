@@ -1,0 +1,88 @@
+// Euclidean Rhythms - Classic distributed patterns
+// Based on Godfried Toussaint's "The Euclidean Algorithm Generates Traditional Musical Rhythms"
+
+bpm(120);
+
+// Load a kick sample (you'll need a kick.wav in your directory)
+// Or use a simple synth instead
+define kick(freq, amp, gate, samplefile)
+{
+    out(0, sample("/Volumes/worx/samples/kit_909_pulse/BassDrum/BassDrum_Bereze.wav", root : 60) * env(gate, 0.001, 0, 0.93) * amp);
+}
+
+
+define snare(freq, amp, gate, samplefile)
+{
+    out(0, sample("/Volumes/worx/samples/kit_hats/Closed_Live_Space.wav", root : 60) * env(gate, 0.001, 0, 0.43) * amp);
+}
+
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+
+    // thread keyboard_listen {
+    //     loop {
+    //         let key_pressed = console_read_key();
+    //         print("key:" + key_pressed);
+    //         if (key_pressed == "c") {
+    //             os_exit(0);
+    //         }
+    //     }
+    // }
+
+
+    thread kick {
+        let kick_pattern = array_seq_euclidean(4, 16);
+        print("Kick pattern: ", kick_pattern);
+
+        loop {
+            next = array_loop_forward(kick_pattern);
+            if (next) {
+                synth("kick");
+            }
+            wait(1/4);
+        }
+    }
+
+    thread snare {
+        let snare_pattern = array_seq_euclidean(1, 16);
+        print("Snare pattern: ", snare_pattern);
+        wait(1);
+        loop {
+
+            next = array_loop_forward(snare_pattern);
+            if (next) {
+                synth("snare", amp: 0.03, freq: 90);
+            }
+            wait(1/4);
+        }
+    }
+
+
+    thread hats {
+        let hat_pattern = array_seq_euclidean(12, 18);
+        let pause_pattern = array_seq_euclidean(6, 16);
+        print("Hat pattern: ", hat_pattern);
+
+        loop {
+            next = array_loop_forward(hat_pattern);
+            if (next) {
+                synth("snare", amp: rand(0.015, 0.025));
+            }
+            next_pause = array_loop_forward(pause_pattern);
+            if (next_pause) {
+                wait(1/4);
+            } else {
+                wait(1/2);
+            }
+        }
+    }
+}
+

@@ -1,0 +1,38 @@
+// Basic two-thread drum pattern
+// Run with: audion run examples/kick_hat.au
+// Requires scsynth running on port 57110 with "default" SynthDef loaded
+
+bpm(1120);
+
+fn kick()
+{
+    synth("default", freq : 80, amp : 0.8);
+    wait(1);
+}
+
+fn hihat()
+{
+    synth("default", freq : 2000, amp : 0.2);
+    wait(0.5);
+}
+
+fn main()
+{
+    print("kick_hat pattern starting at", bpm(), "BPM");
+
+    thread kick_loop
+    {
+        loop
+        {
+            kick();
+        }
+    }
+
+    thread hat_loop
+    {
+        loop
+        {
+            hihat();
+        }
+    }
+}

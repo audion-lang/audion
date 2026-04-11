@@ -1,0 +1,99 @@
+// Binary Necklaces - Rotation-invariant circular rhythms
+// Generates all unique cyclic patterns of a given length
+
+bpm(140);
+
+define kick(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.001, 0, 0.2) * amp);
+}
+
+define rim(freq, amp, gate) {
+    out(0, noise() * env(gate, 0.001, 0, 0.05) * amp);
+}
+
+// Generate all binary necklaces of length 6
+let necklaces = array_seq_necklaces(6);
+
+print("All binary necklaces of length 6:");
+for (i = 0; i < count(necklaces); i += 1) {
+    print("  ", necklaces[i]);
+}
+print("Total: ", count(necklaces), " unique patterns\n");
+
+// Convert binary string to rhythm pattern
+fn string_to_pattern(binary_str) {
+    let pattern = [];
+    let len = str_length(binary_str);
+
+    for (i = 0; i < len; i += 1) {
+        let char = str_substr(binary_str, i, 1);
+        if (char == "1") {
+            push(pattern, 1);
+        } else {
+            push(pattern, 0);
+        }
+    }
+
+    return pattern;
+}
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+    // Generate all binary necklaces of length 8 with 3 ones
+    let necklaces = array_seq_necklaces_m_ones(8, 3);
+
+    print("Binary necklaces of length 8 with exactly 3 ones:");
+    for (i = 0; i < count(necklaces); i += 1) {
+        print("  ", necklaces[i]);
+    }
+
+    // Convert first necklace to pattern for kick
+    let kick_binary = necklaces[0];
+    let kick_pattern = string_to_pattern(kick_binary);
+    print("\nKick pattern: ", kick_binary);
+
+    // Use different necklace for rim
+    let rim_binary = necklaces[1];
+    let rim_pattern = string_to_pattern(rim_binary);
+    print("Rim pattern: ", rim_binary);
+
+    thread kick_thread {
+        loop {
+            next = array_loop_forward(kick_pattern);
+            if (next == 1) {
+                synth("kick", freq: 60, amp: 0.8);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread rim_thread {
+        loop {
+            next = array_loop_forward(rim_pattern);
+            if (next == 1) {
+                synth("rim", freq: 1000, amp: 0.4);
+            }
+            wait(1/4);
+        }
+    }
+
+    // Cycle through different necklace patterns every 8 beats
+    thread pattern_changer {
+        necklace_index = 0;
+        loop {
+            wait(8);
+            necklace_index = (necklace_index + 1) % count(necklaces);
+            let new_binary = necklaces[necklace_index];
+            kick_pattern = string_to_pattern(new_binary);
+            array_beginning(kick_pattern);
+            print("Changed to necklace: ", new_binary);
+        }
+    }
+}

@@ -1,0 +1,133 @@
+// Mathematical Sequences - Continued Fractions and Christoffel Words
+// Using mathematical sequences for melodic and rhythmic patterns
+
+bpm(120);
+
+define bell(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0.2, 0.4) * amp);
+}
+
+define bass(freq, amp, gate) {
+    out(0, sine(freq * 0.5) * env(gate, 0.01, 0.1, 0.3) * amp);
+}
+
+define pluck(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.001, 0, 0.15) * amp);
+}
+
+fn main() {
+    print("=== Mathematical Sequences ===\n");
+
+    // 1. CONTINUED FRACTIONS
+    // Get rational approximations of irrational numbers
+    print("--- Continued Fractions ---");
+
+    // Golden ratio approximation
+    let golden = array_seq_cf_convergent([1, 1, 1, 1, 1, 1, 1]);
+    print("Golden ratio ≈ ", golden[0], "/", golden[1], " = ", golden[0] / golden[1]);
+
+    // sqrt(2) approximation
+    let sqrt2 = array_seq_cf_convergent([1, 2, 2, 2, 2, 2]);
+    print("sqrt(2) ≈ ", sqrt2[0], "/", sqrt2[1], " = ", sqrt2[0] / sqrt2[1]);
+
+    // Get the full continued fraction representation
+    let cf7 = array_seq_cf_sqrt(7);
+    print("sqrt(7) = ", cf7);
+
+    let cf13 = array_seq_cf_sqrt(13);
+    print("sqrt(13) = ", cf13);
+    print("");
+
+    // 2. CHRISTOFFEL WORDS
+    // Binary patterns based on rational approximations
+    // Perfect for rhythmic patterns!
+    print("--- Christoffel Words ---");
+
+    let chris_upper_3_5 = array_seq_christoffel("upper", 3, 5);
+    print("Upper Christoffel(3/5): ", chris_upper_3_5);
+
+    let chris_lower_3_5 = array_seq_christoffel("lower", 3, 5);
+    print("Lower Christoffel(3/5): ", chris_lower_3_5);
+
+    let chris_2_3 = array_seq_christoffel("upper", 2, 3);
+    print("Upper Christoffel(2/3): ", chris_2_3);
+    print("");
+
+    // 3. PAPER FOLDING SEQUENCES
+    // Dragon curve and related sequences
+    print("--- Paper Folding ---");
+
+    let paper1 = array_seq_paper_folding(15, 3, 0);
+    print("Paper folding (15, 3, 0): ", paper1);
+
+    let paper2 = array_seq_paper_folding(15, 3, 1);
+    print("Paper folding (15, 3, 1): ", paper2);
+    print("");
+
+    // MUSICAL APPLICATION: Use Christoffel words for rhythm
+    // thread rhythm_christoffel {
+    //     let pattern = array_seq_christoffel("upper", 5, 8);
+    //     print("Playing Christoffel rhythm: ", pattern);
+
+    //     idx = 0;
+    //     loop {
+    //         let char_val = str_substr(pattern, idx, 1);
+    //         if (char_val == "1") {
+    //             synth("bass", freq: 80, amp: 0.6);
+    //         }
+    //         wait(1/4);
+    //         idx = (idx + 1) % str_length(pattern);
+    //     }
+    // }
+
+    // MUSICAL APPLICATION: Use golden ratio for melody
+    // thread melody_golden {
+    //     wait(1);
+    //     let golden_approx = array_seq_cf_convergent([1, 1, 1, 1, 1]);
+    //     let ratio = golden_approx[0] / golden_approx[1];
+
+    //     // Use the ratio to create intervals
+    //     let base_freq = 440;
+    //     loop {
+    //         synth("bell", freq: base_freq, amp: 0.3);
+    //         wait(0.5);
+    //         synth("bell", freq: base_freq * ratio, amp: 0.3);
+    //         wait(0.5);
+    //         synth("bell", freq: base_freq * ratio * ratio, amp: 0.3);
+    //         wait(1);
+    //     }
+    // }
+
+    // MUSICAL APPLICATION: Paper folding for melodic contour
+    thread melody_paper_fold {
+        wait(2);
+        let fold_seq = array_seq_paper_folding(31, 4, 2);
+
+        // Convert binary pattern to pitch contour
+        let base_note = 60; // Middle C
+        let scale = [0, 2, 4, 5, 7, 9, 11, 12]; // Major scale
+
+        idx = 0;
+        scale_pos = 0;
+        loop {
+            let char_val = str_substr(fold_seq, idx, 1);
+
+            // 1 = go up, 0 = go down
+            if (char_val == "1") {
+                scale_pos = (scale_pos + 1) % count(scale);
+            } else {
+                scale_pos = (scale_pos - 1);
+                if (scale_pos < 0) {
+                    scale_pos = count(scale) - 1;
+                }
+            }
+
+            let midi = base_note + scale[scale_pos];
+            let freq = mtof(midi);
+            synth("pluck", freq: freq, amp: 0.4);
+
+            wait(1/2);
+            idx = (idx + 1) % str_length(fold_seq);
+        }
+    }
+}

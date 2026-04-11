@@ -1,0 +1,52 @@
+// Melodic Transformations - Invert and reverse melodies
+
+bpm(110);
+
+define tone(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq) * env(gate, 0.01, 0, 0.25);
+    out(0, sig * amp);
+}
+
+fn main() {
+    // Original melody (C major scale ascending)
+    let original = [60, 62, 64, 65, 67, 69, 71, 72];
+    print("Original:", original);
+
+    // Invert around middle C (60)
+    let inverted = array_mel_invert(original, 60);
+    print("Inverted around C4:", inverted);
+
+    // Invert around G (67)
+    let inverted2 = array_mel_invert(original, 67);
+    print("Inverted around G4:", inverted2);
+
+    // Reverse the melody
+    let reversed = array_mel_reverse(original);
+    print("Reversed:", reversed);
+
+    // Reverse the inverted melody (retrograde inversion)
+    let retro_inv = array_mel_reverse(inverted);
+    print("Retrograde inversion:", retro_inv);
+
+    // Play all four transformations in sequence
+    thread player {
+        let all_melodies = [original, inverted, reversed, retro_inv];
+        let melody_idx = 0;
+
+        loop {
+            let current_melody = all_melodies[melody_idx];
+
+            let i = 0;
+            while (i < count(current_melody)) {
+                let note = current_melody[i];
+                synth("tone", freq: mtof(note), amp: 0.3);
+                wait(1/8);
+                i = i + 1;
+            }
+
+            wait(1/2);  // Pause between melodies
+            melody_idx = (melody_idx + 1) % 4;
+        }
+    }
+}

@@ -1,0 +1,43 @@
+// lerp_arrays(a, b, t) — blend two arrays element-wise
+// t=0 → all a, t=1 → all b
+// shorter array wraps (cycles) to match the longer one
+fn lerp_arrays(a, b, t) {
+    let len_a = count(a);
+    let len_b = count(b);
+    let len = math_max(len_a, len_b);
+    let result = [];
+    for (let i = 0; i < len; i += 1) {
+        let va = a[i % len_a];
+        let vb = b[i % len_b];
+        push(result, math_lerp(va, vb, t));
+    }
+    return result;
+}
+
+// multi_lerp(melodies, t) — t goes 0..1 across all melodies
+// t=0 → first, t=1 → last, values in between blend neighbors
+fn multi_lerp(melodies, t) {
+    let n = count(melodies) - 1;
+    if (n <= 0) { return melodies[0]; }
+    let pos = t * n;
+    let idx = math_min(math_floor(pos), n - 1);
+    let frac = pos - idx;
+    return lerp_arrays(melodies[idx], melodies[idx + 1], frac);
+}
+
+// --- demo ---
+
+let bright = [72, 76, 79, 84];
+let dark   = [48, 55, 60, 65, 67, 70];
+let mid    = [60, 64, 67, 72];
+
+// fade from bright to dark
+for (let t = 0; t <= 1; t += 0.25) {
+    print("t=" + str(t), lerp_arrays(bright, dark, t));
+}
+
+// sweep through 3 melodies
+let melodies = [bright, mid, dark];
+for (let t = 0; t <= 1; t += 0.2) {
+    print("multi t=" + str(t), multi_lerp(melodies, t));
+}

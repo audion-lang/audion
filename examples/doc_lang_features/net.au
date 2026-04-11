@@ -1,0 +1,135 @@
+// net.au — networking examples
+// These examples don't require scsynth — they demonstrate net_* builtins.
+
+// --- HTTP examples ---
+
+fn http_get_example()
+{
+    print("--- HTTP GET ---");
+    let resp = net_http("GET", "https://httpbin.org/get");
+    if (resp)
+    {
+        print("status:", resp.status);
+        let data = json_decode(resp.body);
+        if (data)
+        {
+            print("origin:", data.origin);
+        }
+    }
+    else
+    {
+        print("connection failed");
+    }
+}
+
+fn http_post_example()
+{
+    print("--- HTTP POST JSON ---");
+    let payload = json_encode([ "language" => "au", "version" => 1 ]);
+    let resp = net_http("POST", "https://httpbin.org/post", payload,
+                        ["Content-Type" => "application/json"]);
+    if (resp)
+    {
+        print("status:", resp.status);
+        let data = json_decode(resp.body);
+        if (data)
+        {
+            print("server echoed:", data.data);
+        }
+    }
+}
+
+// --- TCP server example ---
+// A simple echo server that accepts connections, reads a line, echoes it back.
+
+fn echo_server()
+{
+    print("--- TCP Echo Server on port 9000 ---");
+    let server = net_listen("0.0.0.0", 9000);
+    if (!server)
+    {
+        print("could not bind to port 9000");
+        return;
+    }
+    print("listening... connect with: nc localhost 9000");
+
+    // Accept a single connection for this example
+    let client = net_accept(server);
+    if (client)
+    {
+        print("client connected!");
+        let data = net_read(client);
+        if (data)
+        {
+            print("received:", data);
+            net_write(client, "echo: " + data);
+        }
+        net_close(client);
+        print("client disconnected");
+    }
+    net_close(server);
+}
+
+// --- TCP client example ---
+// Connect to a server, send a message, read the response.
+
+fn tcp_client()
+{
+    print("--- TCP Client ---");
+    let h = net_connect("httpbin.org", 80);
+    if (!h)
+    {
+        print("connection failed");
+        return;
+    }
+    net_write(h, "GET /ip HTTP/1.0\r\nHost: httpbin.org\r\n\r\n");
+    let response = net_read(h);
+    print(response);
+    net_close(h);
+}
+
+// --- Threaded server example ---
+// Accept multiple connections using threads.
+
+fn threaded_server()
+{
+    print("--- Threaded Echo Server on port 9001 ---");
+    let server = net_listen("0.0.0.0", 9001);
+    if (!server)
+    {
+        print("could not bind to port 9001");
+        return;
+    }
+    print("listening... press Ctrl+C to stop");
+
+    loop
+    {
+        let client = net_accept(server);
+        if (client)
+        {
+            // Handle each client in a thread
+            thread handler
+            {
+                let data = net_read(client);
+                if (data)
+                {
+                    print("got:", data);
+                    net_write(client, "echo: " + data);
+                }
+                net_close(client);
+            }
+        }
+    }
+}
+
+fn main()
+{
+    // Run the HTTP examples (safe, no server needed)
+    // http_get_example();
+    // http_post_example();
+    // tcp_client();
+
+    // Uncomment one of these to run a server:
+    echo_server();
+    // threaded_server();
+}

@@ -1,0 +1,66 @@
+// MIDI Listen Example
+// This example shows how to use midi_listen() to respond to MIDI input
+// Wrapping it in a thread allows the rest of the program to continue
+
+print("MIDI Listen Example");
+print("Connect a MIDI controller and play some notes!");
+print("");
+
+// Start a thread that listens for MIDI on port 0
+thread midi_input {
+    midi_listen(0, fn(event) {
+        let type = event[0];
+
+        if (type == "note_on") {
+            let note = event["note"];
+            let vel = event["vel"];
+            let channel = event["channel"];
+
+            print("Note ON:  note=" + str(note) + " vel=" + str(vel) + " ch=" + str(channel));
+
+            // Play a synth with the incoming note
+            let freq = mtof(note);
+            synth("default", freq: freq, amp: vel / 127.0);
+
+        } else if (type == "note_off") {
+            let note = event["note"];
+            let vel = event["vel"];
+            let channel = event["channel"];
+
+            print("Note OFF: note=" + str(note) + " vel=" + str(vel) + " ch=" + str(channel));
+
+        } else if (type == "cc") {
+            let num = event["num"];
+            let value = event["value"];
+            let channel = event["channel"];
+
+            print("CC: num=" + str(num) + " value=" + str(value) + " ch=" + str(channel));
+
+        } else if (type == "program") {
+            let num = event["num"];
+            let channel = event["channel"];
+
+            print("Program Change: num=" + str(num) + " ch=" + str(channel));
+
+        } else if (type == "clock") {
+            // Uncomment to see clock messages (24 per beat, very verbose!)
+            // print("Clock tick");
+
+        } else if (type == "start") {
+            print("MIDI Start");
+
+        } else if (type == "stop") {
+            print("MIDI Stop");
+        }
+    });
+}
+
+print("MIDI listener started in background.");
+print("Press Ctrl+C to exit");
+print("");
+
+// Main program continues - you could do other things here
+// For this example, we'll just wait
+loop {
+    wait(1);
+}

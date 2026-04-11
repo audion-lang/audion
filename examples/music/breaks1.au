@@ -1,0 +1,128 @@
+
+define kick(freq, amp, gate, samplefile, attack, release)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_kicks/rumble/kick_thunder.wav", root : 60), 120) * env(gate, attack, 0, release) * amp);
+}
+
+define hat(freq, amp, gate, samplefile, attack, release)
+{
+    out(0, hpf(sample("/Volumes/worx/samples/kit_hats/Open_Machine_Hess.wav", root : 60), 1600) * env(gate, attack, 0, release) * amp);
+}
+
+bpm(180);
+
+fn necklace_rhythm(length, fills, start_on, bar_length, n_pauses)
+{
+
+    let necklaces = [];
+    let current_pattern = [];
+    let current_pattern_index = start_on;
+    let pauses = [];
+    let change_after = bar_length;
+    let action = fn(){};
+    let current_play_step = 0;
+    let number_of_pauses = n_pauses;
+    let pauses = [];
+
+    fn init() {
+        necklaces = array_seq_necklaces_m_ones(length, fills);
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+        pauses = array_seq_euclidean(number_of_pauses, bar_length);
+    }
+
+    fn next_necklace() {
+        if (necklaces[current_pattern_index + 1] != nil) {
+            current_pattern_index += 1;
+        } else {
+            current_pattern_index = 0;
+        }
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+    }
+
+    fn string_to_pattern(binary_str) {
+        let pattern = [];
+        let len = str_length(binary_str);
+        for (i = 0; i < len; i += 1) {
+            let char = str_substr(binary_str, i, 1);
+            if (char == "1") {
+                push(pattern, 1);
+            } else {
+                push(pattern, 0);
+            }
+        }
+        return pattern;
+    }
+
+    fn set_action(closure) {
+        action = closure;
+    }
+
+    fn play() {
+        current_step = array_next(current_pattern);
+        current_pause = array_next(pauses);
+        action(current_step, current_pause);
+        current_play_step += 1;
+        if (current_play_step >= change_after) {
+            current_play_step = 0;
+            next_necklace();
+        }
+    }
+
+    init();
+    return this;
+}
+
+fn main()
+{
+
+kick_wait_front = [1, 1/4, 1, 1/2];
+kick_wait_alternatives = [2, 1, 0];
+kick_action = fn(step, pause) {
+    kamp = 0.1568;
+    if (pause) {
+        kamp = 0.12568;
+        wait(array_next(kick_wait_front, true));
+    } else {
+        kamp = 0.198568;
+        wait(array_next(kick_wait_alternatives, true));
+    }
+    if (step) {
+        synth("kick", freq: 440, amp: kamp, release: 0.1);
+    }
+};
+
+kick_rhythm = necklace_rhythm(9, 5, 0, 16, 5);
+kick_rhythm.set_action(kick_action);
+thread kick_main {
+    loop {
+        kick_rhythm.play();
+    }
+}
+
+thread hat1 {
+    hat_seq = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        loop {
+            next = array_next(hat_seq, true);
+            if (next == 1) {
+                synth("hat", freq: 20, amp: 0.12324, release: 0.2);
+            }
+            wait(1/2);
+    }
+}
+
+thread hat2 {
+    hat_seq = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        loop {
+            next = array_next(hat_seq, true);
+            if (next == 1) {
+                synth("hat", amp: rand(0.0085, 0.0285), release: rand(0.045, 0.285));
+            }
+            wait(1/8);
+    }
+}
+
+
+
+
+}
+

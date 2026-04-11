@@ -1,0 +1,119 @@
+// Generative Drum Patterns - Combining Multiple Sequence Techniques
+// Uses Euclidean rhythms, necklaces, and partitions together
+
+bpm(130);
+
+define kick(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.001, 0, 0.25) * amp);
+}
+
+define snare(freq, amp, gate) {
+    out(0, noise() * lpf(noise(), 2000) * env(gate, 0.001, 0, 0.15) * amp);
+}
+
+define hat(freq, amp, gate) {
+    out(0, hpf(noise(), 8000) * env(gate, 0.001, 0, 0.05) * amp);
+}
+
+define perc(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0, 0.1) * amp);
+}
+
+// Helper function: Convert binary string to array
+fn binary_to_array(str) {
+    let arr = [];
+    let len = str_length(str);
+    for (i = 0; i < len; i += 1) {
+        let char = str_substr(str, i, 1);
+        push(arr, int(char));
+    }
+    return arr;
+}
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+fn main() {
+    print("=== Generative Drum Pattern Generator ===\n");
+
+    // ===== KICK: Euclidean rhythm (4 hits in 16 steps) =====
+    let kick_pattern = array_seq_euclidean(4, 16);
+    print("Kick (Euclidean 4/16): ", kick_pattern);
+
+    // ===== SNARE: Necklace pattern (backbeat feel) =====
+    let snare_necklaces = array_seq_necklaces_m_ones(8, 2);
+    print("\nAvailable snare necklaces (8 steps, 2 hits):");
+    for (i = 0; i < count(snare_necklaces); i += 1) {
+        print("  ", i, ": ", snare_necklaces[i]);
+    }
+
+    let snare_binary = snare_necklaces[1];
+    let snare_pattern = binary_to_array(snare_binary);
+    print("\nChosen snare pattern: ", snare_binary);
+
+    // ===== HI-HAT: Fast euclidean =====
+    let hat_pattern = array_seq_euclidean(7, 8);
+    print("Hi-hat (Euclidean 7/8): ", hat_pattern);
+
+    // ===== PERCUSSION: Euclidean accent =====
+    let perc_pattern = array_seq_euclidean(3, 16);
+    print("Percussion pattern: ", perc_pattern);
+
+    thread kick {
+        loop {
+            next = array_loop_forward(kick_pattern);
+            if (next == 1) {
+                synth("kick", freq: 60, amp: 0.9);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread snare {
+        loop {
+            next = array_loop_forward(snare_pattern);
+            if (next == 1) {
+                synth("snare", freq: 200, amp: 0.7);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread hat {
+        loop {
+            next = array_loop_forward(hat_pattern);
+            if (next == 1) {
+                synth("hat", freq: 8000, amp: 0.4);
+            }
+            wait(1/4);
+        }
+    }
+
+    thread perc {
+        loop {
+            next = array_loop_forward(perc_pattern);
+            if (next == 1) {
+                synth("perc", freq: 400, amp: 0.5);
+            }
+            wait(1/4);
+        }
+    }
+
+    // Change snare pattern every 8 beats
+    thread pattern_changer {
+        necklace_index = 1;
+        loop {
+            wait(8);
+            necklace_index = (necklace_index + 1) % count(snare_necklaces);
+            snare_binary = snare_necklaces[necklace_index];
+            snare_pattern = binary_to_array(snare_binary);
+            array_beginning(snare_pattern);
+            print("Changed snare to: ", snare_binary);
+        }
+    }
+}

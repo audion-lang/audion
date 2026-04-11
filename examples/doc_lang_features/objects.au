@@ -1,0 +1,86 @@
+print("how to use objects");
+
+/*
+    objects are functions that simply return their scope
+    this makes them very versatile
+    features:
+    constructors, composition, deep nesting
+    children have access to parent scope
+*/
+
+fn apple_tree(arg1, arg2) {
+
+    // object properties
+    let number_of_roots = 0;
+    let height = 0;
+
+    // constructors
+    fn initiator_method() {
+        number_of_roots += 1;
+        get_roots();
+    }
+    fn get_roots() {
+        print("this tree has " + number_of_roots + " roots");
+    }
+
+    // call needs to be explicit
+    initiator_method();
+
+    // inner methods have access to parent scope
+    fn grow() {
+        height += 1;
+        print("tree height: " + height);
+    }
+
+    // object composition
+    let child_object = nil;
+    fn set_child(child) {
+        child_object = child;
+    }
+    fn call_child() {
+        child_object.grow();
+    }
+
+    // methods can be deeply nested,
+    // as long as you return the scope of the function with "this"
+    fn level1(){
+        print("level1");
+        fn level2() {
+            print("level2");
+            fn level3() {
+                print("level3");
+                // parent scope still accessible here
+                number_of_roots += 1;
+                get_roots();
+                return this;
+            }
+            return this;
+        }
+        return this;
+    }
+    return this;
+}
+
+fn leaf() {
+    let height = 0;
+    fn grow() {
+        height += 1;
+        print("leaf height: " + height);
+    }
+    return this;
+}
+
+let appleTree = apple_tree("argValue1", "argValue2");
+appleTree.grow();
+appleTree.grow();
+appleTree.set_child(leaf());
+appleTree.call_child();
+appleTree.call_child();
+appleTree.grow();
+appleTree.grow();
+appleTree.grow();
+appleTree.grow();
+appleTree.call_child();
+appleTree.call_child();
+appleTree.grow();
+appleTree.level1().level2().level3();

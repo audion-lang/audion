@@ -1,0 +1,201 @@
+// DSP Building Blocks Demo
+// Showcases all 7 categories of essential sound design tools
+
+bpm(120);
+
+// === 1. ALLPASS FILTERS (Reverb building block) ===
+define allpass_verb(freq, amp, gate) {
+    let sig = sine(freq) * env(gate, 0.01, 0, 0.3) * amp;
+
+    // Chain of allpass filters creates reverb-like sound
+    sig = allpass_c(sig, 0.1, 0.0297, 0.8);
+    sig = allpass_c(sig, 0.1, 0.0371, 0.7);
+    sig = allpass_c(sig, 0.1, 0.0411, 0.6);
+    sig = allpass_c(sig, 0.1, 0.0437, 0.5);
+
+    out(0, sig);
+}
+
+// === 2. RESONANT FILTER (Vowel-like sounds) ===
+define formant_synth(freq, amp, gate, formant) {
+    let sig = saw(freq) * env(gate, 0.01, 0, 0.5) * amp;
+
+    // Formant filter creates vowel-like timbres
+    sig = formlet(sig, formant, 0.005, 0.04);
+
+    out(0, sig);
+}
+
+// === 3. MOOG FILTER (Classic warm lowpass) ===
+define moog_bass(freq, amp, gate, cutoff) {
+    let sig = saw(freq) * env(gate, 0.01, 0, 0.5) * amp;
+
+    // Moog ladder filter - classic warm analog sound
+    sig = moog_ff(sig, cutoff, 3);
+
+    out(0, sig);
+}
+
+// === 4. CHORUS (Variable delay with LFO) ===
+define chorus_synth(freq, amp, gate) {
+    let sig = sine(freq) * env(gate, 0.01, 0, 0.5) * amp;
+
+    // Chorus: multiple delayed copies with slight pitch variation
+    let lfo1 = lfo_sine(0.5) * 0.01 + 0.02;
+    let lfo2 = lfo_sine(0.7) * 0.01 + 0.025;
+
+    let chorus1 = delay_l(sig, 0.1, lfo1);
+    let chorus2 = delay_l(sig, 0.1, lfo2);
+
+    let wet = (sig + chorus1 + chorus2) * 0.33;
+    out(0, wet);
+}
+
+// === 5. WAVESHAPING (Nonlinear distortion) ===
+define waveshaper(freq, amp, gate, drive) {
+    let sig = sine(freq) * amp;
+
+    // Different waveshaping types:
+    let soft = tanh(sig * drive);        // Soft clipping
+    let hard = softclip(sig * drive);    // Hard clipping
+    let folded = fold(sig * drive, -0.5, 0.5);  // Folding
+    let wrapped = wrap(sig * drive, -0.5, 0.5); // Wrapping
+
+    // Mix them for complex harmonic content
+    let shaped = (soft + folded * 0.3) * env(gate, 0.01, 0, 0.5);
+
+    out(0, shaped * 0.5);
+}
+
+// === 6. COMPRESSOR (Dynamics control) ===
+define compressed_kick(freq, amp, gate) {
+    let sig = sine(freq) * env(gate, 0.001, 0, 0.4) * amp * 4;
+
+    // Compander: thresh=0.3, ratio=4:1 (slopeAbove=0.25)
+    sig = compander(sig, sig, 0.3, 1, 0.25, 0.001, 0.01);
+
+    out(0, sig);
+}
+
+// === 7. PITCH SHIFTER (Harmony generator) ===
+define harmonizer(freq, amp, gate, shift) {
+    let sig = sine(freq) * env(gate, 0.01, 0, 0.5) * amp;
+
+    // Pitch shift: shift=2 is one octave up
+    let harmony = pitch_shift(sig, 0.1, shift, 0, 0);
+
+    let mix = (sig + harmony * 0.5) * 0.6;
+    out(0, mix);
+}
+
+// === 8. SMOOTH PARAMETER CHANGES (Lag filter) ===
+define smooth_synth(freq, amp, gate, target_freq) {
+    // Lag smooths abrupt parameter changes (no clicks!)
+    let smooth_freq = lag(target_freq, 0.1);
+
+    let sig = sine(smooth_freq) * env(gate, 0.01, 0, 0.5) * amp;
+
+    out(0, sig);
+}
+
+// === 9. DC BLOCKER (Clean output) ===
+define dc_free_synth(freq, amp, gate) {
+    let sig = pulse(freq, 0.5) * env(gate, 0.01, 0, 0.5) * amp;
+
+    // LeakDC removes DC offset (protects speakers!)
+    sig = leak_dc(sig, 0.995);
+
+    out(0, sig);
+}
+
+// === DEMO LOOP ===
+
+print("DSP Building Blocks Demo");
+print("Cycling through different effects...");
+print("");
+
+let demo = 0;
+
+loop {
+    if (demo == 0) {
+        print(">> 1. ALLPASS REVERB (feedback delays)");
+        synth("allpass_verb", freq: 440, amp: 0.3);
+        wait(1);
+        synth("allpass_verb", freq: 554, amp: 0.3);
+        wait(1);
+    }
+
+    if (demo == 1) {
+        print(">> 2. FORMANT FILTER (vowel sounds)");
+        synth("formant_synth", freq: 110, amp: 0.3, formant: 800);
+        wait(0.5);
+        synth("formant_synth", freq: 110, amp: 0.3, formant: 1200);
+        wait(0.5);
+        synth("formant_synth", freq: 110, amp: 0.3, formant: 2400);
+        wait(1);
+    }
+
+    if (demo == 2) {
+        print(">> 3. MOOG FILTER (warm analog lowpass)");
+        synth("moog_bass", freq: 55, amp: 0.4, cutoff: 200);
+        wait(0.5);
+        synth("moog_bass", freq: 55, amp: 0.4, cutoff: 500);
+        wait(0.5);
+        synth("moog_bass", freq: 55, amp: 0.4, cutoff: 1000);
+        wait(1);
+    }
+
+    if (demo == 3) {
+        print(">> 4. CHORUS (detuned delays)");
+        synth("chorus_synth", freq: 440, amp: 0.3);
+        wait(1);
+        synth("chorus_synth", freq: 330, amp: 0.3);
+        wait(1);
+    }
+
+    if (demo == 4) {
+        print(">> 5. WAVESHAPING (nonlinear distortion)");
+        synth("waveshaper", freq: 220, amp: 0.3, drive: 1);
+        wait(0.5);
+        synth("waveshaper", freq: 220, amp: 0.3, drive: 5);
+        wait(0.5);
+        synth("waveshaper", freq: 220, amp: 0.3, drive: 10);
+        wait(1);
+    }
+
+    if (demo == 5) {
+        print(">> 6. COMPRESSOR (dynamics control)");
+        synth("compressed_kick", freq: 60, amp: 0.5);
+        wait(0.5);
+        synth("compressed_kick", freq: 60, amp: 0.5);
+        wait(0.5);
+        synth("compressed_kick", freq: 60, amp: 0.5);
+        wait(1);
+    }
+
+    if (demo == 6) {
+        print(">> 7. PITCH SHIFTER (harmonizer)");
+        synth("harmonizer", freq: 330, amp: 0.3, shift: 1.5);  // Perfect 5th
+        wait(1);
+        synth("harmonizer", freq: 330, amp: 0.3, shift: 2);    // Octave
+        wait(1);
+    }
+
+    if (demo == 7) {
+        print(">> 8. LAG FILTER (smooth parameter changes)");
+        synth("smooth_synth", freq: 220, amp: 0.3, target_freq: 220);
+        wait(0.5);
+        synth("smooth_synth", freq: 220, amp: 0.3, target_freq: 880);
+        wait(1.5);
+    }
+
+    if (demo == 8) {
+        print(">> 9. DC BLOCKER (clean output)");
+        synth("dc_free_synth", freq: 110, amp: 0.3);
+        wait(1);
+        synth("dc_free_synth", freq: 55, amp: 0.3);
+        wait(1);
+    }
+
+    demo = (demo + 1) % 9;
+}

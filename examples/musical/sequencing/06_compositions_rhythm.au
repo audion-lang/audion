@@ -1,0 +1,81 @@
+// Integer Compositions - Ordered Subdivisions
+// Compositions vs Partitions: order matters!
+// Example: 3 = [1,2], [2,1], [1,1,1] vs Partition: 3 = {1,1,1}, {1,2}
+
+bpm(110);
+
+define perc1(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0, 0.15) * amp);
+}
+
+define perc2(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0, 0.15) * amp);
+}
+
+define perc3(freq, amp, gate) {
+    out(0, sine(freq) * env(gate, 0.01, 0, 0.15) * amp);
+}
+
+fn main() {
+    print("=== Integer Compositions for Rhythmic Phrasing ===\n");
+
+    // Generate all compositions of 4
+    let comps = array_seq_compositions(4);
+
+    print("All compositions of 4:");
+    for (i = 0; i < count(comps); i += 1) {
+        print("  ", i, ": ", comps[i]);
+    }
+    print("\nTotal: ", count(comps), " compositions\n");
+
+    // Use three interesting compositions for three percussion voices
+    let comp1 = [1, 1, 2];  // Short, short, long
+    let comp2 = [2, 1, 1];  // Long, short, short
+    let comp3 = [1, 2, 1];  // Short, long, short
+
+    print("Playing three rhythmic phrases based on compositions:\n");
+    print("Perc1: ", comp1);
+    print("Perc2: ", comp2);
+    print("Perc3: ", comp3);
+
+    thread perc1_thread {
+        note_index = 0;
+        loop {
+            synth("perc1", freq: 300, amp: 0.6);
+            let duration = comp1[note_index];
+            wait(duration * 0.5);
+            note_index = (note_index + 1) % count(comp1);
+        }
+    }
+
+    thread perc2_thread {
+        note_index = 0;
+        loop {
+            synth("perc2", freq: 450, amp: 0.6);
+            let duration = comp2[note_index];
+            wait(duration * 0.5);
+            note_index = (note_index + 1) % count(comp2);
+        }
+    }
+
+    thread perc3_thread {
+        note_index = 0;
+        loop {
+            synth("perc3", freq: 600, amp: 0.6);
+            let duration = comp3[note_index];
+            wait(duration * 0.5);
+            note_index = (note_index + 1) % count(comp3);
+        }
+    }
+
+    // Cycle through different compositions every 16 beats
+    thread composition_changer {
+        comp_index = 0;
+        loop {
+            wait(16);
+            comp_index = (comp_index + 1) % count(comps);
+            comp1 = comps[comp_index];
+            print("Changed to composition: ", comp1);
+        }
+    }
+}

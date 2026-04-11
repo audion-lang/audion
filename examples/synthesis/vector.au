@@ -1,0 +1,233 @@
+// vector.au — Vector Synthesis
+// Inspired by Sequential Circuits Prophet VS, Korg Wavestation.
+// Four sound sources placed at the corners of a 2D plane.
+// An XY position (joystick / LFO) crossfades between all four sources.
+// Moving through the vector space morphs the timbre continuously.
+
+bpm(115);
+
+// ============================================================
+// SYNTH DEFINITIONS
+// ============================================================
+
+// --- Classic Vector Synth ---
+// Four waveforms at the corners of a square:
+//   A (sine)     ← vx → B (saw)
+//       ↑                   ↑
+//       vy                 vy
+//       ↓                   ↓
+//   C (pulse)   ← vx → D (triangle)
+//
+// vx: horizontal position (0 = left, 1 = right)
+// vy: vertical position (0 = top, 1 = bottom)
+// detune: subtle pitch spread between sources (0–10 cents)
+define vector4(freq, amp, gate, vx, vy, detune, atk, sus, rel) {
+    let dt = detune * 0.01;
+    let a = sine(freq);
+    let b = saw(freq * (1 + dt));
+    let c = pulse(freq * (1 - dt * 0.5), 0.3);
+    let d = tri(freq * (1 + dt * 0.7));
+    // Bilinear interpolation
+    let top = a * (1 - vx) + b * vx;
+    let bot = c * (1 - vx) + d * vx;
+    let sig = top * (1 - vy) + bot * vy;
+    out(0, pan(0, sig * env(gate, atk, sus, rel) * amp));
+}
+
+// --- Vector Synth with filter + effects ---
+// Same 4-corner morph but with resonant filter, delay, and reverb.
+// Good for pads and evolving textures.
+define vector4_fx(freq, amp, gate,
+                  vx, vy, detune,
+                  filt, filt_q,
+                  del_time, del_fb,
+                  rmix, rroom, rdamp,
+                  atk, sus, rel) {
+    let dt = detune * 0.01;
+    let a = sine(freq);
+    let b = saw(freq * (1 + dt));
+    let c = pulse(freq * (1 - dt * 0.5), 0.3);
+    let d = tri(freq * (1 + dt * 0.7));
+    let top = a * (1 - vx) + b * vx;
+    let bot = c * (1 - vx) + d * vx;
+    let raw = top * (1 - vy) + bot * vy;
+    let filtered = rlpf(raw, filt, filt_q);
+    let sig = filtered * env(gate, atk, sus, rel) * amp;
+    let delayed = delay(sig, del_time, del_fb);
+    let wet = reverb(sig + delayed * 0.3, rmix, rroom, rdamp);
+    out(0, pan(lfo_sine(0.09), wet));
+}
+
+// --- Vector Synth with LFO-driven auto-morph ---
+// The vector position orbits automatically via two LFOs.
+// morph_rate: speed of the orbit
+// morph_depth: how wide the orbit sweeps (0–1)
+// Great for self-evolving pads — set and forget.
+define vector4_auto(freq, amp, gate,
+                    morph_rate, morph_depth,
+                    detune, filt,
+                    rmix, rroom, rdamp,
+                    atk, sus, rel) {
+    let dt = detune * 0.01;
+    let a = sine(freq);
+    let b = saw(freq * (1 + dt));
+    let c = pulse(freq * (1 - dt * 0.5), 0.35);
+    let d = tri(freq * (1 + dt * 0.7));
+    // Auto-orbiting vector position
+    let vx = lfo_sine(morph_rate) * morph_depth * 0.5 + 0.5;
+    let vy = lfo_sine(morph_rate * 0.71) * morph_depth * 0.5 + 0.5;
+    let top = a * (1 - vx) + b * vx;
+    let bot = c * (1 - vx) + d * vx;
+    let raw = top * (1 - vy) + bot * vy;
+    let sig = lpf(raw, filt) * env(gate, atk, sus, rel) * amp;
+    out(0, pan(lfo_tri(0.11), reverb(sig, rmix, rroom, rdamp)));
+}
+
+// --- Extended Vector: 4 FM timbres instead of basic waveforms ---
+// Each corner is a 2-op FM voice with its own ratio/index.
+// Morphing between FM voices — much richer harmonic movement.
+define vector4_fm(freq, amp, gate,
+                  vx, vy,
+                  ra, rb, rc, rd,
+                  xa, xb, xc, xd,
+                  filt,
+                  atk, sus, rel) {
+    // Corner A: low ratio, warm FM
+    let ma = freq * ra;
+    let a = sine(freq + sine(ma) * ma * xa);
+    // Corner B: high ratio, bright FM
+    let mb = freq * rb;
+    let b = sine(freq + sine(mb) * mb * xb);
+    // Corner C: inharmonic ratio, bell-like
+    let mc = freq * rc;
+    let c = sine(freq + sine(mc) * mc * xc);
+    // Corner D: sub-harmonic, thick
+    let md = freq * rd;
+    let d = sine(freq + sine(md) * md * xd);
+    let top = a * (1 - vx) + b * vx;
+    let bot = c * (1 - vx) + d * vx;
+    let sig = top * (1 - vy) + bot * vy;
+    out(0, pan(0, lpf(sig, filt) * env(gate, atk, sus, rel) * amp));
+}
+
+
+// ============================================================
+// MUSICAL EXAMPLE
+// ============================================================
+
+fn main() {
+    wait_ms(500);
+
+    pad_node = nil;
+    fm_vec_node = nil;
+
+    // --- Auto-morphing vector pad: slow orbit through waveform space ---
+    thread vector_pad {
+        seed("vector_drift");
+        notes = [48, 53, 55, 60, 65, 67, 72, 60];
+        ni = 0;
+        loop {
+            if (pad_node != nil) { set(pad_node, gate: 0); }
+            wait(0.05);
+            pad_node = synth("vector4_auto",
+                freq: mtof(notes[ni % count(notes)]),
+                amp: 0.08,
+                gate: 1,
+                morph_rate: 0.12,
+                morph_depth: 0.9,
+                detune: 5,
+                filt: 3000,
+                rmix: 0.5,
+                rroom: 0.8,
+                rdamp: 0.35,
+                atk: 1.5,
+                sus: 1,
+                rel: 3
+            );
+            ni += 1;
+            wait(4);
+        }
+    }
+
+    // --- Modulate the pad filter over time ---
+    thread filter_sweep {
+        seed("filt_walk");
+        filt_pos = 3000;
+        loop {
+            wait(1);
+            filt_pos = filt_pos + rand(0 - 500, 500);
+            if (filt_pos < 800) { filt_pos = 800; }
+            if (filt_pos > 12000) { filt_pos = 12000; }
+            if (pad_node != nil) {
+                set(pad_node, filt: filt_pos);
+            }
+        }
+    }
+
+    // --- FM vector: morph between 4 FM timbres ---
+    thread fm_vector {
+        seed("fm_vec_orbit");
+        fm_notes = [60, 63, 67, 70, 72, 67, 63, 58];
+        fi = 0;
+        loop {
+            if (fm_vec_node != nil) { set(fm_vec_node, gate: 0); }
+            wait(0.03);
+            fm_vec_node = synth("vector4_fm",
+                freq: mtof(fm_notes[fi % count(fm_notes)]),
+                amp: 0.06,
+                gate: 1,
+                vx: rand(0, 1),
+                vy: rand(0, 1),
+                // Four different FM flavors at each corner
+                ra: 1, rb: 3.01, rc: 1.41, rd: 0.5,
+                xa: 0.5, xb: 1.2, xc: 2, xd: 0.3,
+                filt: rand(2000, 8000),
+                atk: 0.3, sus: 1, rel: 1.5
+            );
+            fi += 1;
+            wait(2);
+        }
+    }
+
+    // --- Animate FM vector position smoothly ---
+    thread vec_animate {
+        seed("vec_joystick");
+        vx = 0.5;
+        vy = 0.5;
+        loop {
+            wait(0.25);
+            // Random walk the vector position
+            vx = vx + rand(0 - 0.1, 0.1);
+            vy = vy + rand(0 - 0.1, 0.1);
+            if (vx < 0) { vx = 0; }
+            if (vx > 1) { vx = 1; }
+            if (vy < 0) { vy = 0; }
+            if (vy > 1) { vy = 1; }
+            if (fm_vec_node != nil) {
+                set(fm_vec_node, vx: vx, vy: vy);
+            }
+        }
+    }
+
+    // --- Staccato vector stabs using the FX version ---
+    thread stabs {
+        seed("vec_stabs");
+        stab_notes = [72, 74, 77, 79, 82, 84, 79, 77];
+        si = 0;
+        loop {
+            synth("vector4_fx",
+                freq: mtof(stab_notes[si % count(stab_notes)]),
+                amp: rand(0.03, 0.06),
+                gate: 1,
+                vx: rand(0, 1), vy: rand(0, 1),
+                detune: rand(2, 8),
+                filt: rand(3000, 10000), filt_q: rand(0.3, 0.7),
+                del_time: 0.375, del_fb: 2,
+                rmix: 0.3, rroom: 0.6, rdamp: 0.5,
+                atk: 0.005, sus: 0, rel: rand(0.2, 0.8)
+            );
+            si += 1;
+            wait(0.5);
+        }
+    }
+}

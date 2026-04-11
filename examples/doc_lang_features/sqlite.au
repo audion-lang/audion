@@ -1,0 +1,21 @@
+let db = sqlite_open(":memory:");
+
+sqlite_exec(db, "CREATE TABLE beats (id INTEGER, bpm INTEGER, name TEXT)");
+sqlite_exec(db, "INSERT INTO beats VALUES (?, ?, ?)", 1, 120, "kick");
+sqlite_exec(db, "INSERT INTO beats VALUES (?, ?, ?)", 2, 140, "snare");
+sqlite_exec(db, "INSERT INTO beats VALUES (?, ?, ?)", 3, 128, "hat");
+
+let all_beats = sqlite_query(db, "SELECT * FROM beats");
+print("All beats:", all_beats);
+
+let fast_beats = sqlite_query(db, "SELECT name, bpm FROM beats WHERE bpm >= ?", 128);
+print("Fast beats:", fast_beats);
+
+let tables = sqlite_tables(db);
+print("Tables:", tables);
+
+let exists = sqlite_table_exists(db, "beats");
+print("Table 'beats' exists:", exists);
+
+sqlite_close(db);
+print("Done!");

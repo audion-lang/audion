@@ -1,0 +1,166 @@
+// Effect Busses Demo
+// Demonstrates flexible routing to multiple effect busses with the following features:
+// 1. Round-robin cycling through different effects
+// 2. Multiple out() calls from one synth (pluck sends dry + wet simultaneously)
+// 3. Effect chaining through busses (modulation_multi → reverb + delay)
+//
+// Signal flow examples:
+//   Simple:  pluck → reverb → speakers
+//   Dual:    pluck → (dry to speakers) + (wet to reverb → speakers)
+//   Chained: pluck → modulation → (reverb → speakers) + (delay → speakers)
+
+bpm(120);
+
+// ============================================================================
+// EFFECT DEFINITIONS (each on a different bus)
+// ============================================================================
+
+// Effect 1: Short reverb (small room, subtle)
+define reverb_short(bus) {
+    let sig = in(bus, 2);
+    let wet = reverb(sig, 0.25, 0.3, 0.6);  // 25% mix, small room, damped
+    out(0, wet);
+}
+
+// Effect 2: Long reverb (cathedral, huge space)
+define reverb_long(bus) {
+    let sig = in(bus, 2);
+    let wet = reverb(sig, 0.7, 0.95, 0.2);  // 70% mix, massive room, bright
+    out(0, wet);
+}
+
+// Effect 3: Short slapback delay (~125ms)
+define delay_slapback(bus) {
+    let sig = in(bus, 2);
+    let wet = delay(sig, 0.125, 0.3);  // 125ms, short decay
+    out(0, wet);
+}
+
+// Effect 4: Long rhythmic delay (~750ms)
+define delay_rhythmic(bus) {
+    let sig = in(bus, 2);
+    let wet = delay(sig, 0.75, 0.65);  // 750ms (dotted 8th at 120bpm), feedback
+    out(0, wet);
+}
+
+// Effect 5: Heavy distortion
+define distortion_heavy(bus) {
+    let sig = in(bus, 2);
+    let crushed = dist(sig, 8);  // aggressive distortion
+    let filtered = lpf(crushed, 3000);  // tame the harsh highs
+    out(0, filtered * 0.7);  // reduce volume
+}
+
+// Effect 6: Modulation that routes to MULTIPLE effects simultaneously!
+// This demonstrates chained routing: source → modulation → reverb + delay → output
+define modulation_multi(bus) {
+    let sig = in(bus, 2);
+
+    // Add tremolo (amplitude modulation) for a pulsing effect
+    let lfo = lfo_sine(4);  // 4Hz LFO
+    let mod_sig = sig * (lfo * 0.3 + 0.7);  // Tremolo: oscillates between 0.7 and 1.0
+
+    // Send to MULTIPLE downstream effects simultaneously!
+    out(4, mod_sig * 0.4);   // Feed into reverb_long (bus 4)
+    out(8, mod_sig * 0.3);   // Feed into delay_rhythmic (bus 8)
+    out(10, mod_sig * 0.2);   // Feed into distortion_heavy (bus 10)
+    // Result: tremolo → reverb + delay → speakers (complex sound!)
+}
+
+// ============================================================================
+// SOURCE INSTRUMENT
+// ============================================================================
+
+define pluck(freq, amp, gate, send1, send1_gain) {
+    let osc = sine(freq) + sine(freq * 2.01) * 0.3;  // slight harmonic richness
+    let sig = osc * amp * env(gate, 0.005, 0, 0.4);  // percussive envelope
+
+    // Multiple out() calls are now supported!
+    out(0, sig * 0.2);                  // Dry signal to main output (20%)
+    out(send1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+}
+
+// ============================================================================
+// SETUP: Create all effect synths on their respective busses
+// ============================================================================
+
+synth("reverb_short", bus: 2);
+synth("reverb_long", bus: 4);
+synth("delay_slapback", bus: 6);
+synth("delay_rhythmic", bus: 8);
+synth("distortion_heavy", bus: 10);
+synth("modulation_multi", bus: 12);  // Multi-routing effect!
+
+print("Effect busses demo started!");
+print("Cycling through effects every 2 beats...");
+print("");
+
+// ============================================================================
+// MAIN LOOP: Play notes and cycle through effects
+// ============================================================================
+
+let i = 0;
+
+loop {
+    // Cycle through different routings
+    let bus_num = 0;
+    let gain = 0.0;
+    let effect_name = "";
+
+    if (i == 0) {
+        effect_name = "DRY (no effect, just main out)";
+        bus_num = 0;   // Dummy bus (won't be used since gain is 0)
+        gain = 0.0;    // No send to effect (only dry signal plays)
+    }
+
+    if (i == 1) {
+        effect_name = "SHORT REVERB (small room)";
+        bus_num = 2;
+        gain = 0.8;
+    }
+
+    if (i == 2) {
+        effect_name = "LONG REVERB (cathedral)";
+        bus_num = 4;
+        gain = 0.9;
+    }
+
+    if (i == 3) {
+        effect_name = "SLAPBACK DELAY (125ms)";
+        bus_num = 6;
+        gain = 0.85;
+    }
+
+    if (i == 4) {
+        effect_name = "RHYTHMIC DELAY (750ms echo)";
+        bus_num = 8;
+        gain = 0.75;
+    }
+
+    if (i == 5) {
+        effect_name = "HEAVY DISTORTION";
+        bus_num = 10;
+        gain = 0.7;
+    }
+
+    if (i == 6) {
+        effect_name = "TREMOLO → REVERB + DELAY + DISTORTION (multi-routing!)";
+        bus_num = 12;
+        gain = 0.8;
+    }
+
+    print(">> " + effect_name);
+
+    // Play a little melodic phrase (4 notes over 2 beats)
+    synth("pluck", freq: 440, amp: 0.6, send1: bus_num, send1_gain: gain);
+    wait(0.5);
+    synth("pluck", freq: 554, amp: 0.5, send1: bus_num, send1_gain: gain);
+    wait(0.5);
+    synth("pluck", freq: 659, amp: 0.5, send1: bus_num, send1_gain: gain);
+    wait(0.5);
+    synth("pluck", freq: 880, amp: 0.4, send1: bus_num, send1_gain: gain);
+    wait(0.5);
+
+    // Move to next effect
+    i = (i + 1) % 7;  // Now cycling through 7 options (0-6)
+}

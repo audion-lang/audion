@@ -1,0 +1,125 @@
+// binary_io.au — binary file I/O examples
+// demonstrates: file_read_bytes, file_write_bytes, bytes_len, bytes_get,
+//               bytes_slice, bytes_to_array, array_to_bytes
+
+// -- create bytes from an array and write to file --
+
+let hello = array_to_bytes([72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100]);
+print("created", bytes_len(hello), "bytes");
+
+let path = "/tmp/audion_binary_example.bin";
+let written = file_write_bytes(path, hello);
+print("wrote", written, "bytes to", path);
+
+// -- read it back --
+
+let data = file_read_bytes(path);
+if (data) {
+    print("read back", bytes_len(data), "bytes");
+} else {
+    print("error: could not read file");
+}
+
+// -- inspect individual bytes --
+
+print("first byte:", bytes_get(data, 0));   // 72 = 'H'
+print("last byte:",  bytes_get(data, -1));  // 100 = 'd'
+
+// out of bounds returns nil
+let oob = bytes_get(data, 999);
+print("out of bounds:", oob);  // nil
+
+// -- slicing --
+
+// slice with start + length
+let first_five = bytes_slice(data, 0, 5);
+print("first 5 bytes length:", bytes_len(first_five));
+
+// slice from offset to end (no length)
+let from_six = bytes_slice(data, 6);
+print("from offset 6:", bytes_len(from_six), "bytes");
+
+// -- converting between bytes and arrays --
+
+let arr = bytes_to_array(first_five);
+print("as array:", arr);  // [72, 101, 108, 108, 111]
+
+// round-trip: array -> bytes -> array
+let original = [0, 64, 128, 192, 255];
+let roundtrip = bytes_to_array(array_to_bytes(original));
+print("round-trip matches:", roundtrip == original);  // true
+
+// -- clamping behavior --
+// values outside 0-255 are clamped
+let clamped = array_to_bytes([-100, 0, 255, 999]);
+let result = bytes_to_array(clamped);
+print("clamped:", result);  // [0, 0, 255, 255]
+
+// -- practical example: build a simple binary header --
+
+let magic = array_to_bytes([65, 85]);          // "AU"
+let version = array_to_bytes([0, 1]);           // version 0.1
+let payload = array_to_bytes([10, 20, 30, 40]); // some data
+
+// write header + payload as separate writes
+let header_path = "/tmp/audion_header_example.bin";
+file_write_bytes(header_path, magic);
+
+// read back and verify magic bytes
+let check = file_read_bytes(header_path);
+let m = bytes_to_array(bytes_slice(check, 0, 2));
+if (m[0] == 65 && m[1] == 85) {
+    print("magic header verified: AU");
+}
+
+// -- file_size + chunked reading for large files --
+// use file_size() to get the total length without loading the file,
+// then read in chunks with file_read_bytes(path, offset, length)
+
+let big_path = "/tmp/audion_chunked_example.bin";
+// create a 100-byte test file
+let big_data = [];
+for (let i = 0; i < 100; i += 1) {
+    push(big_data, i);
+}
+file_write_bytes(big_path, array_to_bytes(big_data));
+
+let size = file_size(big_path);
+let chunk_size = 32;
+let offset = 0;
+let chunks_read = 0;
+
+while (offset < size) {
+    let chunk = file_read_bytes(big_path, offset, chunk_size);
+    chunks_read += 1;
+    print("chunk", chunks_read, "- offset:", offset, "read:", bytes_len(chunk), "bytes");
+    offset += chunk_size;
+}
+print("total:", size, "bytes in", chunks_read, "chunks");
+file_delete(big_path);
+
+// -- partial reads: grab just a header or a specific region --
+
+let sample_path = "/tmp/audion_partial_example.bin";
+file_write_bytes(sample_path, array_to_bytes([82, 73, 70, 70, 0, 0, 0, 0, 87, 65, 86, 69]));
+
+// read only the first 4 bytes (RIFF magic)
+let magic = file_read_bytes(sample_path, 0, 4);
+print("magic bytes:", bytes_to_array(magic));  // [82, 73, 70, 70] = "RIFF"
+
+// read from offset 8 to end
+let tail = file_read_bytes(sample_path, 8);
+print("tail bytes:", bytes_to_array(tail));    // [87, 65, 86, 69] = "WAVE"
+file_delete(sample_path);
+
+// -- error handling --
+
+let bad = file_read_bytes("/tmp/this_file_does_not_exist_xyz.bin");
+if (!bad) {
+    print("file not found, got:", bad);  // false
+}
+
+// -- cleanup --
+file_delete(path);
+file_delete(header_path);
+print("done!");

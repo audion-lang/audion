@@ -1,0 +1,22 @@
+// we protect resources with mutexes
+
+let counter = 0;
+
+thread B
+{
+    loop
+    {
+        counter += 1;
+        print("B cnt: " + counter);
+    }
+}
+
+thread A
+{
+    loop
+    {
+        counter -= 1;
+        print("A cnt: " + counter);
+    }
+}
+

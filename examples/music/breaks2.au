@@ -1,0 +1,211 @@
+
+define kick(freq, amp, gate, samplefile, attack, release)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_kicks/rumble/kick_thunder.wav", root : 60), 120) * env(gate, attack, 0, release) * amp);
+}
+
+define hat(freq, amp, gate, samplefile, attack, release)
+{
+    out(0, hpf(sample("/Volumes/worx/samples/kit_hats/Open_Machine_Hess.wav", root : 60), 1600) * env(gate, attack, 0, release) * amp);
+}
+
+define kick(freq, amp, gate, samplefile, attack, release)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_kicks/rumble/kick_thunder.wav", root : 60), 120) * env(gate, attack, 0, release) * amp);
+}
+
+define buf1(bufnum, amp, gate, out)
+{
+    out(out, stream_disk(bufnum, loop : 1) * env(gate, 0.01, 0, 3) * amp);
+}
+
+bpm(90);
+
+fn necklace_rhythm(length, fills, start_on, bar_length, n_pauses)
+{
+
+    let necklaces = [];
+    let current_pattern = [];
+    let current_pattern_index = start_on;
+    let pauses = [];
+    let change_after = bar_length;
+    let action = fn(){};
+    let current_play_step = 0;
+    let number_of_pauses = n_pauses;
+    let pauses = [];
+
+    fn init() {
+        necklaces = array_seq_necklaces_m_ones(length, fills);
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+        pauses = array_seq_euclidean(number_of_pauses, bar_length);
+    }
+
+    fn next_necklace() {
+        if (necklaces[current_pattern_index + 1] != nil) {
+            current_pattern_index += 1;
+        } else {
+            current_pattern_index = 0;
+        }
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+    }
+
+    fn string_to_pattern(binary_str) {
+        let pattern = [];
+        let len = str_length(binary_str);
+        for (i = 0; i < len; i += 1) {
+            let char = str_substr(binary_str, i, 1);
+            if (char == "1") {
+                push(pattern, 1);
+            } else {
+                push(pattern, 0);
+            }
+        }
+        return pattern;
+    }
+
+    fn set_action(closure) {
+        action = closure;
+    }
+
+    fn play() {
+        current_step = array_next(current_pattern);
+        current_pause = array_next(pauses);
+        action(current_step, current_pause);
+        current_play_step += 1;
+        if (current_play_step >= change_after) {
+            current_play_step = 0;
+            next_necklace();
+        }
+    }
+
+    init();
+    return this;
+}
+
+fn buf1_play_random_file() {
+    fn play() {
+        thread newname {
+            let buf = buffer_stream_open("/Volumes/worx/samples/field_03/221225-141502.wav");
+            // wait_ms(500);
+            let node = synth("buf1", bufnum : buf, amp : 0.3);
+            wait(1);
+            free(node);
+            buffer_stream_close(buf);
+            print("finished");
+        }
+    }
+    return this;
+}
+
+fn main()
+{
+
+let fill_on = false;
+kick1_fill_seq = array_seq_euclidean(7, 12);
+
+thread fill_manager {
+    bar4_count = 0;
+    bar_count = 0;
+    loop {
+        if (bar_count == 6) {
+            print("prefil");
+        }
+        if (bar_count == 7 || bar_count == 8) {
+            print("fill");
+            kick1_fill_seq = array_seq_euclidean(rand(1,9), rand(12,21));
+            fill_on = true;
+            if (bar_count == 8) {
+                bar_count = 0;
+            }
+        }
+        if (bar_count == 0) {
+            fill_on = false;
+        }
+        if (bar4_count == 4) {
+            bar4_count += 1;
+        }
+        bar_count += 1;
+        wait(1);
+    }
+}
+
+thread kick1 {
+    kick1_seq = [1,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0];
+    fill_kick_prob = 0.95;
+    loop {
+        next = array_next(kick1_seq);
+        if (next == 1) {
+            synth("kick", freq: 90, amp: 0.5552, attack:0.01, release: 1.1);
+        } else {
+            if (rand() > fill_kick_prob) {
+                synth("kick", freq: 140, amp: 0.0352, release: 0.1);
+            }
+        }
+        wait(1/4);
+    }
+}
+
+
+thread kick_fill {
+    fill_kick_prob = 0.735;
+    loop {
+        if (fill_on) {
+            next = array_next(kick1_fill_seq);
+            if (next == 1) {
+                print("filling...");
+                synth("kick", freq: 140, amp: 0.3552, attack:0.01, release: 3.1);
+            }
+        }
+        wait(1/4);
+    }
+}
+
+
+
+thread hat1 {
+    hat_seq = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        loop {
+            next = array_next(hat_seq);
+            if (next == 1) {
+                synth("hat", freq: 20, amp: 0.72324, release: 0.2);
+            }
+            wait(1/4);
+    }
+}
+
+thread hat2 {
+    hat_seq = [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0];
+    swing_count = 0;
+    loop {
+        swing_count += 1;
+        next = array_next(hat_seq);
+        if (next == 1) {
+            synth("hat", amp: rand(0.0585, 0.1585), release: rand(0.045, 0.285));
+        }
+        if (swing_count % 2 == 0) {
+            wait(0.0635);
+        } else {
+            wait(0.0615);
+        }
+    }
+}
+
+thread hat3 {
+    hat_seq = [0,0,0,0,1,1,1,0,0,0,0,0,1,0,0,0];
+    print(hat_seq);
+    swing_count = 0;
+    loop {
+        swing_count += 1;
+        next = array_next(hat_seq);
+        if (next == 1) {
+            synth("hat", freq: 100, amp: rand(0.0185, 0.1385), release: rand(0.045, 0.285));
+        }
+        wait(1/4);
+    }
+}
+
+
+
+
+}
+

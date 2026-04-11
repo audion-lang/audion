@@ -1,0 +1,317 @@
+// sampling.au — sample playback demo using kick.wav
+
+define kick1(freq, amp, gate, samplefile)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_909_pulse/BassDrum/BassDrum_Bereze.wav", root : 60), 120) * env(gate, 0.001, 0, 0.93) * amp);
+}
+
+define kick2(freq, amp, gate, samplefile, attack)
+{
+    out(0, lpf(sample("/Volumes/worx/samples/kit_909_pulse/BassDrum/BassDrum_Bereze.wav", root : 60), 120) * env(gate, attack, 0, 0.93) * amp);
+}
+
+define hat1(freq, amp, gate, samplefile, attack)
+{
+    out(0, hpf(sample("/Volumes/worx/samples/kit_hats/Open_Machine_Hess.wav", root : 60), 1600) * env(gate, attack, 0, 0.93) * amp);
+}
+
+define hat2(freq, amp, gate, samplefile, attack)
+{
+    out(0, hpf(sample("/Volumes/worx/samples/kit_hats/Closed_Live_Garage.wav", root : 60), 1600) * env(gate, attack, 0, 0.93) * amp);
+}
+
+define bass1(freq, amp, gate, atk, sus, rel, lpffreq, send1, send1_gain)
+{
+    let sig = hpf(lpf(sync_saw(freq, freq * lfo_noise2(5.5123)), lpffreq), 300) * env(gate, atk * lfo_noise2(0.123), sus, rel) * amp;
+    out(0, sig * 0.1);                  // Dry signal to main output (20%)
+    out(1, sig * 0.1);                  // Dry signal to main output (20%)
+    out(send1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+    out(send1+1, sig * send1_gain);       // Wet signal to effect bus at specified gain
+}
+
+define bass2(freq, amp, gate) {
+    let sig = pm_osc(freq, freq, 1.0, 1) * env(gate, 0.01, 0.0, 4.8) * amp;
+    out(0, sig * 0.05);
+    out(1, sig * 0.05);
+    out(4, sig * 0.1);
+}
+
+
+// Effect 1: Short reverb (small room, subtle)
+define reverb_short(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.15, 51, 11, 0.95));
+    out(1,  gverb(sig * 0.15, 61, 51, 0.95));
+}
+
+// Effect 2: Long reverb (cathedral, huge space)
+define reverb_long(bus) {
+    let sig = in(bus, 2);
+    out(0,  gverb(sig * 0.15, 30, 110, 0.95));
+    out(1,  gverb(sig * 0.15, 42, 115, 0.95));
+}
+
+synth("reverb_short", bus: 2);
+synth("reverb_long", bus: 4);
+
+include "../lib/functions.au" as functions; // include paths relative to source file
+// include "../lib/drums1.au";
+
+bpm(90);
+
+root_note = 0;
+fn tune(note) {
+    // return mtof(root_note + note, "../scala_scales_common/6-lydian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    return mtof(root_note + note, "../scala_scales_common/5-phrygian-et.scl"); // similar to include paths, relative to this script: keep resources together
+    // return mtof(note, "./2-harmonic-minor-et.scl"); // similar to include paths, relative to this script: keep resources together
+}
+
+wait_ms(500);
+
+
+fn necklace_rhythm(length, fills, start_on, bar_length, n_pauses)
+{
+
+    let necklaces = [];
+    let current_pattern = [];
+    let current_pattern_index = start_on;
+    let pauses = [];
+    let change_after = bar_length;
+    let action = fn(){};
+    let current_play_step = 0;
+    let number_of_pauses = n_pauses;
+    let pauses = [];
+
+    fn init() {
+        necklaces = array_seq_necklaces_m_ones(length, fills);
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+        pauses = array_seq_euclidean(number_of_pauses, bar_length);
+    }
+
+    fn next_necklace() {
+        if (necklaces[current_pattern_index + 1] != nil) {
+            current_pattern_index += 1;
+        } else {
+            current_pattern_index = 0;
+        }
+        current_pattern = string_to_pattern(necklaces[current_pattern_index]);
+    }
+
+    fn string_to_pattern(binary_str) {
+        let pattern = [];
+        let len = str_length(binary_str);
+        for (i = 0; i < len; i += 1) {
+            let char = str_substr(binary_str, i, 1);
+            if (char == "1") {
+                push(pattern, 1);
+            } else {
+                push(pattern, 0);
+            }
+        }
+        return pattern;
+    }
+
+    fn set_action(closure) {
+        action = closure;
+    }
+
+    fn play() {
+        current_step = array_next(current_pattern);
+        current_pause = array_next(pauses);
+        action(current_step, current_pause);
+        current_play_step += 1;
+        if (current_play_step >= change_after) {
+            current_play_step = 0;
+            next_necklace();
+        }
+    }
+
+    init();
+    return this;
+}
+
+
+
+// Convert binary string to rhythm pattern
+
+fn main()
+{
+
+    // Generate all binary necklaces of length 8 with 3 ones
+
+
+    kick_action = fn(step, pause) {
+        if (step) {
+            synth("kick1", freq: 250, amp: 0.1568);
+        }
+        if (pause) {
+            wait(1/2);
+        } else {
+            wait(1/4);
+        }
+    };
+
+    kick_rhythm = necklace_rhythm(8, 3, 0, 16, 7);
+    kick_rhythm.set_action(kick_action);
+
+    thread kick_main {
+        loop {
+            kick_rhythm.play();
+        }
+    }
+
+    // ---------------------------------------
+
+    kick_action2 = fn(step, pause) {
+        if (step) {
+            synth("kick1", freq: 800, amp: 0.21);
+        }
+        if (pause) {
+            wait(1/2);
+        } else {
+            wait(1);
+        }
+    };
+
+    kick_rhythm2 = necklace_rhythm(8, 3, 1, 16, 12);
+    kick_rhythm2.set_action(kick_action2);
+
+    thread kick_second {
+        wait(1/2);
+        loop {
+            kick_rhythm2.play();
+        }
+    }
+
+    // ---------------------------------------
+
+
+    kick_action3 = fn(step, pause) {
+        if (step) {
+            synth("kick2", freq: 700, amp: 0.54);
+        }
+        if (pause) {
+             wait(1/4);
+        } else {
+            wait(1/2);
+        }
+    };
+
+    kick_rhythm3 = necklace_rhythm(8, 3, 3, 16, 5);
+    kick_rhythm3.set_action(kick_action3);
+
+    thread kick_third {
+        // wait(1/2);
+        loop {
+            kick_rhythm3.play();
+        }
+    }
+
+    // ---------------------------------------
+
+    thread hat1 {
+        hat_seq = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
+        loop {
+            next = array_next(hat_seq, true);
+            if (next == 1) {
+                synth("hat1", freq: 1000, amp: 0.324);
+            }
+            wait(1/4);
+        }
+    }
+
+    // ---------------------------------------
+
+    thread hat2 {
+        let hat_pattern = array_seq_euclidean(12, 18);
+        let hat_pause_pattern = array_seq_euclidean(7, 24);
+        loop {
+            next = array_next(hat_pattern, true);
+            if (next) {
+                synth("hat1", amp: rand(0.045, 0.085));
+            }
+            next_pause = array_next(hat_pause_pattern, true);
+            if (next_pause) {
+                wait(1/4);
+            } else {
+                wait(1/2);
+            }
+        }
+    }
+
+    thread bass_slow {
+        seed("jjj");
+        let bass_slow_walk = array_mel_random_walk(60, 48, 64, 5, 16);
+        let bass_note_on_pattern = array_seq_euclidean(12, 18);
+        let bass_pause_pattern = array_seq_euclidean(5, 32);
+        let bass_release_patt = array_mel_random_walk(1.0, 0.125, 3, 0.25, 32);
+        let bass_lpff_patt = array_mel_random_walk(600, 600, 4000, 225, 64);
+        let bass_synth_id = nil;
+        let bass_instrument_patt = array_seq_euclidean(9, 32);
+        let bass_instrument_weight = [6, 9, 15, 18, 20, 26];
+        let bass_slow_loop_counter = 0;
+        let long_pauses_patt = [1/2, 1/4, 1, 2, 1, 1/2, 1/3, 1/6, 1/6, 1/3, 0.01];
+        let attack_patt = array_mel_random_walk(0.01, 0.01, 3, 0.15, 256);
+        let amp_patt = array_mel_random_walk(0.1, 0.05, 0.2, 0.03, 256);
+        wait(1/2);
+        loop {
+            next_hit = array_next(bass_note_on_pattern, true);
+            if (next_hit) {
+                bass_slow_loop_counter += 1;
+                if (bass_slow_loop_counter % 32 == 0) {
+                    bass_instrument_patt = array_seq_euclidean(array_next(bass_instrument_weight, true), 32);
+                }
+                next_note = array_next(bass_slow_walk, true);
+                instrument = "bass1";
+                instrument_choice = array_next(bass_instrument_patt, true);
+                if (instrument_choice) {
+                    instrument = "bass1";
+                } else {
+                    instrument = "bass2";
+                    // instrument = array_rand(["bass1", "bass2"]);
+                }
+                bass_synth_id = synth(instrument, freq: tune(next_note + array_rand([0, 0, 0, 0, 12, -7, 7, 3])),
+                    gate: 1,
+                    atk: array_next(attack_patt, true),
+                    sus: 0.9,
+                    rel: array_next(bass_release_patt, true),
+                    send1: array_rand([2,4]),
+                    send1_gain: 0.4,
+                    amp: array_next(amp_patt, true),
+                    lpffreq: array_next(bass_lpff_patt, true)
+                );
+            }
+            next_pause = array_next(bass_pause_pattern, true);
+            if (next_pause) {
+                wait(array_next(long_pauses_patt, true));
+            } else {
+                wait(array_rand([0.5, 0.25]));
+            }
+            if (next_hit && bass_synth_id) {
+                set(bass_synth_id, gate:0);
+            }
+        }
+    }
+
+    thread composer {
+        total_bars = 0;
+        loop {
+            wait(1);
+            total_bars += 1;
+
+            if (total_bars % 32 == 0) {
+                if (root_note > 0) {
+                    root_note = 0;
+                } else {
+                    root_note = array_rand([3,5,7,12]);
+                }
+                print("root_note", root_note);
+            }
+
+        }
+    }
+
+
+
+}
+

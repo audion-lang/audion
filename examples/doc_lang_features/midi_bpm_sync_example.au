@@ -1,0 +1,57 @@
+// MIDI BPM Sync Example
+// This example shows how to sync Audion's internal clock to MIDI clock
+// The convenience function midi_bpm_sync() does this automatically
+
+print("MIDI BPM Sync Example");
+print("Connect a MIDI clock source (DAW, drum machine, etc.)");
+print("");
+
+// Set initial BPM
+bpm(120);
+print("Initial BPM: " + str(bpm()));
+
+// Enable BPM sync to MIDI clock on port 0
+// This will automatically update the BPM as MIDI clock messages arrive
+midi_bpm_sync(0, true);
+print("BPM sync enabled - listening for MIDI clock on port 0");
+print("");
+
+// Create a simple beat that follows the synced BPM
+thread kick_pattern {
+    loop {
+        synth("default", freq: 60, amp: 0.8);
+        wait(1);  // Wait 1 beat - this will follow the MIDI clock!
+    }
+}
+
+thread hihat_pattern {
+    loop {
+        synth("default", freq: 8000, amp: 0.3);
+        wait(0.5);  // Wait half a beat
+    }
+}
+
+// Monitor BPM changes
+thread bpm_monitor {
+    let last_bpm = bpm();
+    loop {
+        let current_bpm = bpm();
+        if (current_bpm != last_bpm) {
+            print("BPM changed: " + str(current_bpm));
+            last_bpm = current_bpm;
+        }
+        wait_ms(500);
+    }
+}
+
+print("Playing patterns synced to MIDI clock...");
+print("Press Ctrl+C to exit");
+print("");
+
+// Main loop
+loop {
+    wait(4);  // Wait 4 beats
+}
+
+// To disable sync and revert to previous BPM:
+// midi_bpm_sync(0, false);

@@ -1,0 +1,65 @@
+// De Bruijn Scales - Generate all possible note patterns
+
+bpm(140);
+
+fn array_loop_forward(arr) {
+    item = array_next(arr);
+    if (item == nil) {
+        return array_beginning(arr);
+    }
+    return item;
+}
+
+define ping(freq, amp, gate, samplefile)
+{
+    let sig = sine(freq * 2) * env(gate, 0.001, 0, 0.15);
+    out(0, sig * amp);
+}
+
+fn string_to_notes(debruijn_str, scale) {
+    // Convert de Bruijn digit string to notes from a scale
+    let result = [];
+    let i = 0;
+    let debruijn_str_arr = str_explode("", debruijn_str);
+    while (i < count(debruijn_str_arr)) {
+        let digit_char = debruijn_str_arr[i];
+        let idx = int(digit_char);
+        let note = scale[idx];
+        array_push(result, note);
+        i = i + 1;
+    }
+    return result;
+}
+
+fn main() {
+    // Pentatonic scale (5 notes)
+    let pentatonic = [60, 62, 65, 67, 69];
+
+    // Generate 5-ary de Bruijn sequence of order 2
+    // This will contain all possible 2-note patterns using 5 symbols
+    let debruijn = array_mel_debruijn_k(5, 3, 0);
+    print("De Bruijn sequence:", debruijn);
+    print("Length:", count(debruijn));
+
+    // Convert to melody
+    let melody = string_to_notes(debruijn, pentatonic);
+    print("Melody has", count(melody), "notes");
+
+    // Alternative: ternary (3 notes) sequence
+    let triad = [60, 64, 67];  // C major triad
+    let debruijn3 = array_mel_debruijn_k(3, 3, 0);
+    print("Ternary de Bruijn:", debruijn3);
+
+    let melody3 = string_to_notes(debruijn3, triad);
+
+    // Play the pentatonic de Bruijn melody
+    thread player {
+        loop {
+            let note = array_loop_forward(melody);
+            if (note != nil) {
+                synth("ping", freq: mtof(note), amp: 0.25);
+                wait(1/4);
+            }
+        }
+    }
+}

@@ -1,0 +1,15 @@
+! 5-phrygian-et.scl
+! Created using Scale Workshop 1.4.2
+!
+! https://sevish.com/scaleworkshop/?name=5-phrygian-et&data=100.%0A300.%0A500.%0A700.%0A800.%0A1000.%0A1200.&freq=440&midi=69&vert=5&horiz=1&colors=white%20black%20white%20white%20black%20white%20black%20white%20white%20black%20white%20black&waveform=semisine&ampenv=organ
+!
+5-phrygian-et
+ 7
+!
+ 100.
+ 300.
+ 500.
+ 700.
+ 800.
+ 1000.
+ 1200.

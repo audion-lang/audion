@@ -36,6 +36,7 @@ pub struct Clock {
 impl Clock {
     pub fn new(bpm: f64) -> Self {
         let link = AblLink::new(bpm);
+        link.enable(false);
         Clock {
             bpm_bits: AtomicU64::new(bpm.to_bits()),
             start_time: Instant::now(),

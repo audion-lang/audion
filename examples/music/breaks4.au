@@ -162,19 +162,19 @@ let next_tune_walk = 0;
 
 fn tune(n) {
     // return mtof(n, "./2-harmonic-minor-et.scl");
-    // return mtof(n, "../scala_scales_common/7-mixolydian-et.scl");
+    // return mtof(n, "../scala_scales/7-mixolydian-et.scl");
     // return mtof(n, "/Volumes/worx/soft/audion/examples/ignore_scala_scales/starling.scl");
-    // scale_file = "../scala_scales_common/4-dorian-et.scl";
-    scale_file = "../scala_scales_common/7-mixolydian-et.scl";
+    // scale_file = "../scala_scales/4-dorian-et.scl";
+    scale_file = "../scala_scales/7-mixolydian-et.scl";
     return mtof(math_clamp((n + next_tune_walk) / 1.2, 54, 75), scale_file);
 }
 
 fn tune2(n) {
     // return mtof(n, "./2-harmonic-minor-et.scl");
-    // return mtof(n, "../scala_scales_common/7-mixolydian-et.scl");
+    // return mtof(n, "../scala_scales/7-mixolydian-et.scl");
     // return mtof(n, "/Volumes/worx/soft/audion/examples/ignore_scala_scales/starling.scl");
-    // scale_file = "../scala_scales_common/4-dorian-et.scl";
-    scale_file = "../scala_scales_common/7-mixolydian-et.scl";
+    // scale_file = "../scala_scales/4-dorian-et.scl";
+    scale_file = "../scala_scales/7-mixolydian-et.scl";
     return mtof(n / 1.2, scale_file);
 }
 

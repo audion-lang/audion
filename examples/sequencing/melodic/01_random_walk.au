@@ -10,7 +10,8 @@ define melody(freq, amp, gate, samplefile)
 }
 
 fn main() {
-    seed("drama");
+    let seed_phrase = "drama";
+    seed(seed_phrase);
     // Generate a random walk melody
     // Starts at MIDI note 60 (C4), walks between 48-72 with max step of 2 semitones
     let walk1 = array_mel_random_walk(60, 48, 72, 2, 16);
@@ -30,9 +31,10 @@ fn main() {
         loop {
             let note = array_next(walk2);
             if (note != nil) {
-                synth("melody", freq: mtof(note, "./examples/scala_scales_common/1-natural-minor-et.scl"), amp: 0.3);
+                synth("melody", freq: mtof(note, "../../scala_scales/1-natural-minor-et.scl"), amp: 0.3);
                 wait(1/3);
             }
+
         }
     }
 }

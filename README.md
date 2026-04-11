@@ -60,16 +60,14 @@ fn main() {
     }
 }
 ```
-<audio controls>
-  <source src="assets/readme.mp3" type="audio/mpeg">
-  Your browser does not support the audio element.
-</audio>
+
+Listen to the [result here](assets/readme.mp3)
 
 ---
 
 ## Why Audion
 
-Most creative coding tools make you choose: learn a domain-specific environment that can't do proper general programming, or wrestle a general-purpose language into doing creative work. Audion has just the right amount of built-in functionality that should get you where you want: the creative space. If you don't see what you need yet, please check the [Roadmap](docs/ROADMAP.md) and if still not there, open a feature request!
+Most creative coding tools make you choose: learn a domain-specific environment that can't do proper general programming, or wrestle a general-purpose language into doing creative work. Audion aims to have just the right amount of built-ins to let you just do what you want: work in the creative space. If you don't see what you need yet, please check the [Roadmap](docs/ROADMAP.md) and if still not there, feature requests welcome!
 
 
 - **Sound** -- full SuperCollider synthesis, custom SynthDefs, sample playback, disk streaming

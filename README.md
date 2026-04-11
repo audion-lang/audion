@@ -20,7 +20,6 @@ Run this example with `./audion run examples/readme.au`.
 ```c
 bpm(128);
 
-// define an instruent, (don't worry theres lots available already)
 define tom(freq, amp, gate) {
     let sig = sine(freq) * env(gate, 0.01, 0, 0.45) * amp;
     out(0, sig);
@@ -28,16 +27,15 @@ define tom(freq, amp, gate) {
 }
 
 fn main() {
-
     thread keys {
-        seed("Your time machine into the future of randomness");
+        seed("seed randomness");
         scale = [60, 64, 67, 71, 72];
         pauses = array_seq_euclidean(5, 8);
         loop {
             note = array_rand(scale);
             tuned_note = mtof(note);
             synth("tom", freq: tuned_note);
-            if (array_next(pauses, true)) {
+            if (array_next(pauses)) {
                 wait(0.5);
             } else {
                 wait(0.25);
@@ -48,7 +46,7 @@ fn main() {
     thread bass_with_strobe {
         loop_counter = 0;
         bassline = [160, 190];
-        bass_freq = array_next(bassline, true);
+        bass_freq = bassline[0];
         loop {
             osc_send("/light/strobe", rand(0.2, 0.4));
             synth("tom", freq: bass_freq);
@@ -56,7 +54,7 @@ fn main() {
             loop_counter += 1;
             if (loop_counter % 32 == 0) {
                 osc_send("/light/strobe", rand(0.6, 0.8));
-                bass_freq = array_next(bassline, true);
+                bass_freq = array_next(bassline);
             }
         }
     }

@@ -3,15 +3,7 @@
 This is a list of features that will be added, the order is not definite and this list may be incomplete. If you have an idea please open a feature request. We will make our best effort to respond quickly. The idea behind Audion is to be small, useful and most of all: fun. Programming (and therefore creating) can be fun, don't beleive anyone that tells you otherwise.
 
 ### error handling
-Currently this is too simple. Simple is good but too simple may not be.
-
-### asserting
-useful for unit testing:
-assert(true, "explanation of error", stop_execution);
-first arg needs to pass,
-message is always sent to stdout if false, unless null is passed, stop_execution if true then stops and errors out, exit code is more than 0,
-if false, it should set up a shutdown call that makes some stats like a unit test suite would, how many passed, how many failed.
-
+has been improved but we may want to catch errors in situations like API calls etc.
 
 ### binding to libusb
 rusb - Rust binding to libusb, which works across multiple platforms

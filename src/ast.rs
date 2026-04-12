@@ -159,10 +159,11 @@ pub enum UGenExpr {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    ExprStmt(Expr),
+    ExprStmt(Expr, usize),
     Let {
         name: String,
         init: Option<Expr>,
+        line: usize,
     },
     Block(Vec<Stmt>),
     If {

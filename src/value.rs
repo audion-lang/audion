@@ -237,6 +237,7 @@ pub enum Value {
         params: Vec<Param>,
         body: Stmt,
         closure: Arc<Mutex<Environment>>,
+        file: String,
     },
     BuiltinFn(String),
     Bytes(Vec<u8>),
@@ -317,6 +318,7 @@ impl Value {
                         params,
                         body,
                         closure,
+                        file,
                     } = value
                     {
                         let new_closure = if Arc::ptr_eq(closure, env_arc) {
@@ -331,6 +333,7 @@ impl Value {
                                 params: params.clone(),
                                 body: body.clone(),
                                 closure: new_closure,
+                                file: file.clone(),
                             },
                         );
                     }

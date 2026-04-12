@@ -177,14 +177,20 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let base_path = path.canonicalize().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()));
     let args: Vec<String> = std::env::args().collect();
 
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+
     if !watch {
         let source = read_source(path);
         let stmts = try_compile(&source, "").unwrap_or_else(|| std::process::exit(1));
         let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        interp.current_file = file_name.clone();
         if let Err(e) = interp.run(&stmts) {
             eprintln!("{}", e);
             osc.free_all_nodes();
             osc.free_all_buffers();
+            std::process::exit(1);
+        }
+        if builtins::print_assert_stats() {
             std::process::exit(1);
         }
         return;
@@ -197,6 +203,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
 
     if let Some(stmts) = try_compile(&source, "watch: ") {
         let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
             Ok(_) => { interp = Some(new_interp); }
             Err(e) => { eprintln!("{}", e); }
@@ -234,7 +241,9 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             shutdown.store(false, Ordering::Relaxed);
         }
 
+        builtins::reset_assert_stats();
         let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
             Ok(_) => {
                 eprintln!("reloaded {}", path.display());

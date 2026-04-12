@@ -68,6 +68,7 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> Result<Stmt> {
+        let line = self.peek().span.line;
         self.advance(); // consume 'let'
         let name = self.expect_ident()?;
         let init = if self.match_token(TokenKind::Eq) {
@@ -76,7 +77,7 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Semicolon)?;
-        Ok(Stmt::Let { name, init })
+        Ok(Stmt::Let { name, init, line })
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt> {
@@ -166,9 +167,10 @@ impl Parser {
             let s = self.parse_let()?; // includes semicolon
             Some(Box::new(s))
         } else {
+            let line = self.peek().span.line;
             let expr = self.parse_expr()?;
             self.expect(TokenKind::Semicolon)?;
-            Some(Box::new(Stmt::ExprStmt(expr)))
+            Some(Box::new(Stmt::ExprStmt(expr, line)))
         };
 
         // cond
@@ -454,9 +456,10 @@ impl Parser {
     }
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt> {
+        let line = self.peek().span.line;
         let expr = self.parse_expr()?;
         self.expect(TokenKind::Semicolon)?;
-        Ok(Stmt::ExprStmt(expr))
+        Ok(Stmt::ExprStmt(expr, line))
     }
 
     // --- Expressions (Pratt parsing) ---

@@ -1,0 +1,75 @@
+print("observer pattern example");
+
+/*
+    the observer pattern lets one object (the subject) notify
+    many listeners (observers) when its state changes.
+
+    in audion, this works naturally with closure-based objects:
+    - subscribe() adds a callback to a shared list
+    - set() updates the value and calls every registered callback
+    - all methods share the same closure environment, so mutations
+      to _observers in subscribe() are visible inside set()
+*/
+
+fn make_observable(initial) {
+    let _value = initial;
+    let _observers = [];
+
+    fn get() {
+        return _value;
+    }
+
+    fn set(new_val) {
+        _value = new_val;
+        for (i = 0; i < count(_observers); i+=1) {
+            _observers[i](new_val);
+        }
+    }
+
+    fn subscribe(callback) {
+        push(_observers, callback);
+    }
+
+    fn unsubscribe_all() {
+        _observers = [];
+    }
+
+    return this;
+}
+
+// --- basic usage ---
+
+let freq = make_observable(440);
+
+freq.subscribe(fn(v) {
+    print("listener A: freq is now " + v);
+});
+
+freq.subscribe(fn(v) {
+    print("listener B: " + (v / 440.0) + "x the reference pitch");
+});
+
+freq.set(880);
+// listener A: freq is now 880
+// listener B: 2x the reference pitch
+
+freq.set(220);
+// listener A: freq is now 220
+// listener B: 0.5x the reference pitch
+
+print("current value: " + freq.get());
+
+// --- multiple independent observables ---
+
+print("");
+print("two independent instances:");
+
+let tempo = make_observable(120);
+let volume = make_observable(1.0);
+
+tempo.subscribe(fn(v) { print("tempo changed: " + v + " bpm"); });
+volume.subscribe(fn(v) { print("volume changed: " + v); });
+
+tempo.set(140);
+volume.set(0.8);
+tempo.set(160);

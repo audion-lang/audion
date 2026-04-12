@@ -3,7 +3,7 @@
 This is a list of features that will be added, the order is not definite and this list may be incomplete. If you have an idea please open a feature request. We will make our best effort to respond quickly. The idea behind Audion is to be small, useful and most of all: fun. Programming (and therefore creating) can be fun, don't beleive anyone that tells you otherwise.
 
 ### error handling
-has been improved but we may want to catch errors in situations like API calls etc.
+has been improved but we may want to *catch* errors in situations like API calls etc.
 
 ### binding to libusb
 rusb - Rust binding to libusb, which works across multiple platforms

@@ -1,0 +1,97 @@
+// conversions.au — number base conversion builtins
+//
+// hex(n)        → lowercase hex string, no prefix
+// hex(n, width) → zero-padded to `width` characters
+// bin(n)        → binary string
+// bin(n, width) → zero-padded binary
+// oct(n)        → octal string
+// oct(n, width) → zero-padded octal
+//
+// int() now parses prefixed strings: "0xff", "0b1010", "0o777"
+
+fn main() {
+
+    // -----------------------------------------------------------------------
+    // hex()
+    // -----------------------------------------------------------------------
+
+    print("--- hex() ---");
+    print(hex(255));          // "ff"
+    print(hex(0));            // "0"
+    print(hex(255, 4));       // "00ff"   zero-padded to 4 chars
+    print(hex(255, 2));       // "ff"     already wide enough — never truncates
+
+    // Packing RGB into a CSS-style color string
+    let r = 255;
+    let g = 136;
+    let b = 0;
+    let color = "#" + hex(r, 2) + hex(g, 2) + hex(b, 2);
+    print("color: " + color);  // #ff8800
+
+    // DMX channel values as hex
+    let dimmer = 200;
+    let strobe = 64;
+    print("dimmer=0x" + hex(dimmer, 2) + " strobe=0x" + hex(strobe, 2));
+
+    // -----------------------------------------------------------------------
+    // bin()
+    // -----------------------------------------------------------------------
+
+    print("--- bin() ---");
+    print(bin(10));           // "1010"
+    print(bin(255));          // "11111111"
+    print(bin(5, 8));         // "00000101"
+
+    // Visualise a euclidean rhythm as a binary string
+    let pattern = 0b1010_1100;
+    print("pattern: " + bin(pattern, 8));   // "10101100"
+
+    // Check each step
+    for (let i = 7; i >= 0; i -= 1) {
+        let hit = (pattern >> i) & 1;
+        if (hit == 1) {
+            print("step " + (7 - i) + ": X");
+        } else {
+            print("step " + (7 - i) + ": .");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // oct()
+    // -----------------------------------------------------------------------
+
+    print("--- oct() ---");
+    print(oct(8));            // "10"
+    print(oct(0o755));        // "755"
+    print(oct(7, 4));         // "0007"
+
+    // -----------------------------------------------------------------------
+    // int() with prefixed strings
+    // -----------------------------------------------------------------------
+
+    print("--- int() with prefixed strings ---");
+    print(int("0xff"));       // 255
+    print(int("0xFF"));       // 255  (case-insensitive)
+    print(int("0b10101010")); // 170
+    print(int("0o777"));      // 511
+    print(int("1_000_000"));  // 1000000  (underscores stripped)
+
+    // -----------------------------------------------------------------------
+    // Round-trips
+    // -----------------------------------------------------------------------
+
+    print("--- round-trips ---");
+
+    let val = 200;
+    let back = int("0x" + hex(val));
+    print(val + " → hex → int: " + back);   // 200
+
+    let val2 = 42;
+    let back2 = int("0b" + bin(val2));
+    print(val2 + " → bin → int: " + back2); // 42
+
+    let val3 = 100;
+    let back3 = int("0o" + oct(val3));
+    print(val3 + " → oct → int: " + back3); // 100
+
+}

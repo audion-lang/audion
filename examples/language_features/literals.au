@@ -1,0 +1,124 @@
+// literals.au — numeric literal formats
+//
+// Audion supports hex, binary, octal, scientific notation,
+// and underscore separators in all numeric literals.
+
+fn main() {
+
+    // -----------------------------------------------------------------------
+    // Hex  0x…
+    // -----------------------------------------------------------------------
+    // Great for DMX values, colors, MIDI, and bitmasks.
+    // Uppercase and lowercase letters both work.
+
+    let full_brightness = 0xFF;        // 255
+    let half_brightness = 0x80;        // 128
+    let dmx_strobe      = 0x40;        // 64
+
+    print("--- hex ---");
+    print("full_brightness: " + full_brightness);
+    print("half_brightness: " + half_brightness);
+    print("dmx_strobe:      " + dmx_strobe);
+
+    // Colors packed as 0xRRGGBB
+    let red     = 0xFF_00_00;
+    let green   = 0x00_FF_00;
+    let blue    = 0x00_00_FF;
+    let orange  = 0xFF_88_00;
+    let magenta = 0xFF_00_FF;
+
+    print("red:     " + red);
+    print("orange:  " + orange);
+    print("magenta: " + magenta);
+
+    // -----------------------------------------------------------------------
+    // Binary  0b…
+    // -----------------------------------------------------------------------
+    // Useful for beat patterns, flags, and bitmasks.
+    // Underscores every 4 bits (nibbles) keep it readable.
+
+    print("--- binary ---");
+
+    let kick_pattern  = 0b1000_1000;   // beat on 1 and 5
+    let snare_pattern = 0b0010_0010;   // beat on 3 and 7
+    let hihat_pattern = 0b1010_1010;   // every even step
+
+    print("kick:  " + kick_pattern);
+    print("snare: " + snare_pattern);
+    print("hihat: " + hihat_pattern);
+
+    // Check a specific beat using bitwise AND
+    let step = 1;   // step index 0–7
+    let hit = (kick_pattern >> step) & 1;
+    print("kick hits on step " + step + ": " + hit);
+
+    // Full byte
+    let all_on  = 0b1111_1111;  // 255
+    let all_off = 0b0000_0000;  // 0
+    print("all on:  " + all_on);
+    print("all off: " + all_off);
+
+    // -----------------------------------------------------------------------
+    // Octal  0o…
+    // -----------------------------------------------------------------------
+
+    print("--- octal ---");
+
+    let file_perms = 0o755;    // rwxr-xr-x = 493
+    let read_only  = 0o444;    // 292
+    print("755 perms: " + file_perms);
+    print("444 perms: " + read_only);
+
+    // -----------------------------------------------------------------------
+    // Underscore separators
+    // -----------------------------------------------------------------------
+    // Works in decimal, hex, binary, and octal.
+    // Pure readability — underscores are stripped before parsing.
+
+    print("--- underscores ---");
+
+    let sample_rate  = 44_100;         // Hz
+    let bit_rate     = 1_411_200;      // 44100 * 32 * 2
+    let one_million  = 1_000_000;
+    let pi_approx    = 3.141_592_653;
+
+    print("sample rate: " + sample_rate);
+    print("bit rate:    " + bit_rate);
+    print("pi:          " + pi_approx);
+
+    // -----------------------------------------------------------------------
+    // Scientific notation
+    // -----------------------------------------------------------------------
+    // e or E, optional + or -.
+
+    print("--- scientific ---");
+
+    let sr_sci    = 44.1e3;    // 44100.0
+    let millisec  = 1e-3;      // 0.001 seconds
+    let kilohertz = 1e3;       // 1000 Hz
+    let megabyte  = 1e6;       // 1000000
+
+    print("44.1e3 = " + sr_sci);
+    print("1e-3   = " + millisec);
+    print("1e3    = " + kilohertz);
+    print("1e6    = " + megabyte);
+
+    // Mixing scientific and underscore separators
+    let large = 1_000e3;       // 1,000 × 1000 = 1,000,000
+    print("1_000e3 = " + large);
+
+    // -----------------------------------------------------------------------
+    // Practical: DMX scene using hex values
+    // -----------------------------------------------------------------------
+
+    print("--- dmx scene example (values only, not sending) ---");
+
+    let dimmer = 0xFF;         // full
+    let r      = 0xFF;
+    let g      = 0x60;
+    let b      = 0x00;
+    let strobe = 0x00;         // strobe off
+
+    print("dimmer=" + dimmer + " R=" + r + " G=" + g + " B=" + b + " strobe=" + strobe);
+
+}

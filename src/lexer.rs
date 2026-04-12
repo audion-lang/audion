@@ -213,18 +213,92 @@ impl Lexer {
         Ok(TokenKind::StringLit(s))
     }
 
-    fn read_number(&mut self, _start: usize) -> TokenKind {
-        while !self.is_at_end() && self.peek().is_ascii_digit() {
-            self.advance();
-        }
-        if !self.is_at_end() && self.peek() == '.' && self.peek_next().is_ascii_digit() {
-            self.advance(); // consume '.'
-            while !self.is_at_end() && self.peek().is_ascii_digit() {
-                self.advance();
+    fn read_number(&mut self, start: usize) -> TokenKind {
+        // Check for 0x / 0b / 0o prefixes when the leading digit was '0'
+        if self.source[start] == '0' && !self.is_at_end() {
+            match self.peek() {
+                'x' | 'X' => {
+                    self.advance(); // consume 'x'
+                    while !self.is_at_end()
+                        && (self.peek().is_ascii_hexdigit() || self.peek() == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw: String = self.source[start + 2..self.pos]
+                        .iter()
+                        .filter(|&&c| c != '_')
+                        .collect();
+                    let n = u64::from_str_radix(&raw, 16).unwrap_or(0) as f64;
+                    return TokenKind::Number(n);
+                }
+                'b' | 'B' => {
+                    self.advance(); // consume 'b'
+                    while !self.is_at_end()
+                        && (self.peek() == '0' || self.peek() == '1' || self.peek() == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw: String = self.source[start + 2..self.pos]
+                        .iter()
+                        .filter(|&&c| c != '_')
+                        .collect();
+                    let n = u64::from_str_radix(&raw, 2).unwrap_or(0) as f64;
+                    return TokenKind::Number(n);
+                }
+                'o' | 'O' => {
+                    self.advance(); // consume 'o'
+                    while !self.is_at_end()
+                        && (matches!(self.peek(), '0'..='7') || self.peek() == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw: String = self.source[start + 2..self.pos]
+                        .iter()
+                        .filter(|&&c| c != '_')
+                        .collect();
+                    let n = u64::from_str_radix(&raw, 8).unwrap_or(0) as f64;
+                    return TokenKind::Number(n);
+                }
+                _ => {}
             }
         }
-        let text: String = self.source[_start..self.pos].iter().collect();
-        TokenKind::Number(text.parse::<f64>().unwrap())
+
+        // Decimal integer part (with optional underscores)
+        while !self.is_at_end() && (self.peek().is_ascii_digit() || self.peek() == '_') {
+            self.advance();
+        }
+
+        // Optional fractional part
+        if !self.is_at_end() && self.peek() == '.' {
+            let next = self.peek_next();
+            if next.is_ascii_digit() || next == '_' {
+                self.advance(); // consume '.'
+                while !self.is_at_end() && (self.peek().is_ascii_digit() || self.peek() == '_') {
+                    self.advance();
+                }
+            }
+        }
+
+        // Optional exponent: e/E followed by optional +/- and digits
+        if !self.is_at_end() && (self.peek() == 'e' || self.peek() == 'E') {
+            let next = self.peek_next();
+            if next.is_ascii_digit() || next == '+' || next == '-' || next == '_' {
+                self.advance(); // consume 'e'
+                if !self.is_at_end() && (self.peek() == '+' || self.peek() == '-') {
+                    self.advance();
+                }
+                while !self.is_at_end() && (self.peek().is_ascii_digit() || self.peek() == '_') {
+                    self.advance();
+                }
+            }
+        }
+
+        // Strip underscores before parsing
+        let text: String = self.source[start..self.pos]
+            .iter()
+            .filter(|&&c| c != '_')
+            .collect();
+        TokenKind::Number(text.parse::<f64>().unwrap_or(0.0))
     }
 
     fn read_identifier(&mut self, start: usize) -> TokenKind {

@@ -579,6 +579,134 @@ fn test_link_request_beat() {
     assert_eq!(val, Value::Bool(true));
 }
 
+// ---------------------------------------------------------------------------
+// hex / bin / oct conversions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_hex_basic() {
+    assert_eq!(eval("hex(255);"), Value::String("ff".to_string()));
+}
+
+#[test]
+fn test_hex_zero() {
+    assert_eq!(eval("hex(0);"), Value::String("0".to_string()));
+}
+
+#[test]
+fn test_hex_padded() {
+    assert_eq!(eval("hex(255, 4);"), Value::String("00ff".to_string()));
+}
+
+#[test]
+fn test_hex_color_value() {
+    assert_eq!(eval("hex(0xFF8800, 6);"), Value::String("ff8800".to_string()));
+}
+
+#[test]
+fn test_hex_already_wider_than_width() {
+    // width is a minimum — never truncates
+    assert_eq!(eval("hex(255, 1);"), Value::String("ff".to_string()));
+}
+
+#[test]
+fn test_bin_basic() {
+    assert_eq!(eval("bin(10);"), Value::String("1010".to_string()));
+}
+
+#[test]
+fn test_bin_zero() {
+    assert_eq!(eval("bin(0);"), Value::String("0".to_string()));
+}
+
+#[test]
+fn test_bin_full_byte() {
+    assert_eq!(eval("bin(255);"), Value::String("11111111".to_string()));
+}
+
+#[test]
+fn test_bin_padded() {
+    assert_eq!(eval("bin(5, 8);"), Value::String("00000101".to_string()));
+}
+
+#[test]
+fn test_bin_pattern() {
+    assert_eq!(eval("bin(0b10101010);"), Value::String("10101010".to_string()));
+}
+
+#[test]
+fn test_oct_basic() {
+    assert_eq!(eval("oct(8);"), Value::String("10".to_string()));
+}
+
+#[test]
+fn test_oct_zero() {
+    assert_eq!(eval("oct(0);"), Value::String("0".to_string()));
+}
+
+#[test]
+fn test_oct_permissions() {
+    assert_eq!(eval("oct(0o755);"), Value::String("755".to_string()));
+}
+
+#[test]
+fn test_oct_padded() {
+    assert_eq!(eval("oct(7, 4);"), Value::String("0007".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// int() parsing of prefixed strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_int_from_hex_string() {
+    assert_eq!(eval(r#"int("0xff");"#), Value::Number(255.0));
+}
+
+#[test]
+fn test_int_from_hex_uppercase() {
+    assert_eq!(eval(r#"int("0xFF");"#), Value::Number(255.0));
+}
+
+#[test]
+fn test_int_from_bin_string() {
+    assert_eq!(eval(r#"int("0b1010");"#), Value::Number(10.0));
+}
+
+#[test]
+fn test_int_from_oct_string() {
+    assert_eq!(eval(r#"int("0o777");"#), Value::Number(511.0));
+}
+
+#[test]
+fn test_int_plain_string_still_works() {
+    assert_eq!(eval(r#"int("42");"#), Value::Number(42.0));
+}
+
+#[test]
+fn test_int_string_with_underscores() {
+    assert_eq!(eval(r#"int("1_000");"#), Value::Number(1000.0));
+}
+
+// ---------------------------------------------------------------------------
+// round-trip: literal → hex() → int()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_roundtrip_hex() {
+    assert_eq!(eval("int(\"0x\" + hex(200));"), Value::Number(200.0));
+}
+
+#[test]
+fn test_roundtrip_bin() {
+    assert_eq!(eval("int(\"0b\" + bin(42));"), Value::Number(42.0));
+}
+
+#[test]
+fn test_roundtrip_oct() {
+    assert_eq!(eval("int(\"0o\" + oct(100));"), Value::Number(100.0));
+}
+
 #[test]
 fn test_bpm_through_link() {
     let val = eval(r#"

@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use audion::clock::Clock;
+use audion::dmx::DmxClient;
 use audion::environment::Environment;
 use audion::interpreter::Interpreter;
 use audion::lexer::Lexer;
@@ -1260,11 +1261,12 @@ fn test_midi_note_requires_args() {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new("127.0.0.1:57110"));
     let midi = Arc::new(MidiClient::new());
+    let dmx = Arc::new(DmxClient::new());
     let osc_protocol = Arc::new(OscProtocolClient::new());
     let clock = Arc::new(Clock::new(120.0));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, osc_protocol, clock, shutdown, false, synthdef_cache);
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache);
 
     let mut lex = Lexer::new("midi_note(60);");
     let tokens = lex.tokenize().unwrap();
@@ -1278,11 +1280,12 @@ fn test_midi_cc_requires_args() {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new("127.0.0.1:57110"));
     let midi = Arc::new(MidiClient::new());
+    let dmx = Arc::new(DmxClient::new());
     let osc_protocol = Arc::new(OscProtocolClient::new());
     let clock = Arc::new(Clock::new(120.0));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, osc_protocol, clock, shutdown, false, synthdef_cache);
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache);
 
     let mut lex = Lexer::new("midi_cc(1);");
     let tokens = lex.tokenize().unwrap();
@@ -1418,11 +1421,12 @@ fn test_osc_send_no_args_is_error() {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new("127.0.0.1:57110"));
     let midi = Arc::new(MidiClient::new());
+    let dmx = Arc::new(DmxClient::new());
     let osc_protocol = Arc::new(OscProtocolClient::new());
     let clock = Arc::new(Clock::new(120.0));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, osc_protocol, clock, shutdown, false, synthdef_cache);
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache);
 
     let mut lex = Lexer::new("osc_send();");
     let tokens = lex.tokenize().unwrap();
@@ -1460,11 +1464,12 @@ fn test_osc_send_loopback() {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new("127.0.0.1:57110"));
     let midi = Arc::new(MidiClient::new());
+    let dmx = Arc::new(DmxClient::new());
     let osc_protocol = Arc::new(OscProtocolClient::new());
     let clock = Arc::new(Clock::new(120.0));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, osc_protocol, clock, shutdown, false, synthdef_cache);
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache);
 
     let src = r#"
         osc_listen(19876);

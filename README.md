@@ -11,6 +11,20 @@ Adion will let you syncronize and sequence any  synthesizers, DAWs, lighting rig
 
 Audion is a capable scripting language for the stuff that doesn't need introduction: Database Queries, network requests, data analysis. It's small enough to run on some embedded systems like the Raspberry PI.
 
+
+## Quick Start
+
+- If you want to use Audion with Supercollider, download Supercollider and run it [SuperCollider](https://supercollider.github.io/) (run and "boot server")
+- Download [Nightly release](https://github.com/audion-lang/audion/releases/tag/nightly) then open a terminal and `./audion run ./examples/readme.au`
+
+
+## Documentation
+
+Full language reference, builtin function docs, and SynthDef guide:
+
+- [Language Reference](docs/LANGUAGE.md)
+
+
 ---
 
 Run this example with `./audion run examples/readme.au`.
@@ -80,7 +94,7 @@ Most creative coding tools make you choose: learn a domain-specific environment 
 
 Audion is currently in a beta phase, breaking changes are unlikely at this point. The language focus is on: good naming and features. You can download a precompiled binary and bundled working examples [Nightly releases](https://github.com/audion-lang/audion/releases/tag/nightly). Supercollider should be installed separately, Audion does not depend on supercollider.
 
-## Programming in the AI-Native Age.
+## Programming in the AI-Everything Age.
 
 Audion has a small, consistent syntax with clear naming conventions and no hidden magic. AI tools can learn to write Audion fluently using a tiny help file, `./audion spec` creates the docs/AGENTS.md file. Since the language is concise, you can describe complex audiovisual behavior in a few lines of natural language and get working code back. Use AI as a collaborator: describe the piece you want to build, iterate on the code together, and perform it live.
 
@@ -89,19 +103,6 @@ I recommend you try write it yourself. The language is designed to stay out of y
 AI models generalize poorly and creativity often involves making connections between seemingly unrelated concepts, ideas, or experiences. Your role is vital in this process.
 
 ---
-
-## Quick Start
-
-- If you want to use Audion with Supercollider, download Supercollider and run it [SuperCollider](https://supercollider.github.io/) (run and "boot server")
-- Download [Nightly release](https://github.com/audion-lang/audion/releases/tag/nightly) then open a terminal and `./audion run ./examples/readme.au`
-
-
-## Documentation
-
-Full language reference, builtin function docs, and SynthDef guide:
-
-- [Language Reference](docs/LANGUAGE.md)
-
 
 ### Watch Mode (Live Coding)
 

@@ -1,0 +1,84 @@
+// dmx.au — DMX512 lighting control via Art-Net
+//
+// Art-Net sends DMX over UDP, so no USB dongle is required.
+// You need one of:
+//   - A hardware Art-Net node (ENTTEC ODE, ArtNet2DMX, etc.)
+//   - Lighting software that accepts Art-Net input:
+//       QLC+      — free, cross-platform
+//       MadMapper — macOS/Windows
+//       Resolume  — macOS/Windows/Linux
+//
+// Default Art-Net port is 6454. Broadcast address 2.0.0.255 reaches all
+// nodes on a 2.x.x.x network; use your specific node IP for unicast.
+
+bpm(120);
+
+fn main() {
+    // --- Connect ---
+    // Broadcast to the standard Art-Net subnet, or replace with your node's IP.
+    let ok = dmx_connect("127.0.0.1");   // loopback for testing
+    print("dmx connected: " + ok);
+
+    // Set universe 0 (first universe, channels 1–512)
+    dmx_universe(0);
+
+    // --- Simple channel control ---
+
+    // Bring channel 1 (master dimmer) to full
+    dmx_set(1, 255);
+    dmx_send();
+    wait(1);
+
+    // Fade channel 1 down step by step
+    print("fading out...");
+    for (let v = 255; v >= 0; v -= 5) {
+        dmx_set(1, v);
+        dmx_send();
+        wait_ms(20);
+    }
+
+    // --- RGB fixture (channels 2, 3, 4 = R, G, B) ---
+
+    print("red");
+    dmx_set(2, 255);
+    dmx_set(3, 0);
+    dmx_set(4, 0);
+    dmx_send();
+    wait(1);
+
+    print("green");
+    dmx_set(2, 0);
+    dmx_set(3, 255);
+    dmx_set(4, 0);
+    dmx_send();
+    wait(1);
+
+    print("blue");
+    dmx_set(2, 0);
+    dmx_set(3, 0);
+    dmx_set(4, 255);
+    dmx_send();
+    wait(1);
+
+    // --- Set a range of channels at once ---
+    // e.g. a 7-channel fixture starting at channel 10
+    // [dimmer, R, G, B, strobe, gobo, pan]
+    let fixture = [200, 255, 128, 0, 0, 0, 127];
+    dmx_set_range(10, fixture);
+    dmx_send();
+    wait(2);
+
+    // --- Universe switching ---
+    // For rigs with more than 512 channels, use multiple universes
+    dmx_universe(1);
+    dmx_set(1, 128);
+    dmx_send();
+    wait(1);
+
+    // Back to universe 0
+    dmx_universe(0);
+
+    // --- Blackout ---
+    print("blackout");
+    dmx_blackout();
+}

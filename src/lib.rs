@@ -26,6 +26,7 @@ pub mod math;
 pub mod strings;
 pub mod sequences;
 pub mod melodies;
+pub mod dmx;
 pub mod midi;
 pub mod osc;
 pub mod osc_protocol;

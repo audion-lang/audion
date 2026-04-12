@@ -23,6 +23,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
 use crate::clock::Clock;
+use crate::dmx::DmxClient;
 use crate::environment::Environment;
 use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
@@ -44,6 +45,7 @@ pub fn run_repl(server: &str, bpm: f64) {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new(server));
     let midi = Arc::new(MidiClient::new());
+    let dmx = Arc::new(DmxClient::new());
     let osc_proto = Arc::new(OscProtocolClient::new());
     let clock = Arc::new(Clock::new(bpm));
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -60,7 +62,7 @@ pub fn run_repl(server: &str, bpm: f64) {
     .expect("failed to set Ctrl+C handler");
 
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interpreter = Interpreter::new(env, osc, midi, osc_proto, clock, shutdown, false, synthdef_cache);
+    let mut interpreter = Interpreter::new(env, osc, midi, dmx, osc_proto, clock, shutdown, false, synthdef_cache);
 
     // Store command-line arguments
     let args: Vec<String> = std::env::args().collect();

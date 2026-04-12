@@ -164,6 +164,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "str_substr", "str_starts_with", "str_ends_with",
     "date", "timestamp", "timestamp_ms",
     "int", "float", "bool", "str",
+    "hex", "bin", "oct",
     "exec",
     "hash",
     "math_abs", "math_acos", "math_acosh", "math_asin", "math_asinh",
@@ -344,6 +345,9 @@ pub fn call_builtin(
         "float" => builtin_float(args),
         "bool" => builtin_bool(args),
         "str" => builtin_str(args),
+        "hex" => builtin_hex(args),
+        "bin" => builtin_bin(args),
+        "oct" => builtin_oct(args),
         "exec" => builtin_exec(args),
         "hash" => builtin_hash(args),
         "math_abs" => crate::math::builtin_math_abs(args),
@@ -2762,6 +2766,24 @@ fn builtin_timestamp_ms(_args: &[Value]) -> Result<Value> {
 // Type casts — int, float, bool, str
 // ---------------------------------------------------------------------------
 
+fn parse_int_string(s: &str) -> f64 {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        let clean: String = hex.chars().filter(|&c| c != '_').collect();
+        return u64::from_str_radix(&clean, 16).unwrap_or(0) as f64;
+    }
+    if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        let clean: String = bin.chars().filter(|&c| c != '_').collect();
+        return u64::from_str_radix(&clean, 2).unwrap_or(0) as f64;
+    }
+    if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
+        let clean: String = oct.chars().filter(|&c| c != '_').collect();
+        return u64::from_str_radix(&clean, 8).unwrap_or(0) as f64;
+    }
+    let clean: String = s.chars().filter(|&c| c != '_').collect();
+    clean.parse::<f64>().unwrap_or(0.0).trunc()
+}
+
 fn builtin_int(args: &[Value]) -> Result<Value> {
     if args.is_empty() {
         return Err(AudionError::RuntimeError {
@@ -2770,7 +2792,7 @@ fn builtin_int(args: &[Value]) -> Result<Value> {
     }
     let result = match &args[0] {
         Value::Number(n) => n.trunc(),
-        Value::String(s) => s.parse::<f64>().unwrap_or(0.0).trunc(),
+        Value::String(s) => parse_int_string(s),
         Value::Bool(b) => if *b { 1.0 } else { 0.0 },
         Value::Nil => 0.0,
         other => return Err(AudionError::RuntimeError {
@@ -2814,6 +2836,72 @@ fn builtin_str(args: &[Value]) -> Result<Value> {
         });
     }
     Ok(Value::String(args[0].to_string()))
+}
+
+// hex(n)         → "ff"       lowercase hex string, no prefix
+// hex(n, width)  → "00ff"     zero-padded to width characters
+fn builtin_hex(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "hex() requires a number argument".to_string(),
+        });
+    }
+    let n = require_number("hex", &args[0])? as u64;
+    let width = if args.len() > 1 {
+        require_number("hex", &args[1])? as usize
+    } else {
+        0
+    };
+    let s = if width > 0 {
+        format!("{:0>width$x}", n, width = width)
+    } else {
+        format!("{:x}", n)
+    };
+    Ok(Value::String(s))
+}
+
+// bin(n)         → "1010"     binary string, no prefix
+// bin(n, width)  → "00001010" zero-padded to width characters
+fn builtin_bin(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "bin() requires a number argument".to_string(),
+        });
+    }
+    let n = require_number("bin", &args[0])? as u64;
+    let width = if args.len() > 1 {
+        require_number("bin", &args[1])? as usize
+    } else {
+        0
+    };
+    let s = if width > 0 {
+        format!("{:0>width$b}", n, width = width)
+    } else {
+        format!("{:b}", n)
+    };
+    Ok(Value::String(s))
+}
+
+// oct(n)         → "377"
+// oct(n, width)  → "0377"     zero-padded
+fn builtin_oct(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "oct() requires a number argument".to_string(),
+        });
+    }
+    let n = require_number("oct", &args[0])? as u64;
+    let width = if args.len() > 1 {
+        require_number("oct", &args[1])? as usize
+    } else {
+        0
+    };
+    let s = if width > 0 {
+        format!("{:0>width$o}", n, width = width)
+    } else {
+        format!("{:o}", n)
+    };
+    Ok(Value::String(s))
 }
 
 // ---------------------------------------------------------------------------

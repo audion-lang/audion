@@ -16,17 +16,11 @@ if false, it should set up a shutdown call that makes some stats like a unit tes
 ### binding to libusb
 rusb - Rust binding to libusb, which works across multiple platforms
 
-### dmx
-DMX512 protocol, standardized comm protocol developed for theater lighting. `dmx_*` functions
-
 ### more array functions
 sorting, reducing, mapping
 
 ### yields in generators
 be able to pause generation, lazy evaluation
-
-### more literals
-hex literals
 
 ### nice sound library
 doing sound design is cool but it may not be your priority, we need the basics readymade

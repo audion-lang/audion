@@ -97,6 +97,7 @@ fn hash_seed(input: &str) -> u64 {
 }
 
 use crate::clock::Clock;
+use crate::dmx::DmxClient;
 use crate::error::{AudionError, Result};
 use crate::midi::MidiClient;
 use crate::osc::OscClient;
@@ -224,6 +225,9 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_read_bytes", "file_write_bytes",
     "bytes_len", "bytes_get", "bytes_slice",
     "bytes_to_array", "array_to_bytes",
+    "dmx_connect", "dmx_universe",
+    "dmx_set", "dmx_set_range",
+    "dmx_send", "dmx_blackout",
 ];
 
 /// Resolve a potentially relative path against the source file's base directory.
@@ -243,6 +247,7 @@ pub fn call_builtin(
     named_args: &[(String, Value)],
     osc: &Arc<OscClient>,
     midi: &Arc<MidiClient>,
+    dmx: &Arc<DmxClient>,
     osc_protocol: &Arc<OscProtocolClient>,
     clock: &Arc<Clock>,
     env: &Arc<Mutex<crate::environment::Environment>>,
@@ -306,7 +311,7 @@ pub fn call_builtin(
         "midi_start" => builtin_midi_start(midi),
         "midi_stop" => builtin_midi_stop(midi),
         "midi_panic" => builtin_midi_panic(midi),
-        "midi_listen" => builtin_midi_listen(args, midi, osc, osc_protocol, clock, env, shutdown, base_path),
+        "midi_listen" => builtin_midi_listen(args, midi, dmx, osc, osc_protocol, clock, env, shutdown, base_path),
         "midi_bpm_sync" => builtin_midi_bpm_sync(args, midi, clock, env, shutdown),
         "osc_config" => builtin_osc_config(args, osc_protocol),
         "osc_send" => builtin_osc_send(args, osc_protocol),
@@ -465,6 +470,12 @@ pub fn call_builtin(
         "bytes_slice" => builtin_bytes_slice(args),
         "bytes_to_array" => builtin_bytes_to_array(args),
         "array_to_bytes" => builtin_array_to_bytes(args),
+        "dmx_connect" => builtin_dmx_connect(args, dmx),
+        "dmx_universe" => builtin_dmx_universe(args, dmx),
+        "dmx_set" => builtin_dmx_set(args, dmx),
+        "dmx_set_range" => builtin_dmx_set_range(args, dmx),
+        "dmx_send" => builtin_dmx_send(dmx),
+        "dmx_blackout" => builtin_dmx_blackout(dmx),
         _ => Err(AudionError::RuntimeError {
             msg: format!("unknown builtin '{}'", name),
         }),
@@ -2096,6 +2107,7 @@ fn call_user_function(
     env: &Arc<Mutex<crate::environment::Environment>>,
     osc: &Arc<OscClient>,
     midi: &Arc<MidiClient>,
+    dmx: &Arc<DmxClient>,
     osc_protocol: &Arc<OscProtocolClient>,
     clock: &Arc<Clock>,
     shutdown: &Arc<std::sync::atomic::AtomicBool>,
@@ -2124,6 +2136,7 @@ fn call_user_function(
                 call_env,
                 osc.clone(),
                 midi.clone(),
+                dmx.clone(),
                 osc_protocol.clone(),
                 clock.clone(),
                 shutdown.clone(),
@@ -2147,6 +2160,7 @@ fn call_user_function(
 fn builtin_midi_listen(
     args: &[Value],
     midi: &Arc<MidiClient>,
+    dmx: &Arc<DmxClient>,
     osc: &Arc<OscClient>,
     osc_protocol: &Arc<OscProtocolClient>,
     clock: &Arc<Clock>,
@@ -2190,6 +2204,7 @@ fn builtin_midi_listen(
     let env = env.clone();
     let osc = osc.clone();
     let midi = midi.clone();
+    let dmx = dmx.clone();
     let osc_protocol = osc_protocol.clone();
     let clock = clock.clone();
     let shutdown_callback = shutdown.clone();
@@ -2220,6 +2235,7 @@ fn builtin_midi_listen(
                     &env,
                     &osc,
                     &midi,
+                    &dmx,
                     &osc_protocol,
                     &clock,
                     &shutdown_callback,
@@ -3219,6 +3235,109 @@ fn builtin_link_request_beat(args: &[Value], clock: &Arc<Clock>) -> Result<Value
             msg: "link_request_beat() expects a number".to_string(),
         }),
     }
+}
+
+// ---------------------------------------------------------------------------
+// DMX builtins (Art-Net over UDP)
+// ---------------------------------------------------------------------------
+
+// dmx_connect(host) → bool          connect to host:6454, universe 0
+// dmx_connect(host, port) → bool    connect to host:port
+fn builtin_dmx_connect(args: &[Value], dmx: &Arc<DmxClient>) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "dmx_connect() requires a host argument".to_string(),
+        });
+    }
+    let host = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(AudionError::RuntimeError {
+                msg: format!("dmx_connect() expected string host, got {}", other.type_name()),
+            })
+        }
+    };
+    let port = if args.len() > 1 {
+        require_number("dmx_connect", &args[1])? as u16
+    } else {
+        6454
+    };
+    Ok(Value::Bool(dmx.connect(&host, port)))
+}
+
+// dmx_universe(n) — set Art-Net universe (0-based)
+fn builtin_dmx_universe(args: &[Value], dmx: &Arc<DmxClient>) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "dmx_universe() requires a universe number".to_string(),
+        });
+    }
+    let u = require_number("dmx_universe", &args[0])? as u16;
+    dmx.set_universe(u);
+    Ok(Value::Nil)
+}
+
+// dmx_set(channel, value) — channel 1–512, value 0–255
+fn builtin_dmx_set(args: &[Value], dmx: &Arc<DmxClient>) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "dmx_set() requires 2 arguments: dmx_set(channel, value)".to_string(),
+        });
+    }
+    let channel = require_number("dmx_set", &args[0])? as usize;
+    let value = require_number("dmx_set", &args[1])? as u8;
+    if channel < 1 || channel > 512 {
+        return Err(AudionError::RuntimeError {
+            msg: format!("dmx_set() channel must be 1–512, got {}", channel),
+        });
+    }
+    dmx.set_channel(channel - 1, value);
+    Ok(Value::Nil)
+}
+
+// dmx_set_range(start, array) — set channels starting at start (1-indexed)
+fn builtin_dmx_set_range(args: &[Value], dmx: &Arc<DmxClient>) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "dmx_set_range() requires 2 arguments: dmx_set_range(start_channel, values)".to_string(),
+        });
+    }
+    let start = require_number("dmx_set_range", &args[0])? as usize;
+    if start < 1 || start > 512 {
+        return Err(AudionError::RuntimeError {
+            msg: format!("dmx_set_range() start channel must be 1–512, got {}", start),
+        });
+    }
+    match &args[1] {
+        Value::Array(arr) => {
+            let arr_guard = arr.lock().unwrap();
+            let values: Vec<u8> = arr_guard
+                .entries()
+                .iter()
+                .map(|(_, v)| match v {
+                    Value::Number(n) => *n as u8,
+                    _ => 0,
+                })
+                .collect();
+            drop(arr_guard);
+            dmx.set_range(start - 1, &values);
+            Ok(Value::Nil)
+        }
+        other => Err(AudionError::RuntimeError {
+            msg: format!("dmx_set_range() expected array of values, got {}", other.type_name()),
+        }),
+    }
+}
+
+// dmx_send() → bool — transmit current channel buffer
+fn builtin_dmx_send(dmx: &Arc<DmxClient>) -> Result<Value> {
+    Ok(Value::Bool(dmx.send()))
+}
+
+// dmx_blackout() — zero all channels and transmit
+fn builtin_dmx_blackout(dmx: &Arc<DmxClient>) -> Result<Value> {
+    dmx.blackout();
+    Ok(Value::Nil)
 }
 
 /// Separate positional and named arguments from a mixed list of Arg

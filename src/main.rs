@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand};
 mod ast;
 mod builtins;
 mod clock;
+mod dmx;
 mod environment;
 mod error;
 mod interpreter;
@@ -129,6 +130,7 @@ fn try_compile(source: &str, prefix: &str) -> Option<Vec<ast::Stmt>> {
 fn make_interpreter(
     osc: &Arc<osc::OscClient>,
     midi: &Arc<midi::MidiClient>,
+    dmx_client: &Arc<dmx::DmxClient>,
     osc_proto: &Arc<osc_protocol::OscProtocolClient>,
     clock_inst: &Arc<clock::Clock>,
     shutdown: &Arc<AtomicBool>,
@@ -139,7 +141,7 @@ fn make_interpreter(
 ) -> interpreter::Interpreter {
     let env = Arc::new(Mutex::new(environment::Environment::new()));
     let mut interp = interpreter::Interpreter::new(
-        env, osc.clone(), midi.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(),
+        env, osc.clone(), midi.clone(), dmx_client.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(),
     );
     interp.set_args(args.to_vec());
     if let Some(ref bp) = base_path {
@@ -151,6 +153,7 @@ fn make_interpreter(
 fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: bool) {
     let osc = Arc::new(osc::OscClient::new(server));
     let midi = Arc::new(midi::MidiClient::new());
+    let dmx_client = Arc::new(dmx::DmxClient::new());
     let osc_proto = Arc::new(osc_protocol::OscProtocolClient::new());
     let clock_inst = Arc::new(clock::Clock::new(bpm));
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -177,7 +180,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     if !watch {
         let source = read_source(path);
         let stmts = try_compile(&source, "").unwrap_or_else(|| std::process::exit(1));
-        let mut interp = make_interpreter(&osc, &midi, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
         if let Err(e) = interp.run(&stmts) {
             eprintln!("{}", e);
             osc.free_all_nodes();
@@ -193,7 +196,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let mut last_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
     if let Some(stmts) = try_compile(&source, "watch: ") {
-        let mut new_interp = make_interpreter(&osc, &midi, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
         match new_interp.run_without_join(&stmts) {
             Ok(_) => { interp = Some(new_interp); }
             Err(e) => { eprintln!("{}", e); }
@@ -231,7 +234,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             shutdown.store(false, Ordering::Relaxed);
         }
 
-        let mut new_interp = make_interpreter(&osc, &midi, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
         match new_interp.run_without_join(&stmts) {
             Ok(_) => {
                 eprintln!("reloaded {}", path.display());

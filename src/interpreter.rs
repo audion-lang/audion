@@ -26,6 +26,7 @@ use std::thread::JoinHandle;
 use crate::ast::*;
 use crate::builtins;
 use crate::clock::Clock;
+use crate::dmx::DmxClient;
 use crate::environment::Environment;
 use crate::error::{AudionError, Result};
 use crate::midi::MidiClient;
@@ -79,6 +80,7 @@ pub struct Interpreter {
     pub env: Arc<Mutex<Environment>>,
     pub osc: Arc<OscClient>,
     pub midi: Arc<MidiClient>,
+    pub dmx: Arc<DmxClient>,
     pub osc_protocol: Arc<OscProtocolClient>,
     pub clock: Arc<Clock>,
     pub shutdown: Arc<AtomicBool>,
@@ -99,6 +101,7 @@ impl Interpreter {
         env: Arc<Mutex<Environment>>,
         osc: Arc<OscClient>,
         midi: Arc<MidiClient>,
+        dmx: Arc<DmxClient>,
         osc_protocol: Arc<OscProtocolClient>,
         clock: Arc<Clock>,
         shutdown: Arc<AtomicBool>,
@@ -117,6 +120,7 @@ impl Interpreter {
             env,
             osc,
             midi,
+            dmx,
             osc_protocol,
             clock,
             shutdown,
@@ -134,6 +138,7 @@ impl Interpreter {
         env: Arc<Mutex<Environment>>,
         osc: Arc<OscClient>,
         midi: Arc<MidiClient>,
+        dmx: Arc<DmxClient>,
         osc_protocol: Arc<OscProtocolClient>,
         clock: Arc<Clock>,
         shutdown: Arc<AtomicBool>,
@@ -145,6 +150,7 @@ impl Interpreter {
             env,
             osc,
             midi,
+            dmx,
             osc_protocol,
             clock,
             shutdown,
@@ -699,6 +705,7 @@ impl Interpreter {
         let body = body.clone();
         let osc = self.osc.clone();
         let midi = self.midi.clone();
+        let dmx = self.dmx.clone();
         let osc_protocol = self.osc_protocol.clone();
         let clock = self.clock.clone();
         let shutdown = self.shutdown.clone();
@@ -711,7 +718,7 @@ impl Interpreter {
             .name(thread_name.clone())
             .spawn(move || {
                 let mut interp =
-                    Interpreter::new_for_thread(child_env, osc, midi, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, base_path);
+                    Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, base_path);
                 if let Err(e) = interp.exec_stmt(&body) {
                     eprintln!("thread '{}' error: {}", thread_name, e);
                 }
@@ -873,7 +880,7 @@ impl Interpreter {
                             }
                             Ok(last)
                         } else {
-                            builtins::call_builtin(&name, &positional, &named, &self.osc, &self.midi, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path)
+                            builtins::call_builtin(&name, &positional, &named, &self.osc, &self.midi, &self.dmx, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path)
                         }
                     }
                     Value::Function {
@@ -937,7 +944,7 @@ impl Interpreter {
                                                     msg: "tail call to eval() is not supported".to_string(),
                                                 });
                                             }
-                                            return builtins::call_builtin(&bname, &tc_pos, &tc_named, &self.osc, &self.midi, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path);
+                                            return builtins::call_builtin(&bname, &tc_pos, &tc_named, &self.osc, &self.midi, &self.dmx, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path);
                                         }
                                         other => {
                                             return Err(AudionError::RuntimeError {
@@ -1323,7 +1330,7 @@ impl Interpreter {
                                             msg: "tail call to eval() is not supported".to_string(),
                                         });
                                     }
-                                    return builtins::call_builtin(&bname, &tc_pos, &tc_named, &self.osc, &self.midi, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path);
+                                    return builtins::call_builtin(&bname, &tc_pos, &tc_named, &self.osc, &self.midi, &self.dmx, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path);
                                 }
                                 other => {
                                     return Err(AudionError::RuntimeError {
@@ -1372,7 +1379,7 @@ impl Interpreter {
                     }
                     Ok(last)
                 } else {
-                    builtins::call_builtin(&name, positional, named, &self.osc, &self.midi, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path)
+                    builtins::call_builtin(&name, positional, named, &self.osc, &self.midi, &self.dmx, &self.osc_protocol, &self.clock, &self.env, &self.shutdown, &self.base_path)
                 }
             }
             _ => Err(AudionError::RuntimeError {

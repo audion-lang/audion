@@ -7,7 +7,7 @@
 
 **Let's hack music. A batteries-included language for making stuff that ticks: installations, interactive music, performance, audiovisual art, sound design and your very own musical instruments.**
 
-Adion will let you sequence and sync any hardware and software. Control synthesizers, DAWs, lighting rigs and anything that speaks OSC or sits on a network. The concurrency model is syncronised by default. Audion is friendly to anyone/any-agent with a familiar syntax that you probably already know.
+Adion will let you syncronize and sequence any  synthesizers, DAWs, lighting rigs and anything that speaks OSC or sits on a network. The concurrency model is syncronised. Audion is friendly to anyone/anything with a familiar syntax that you probably already know.
 
 Audion is a capable scripting language for the stuff that doesn't need introduction: Database Queries, network requests, data analysis. It's small enough to run on some embedded systems like the Raspberry PI.
 

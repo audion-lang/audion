@@ -22,6 +22,17 @@ pub enum AudionError {
     LexError { msg: String, line: usize },
     ParseError { msg: String, line: usize },
     RuntimeError { msg: String },
+    RuntimeErrorAt { msg: String, file: String, line: usize },
+}
+
+impl AudionError {
+    /// Attach a source location to a RuntimeError. Other variants pass through unchanged.
+    pub fn at_line(self, line: usize, file: &str) -> Self {
+        match self {
+            AudionError::RuntimeError { msg } => AudionError::RuntimeErrorAt { msg, line, file: file.to_string() },
+            other => other,
+        }
+    }
 }
 
 impl fmt::Display for AudionError {
@@ -35,6 +46,9 @@ impl fmt::Display for AudionError {
             }
             AudionError::RuntimeError { msg } => {
                 write!(f, "runtime error: {}", msg)
+            }
+            AudionError::RuntimeErrorAt { msg, file, line } => {
+                write!(f, "runtime error[{}:{}]: {}", file, line, msg)
             }
         }
     }

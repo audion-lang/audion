@@ -19,8 +19,37 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// Assert counters — global across all threads, reset each run
+// ---------------------------------------------------------------------------
+
+static ASSERT_PASS: AtomicUsize = AtomicUsize::new(0);
+static ASSERT_FAIL: AtomicUsize = AtomicUsize::new(0);
+
+/// Reset assert counters (call before each file run in watch mode).
+pub fn reset_assert_stats() {
+    ASSERT_PASS.store(0, Ordering::Relaxed);
+    ASSERT_FAIL.store(0, Ordering::Relaxed);
+}
+
+/// Print assert stats if any asserts ran. Returns true if there were failures.
+pub fn print_assert_stats() -> bool {
+    let pass = ASSERT_PASS.load(Ordering::Relaxed);
+    let fail = ASSERT_FAIL.load(Ordering::Relaxed);
+    if pass == 0 && fail == 0 {
+        return false;
+    }
+    let total = pass + fail;
+    if fail == 0 {
+        eprintln!("assert: {} / {} passed", pass, total);
+    } else {
+        eprintln!("assert: {} passed, {} failed / {} total", pass, fail, total);
+    }
+    fail > 0
+}
 
 // ---------------------------------------------------------------------------
 // Scala file cache — parsed .scl tunings keyed by absolute path
@@ -229,6 +258,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "dmx_connect", "dmx_universe",
     "dmx_set", "dmx_set_range",
     "dmx_send", "dmx_blackout",
+    "assert",
 ];
 
 /// Resolve a potentially relative path against the source file's base directory.
@@ -480,6 +510,7 @@ pub fn call_builtin(
         "dmx_set_range" => builtin_dmx_set_range(args, dmx),
         "dmx_send" => builtin_dmx_send(dmx),
         "dmx_blackout" => builtin_dmx_blackout(dmx),
+        "assert" => builtin_assert(args),
         _ => Err(AudionError::RuntimeError {
             msg: format!("unknown builtin '{}'", name),
         }),
@@ -3425,6 +3456,45 @@ fn builtin_dmx_send(dmx: &Arc<DmxClient>) -> Result<Value> {
 // dmx_blackout() — zero all channels and transmit
 fn builtin_dmx_blackout(dmx: &Arc<DmxClient>) -> Result<Value> {
     dmx.blackout();
+    Ok(Value::Nil)
+}
+
+// ---------------------------------------------------------------------------
+// assert(condition, message, stop_execution)
+// ---------------------------------------------------------------------------
+
+fn builtin_assert(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "assert() requires at least one argument".to_string(),
+        });
+    }
+
+    let condition = args[0].is_truthy();
+
+    let message: Option<String> = args.get(1).and_then(|v| match v {
+        Value::Nil => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(format!("{}", other)),
+    });
+
+    let stop_execution = args.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+
+    if condition {
+        ASSERT_PASS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        ASSERT_FAIL.fetch_add(1, Ordering::Relaxed);
+        if let Some(msg) = message {
+            eprintln!("assert failed: {}", msg);
+        } else {
+            eprintln!("assert failed");
+        }
+        if stop_execution {
+            let _ = print_assert_stats();
+            std::process::exit(1);
+        }
+    }
+
     Ok(Value::Nil)
 }
 

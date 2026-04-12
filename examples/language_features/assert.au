@@ -1,0 +1,44 @@
+// assert(condition, message, stop_execution)
+//
+// useful for testing logic, APIs, and algorithms.
+// condition  — any truthy value; assert passes if truthy
+// message    — printed to stderr on failure; pass null to suppress
+// stop_execution — if true, halts immediately on failure (exit code > 0)
+//
+// at the end of the run, a summary is printed if any asserts ran:
+//   assert: 3 / 3 passed
+//   assert: 2 passed, 1 failed / 3 total
+// exit code is non-zero if any asserts failed.
+
+// basic pass / fail
+assert(true, "true is truthy");
+assert(1 == 1, "equality works");
+assert(1 != 2, "inequality works");
+assert("hello" != "", "non-empty string is truthy");
+
+// numbers and math
+assert(1 + 1 == 2, "addition");
+assert(10 % 3 == 1, "modulo");
+assert(math_round(math_sqrt(4), 4) == 2.0, "sqrt(4) == 2");
+
+// music helpers: note/frequency conversions
+assert(math_round(mtof(69), 2) == 440.0, "A4 = 440 Hz");
+assert(ftom(440.0) == 69, "440 Hz = MIDI 69");
+
+// string checks
+assert(str_contains("audio", "audion"), "str_contains");
+assert(str_length("hello") == 5, "str_length");
+assert(str_upper("hello") == "HELLO", "str_upper");
+
+// arrays
+let scale = [0, 2, 4, 5, 7, 9, 11];
+assert(count(scale) == 7, "major scale has 7 degrees");
+assert(scale[0] == 0, "first degree is root");
+assert(scale[4] == 7, "fifth degree is 7 semitones up");
+
+// null message — suppresses output on failure (silent assert)
+assert(true, nil);
+
+// stop_execution — uncomment to test hard stop:
+// assert(false, "this stops everything", true);
+// print("you will never see this");

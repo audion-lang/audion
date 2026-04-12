@@ -1,0 +1,32 @@
+// runtime errors show the file name and line number
+// thread errors print to stderr but do not kill the main program
+
+bpm(120);
+
+// a thread with a bug — will print an error but main keeps going
+thread broken
+{
+    wait_ms(50);
+    let x = 1;
+    undefined_fn();   // runtime error[error_handling.au:11]: undefined variable 'undefined_fn'
+    print("this line is never reached");
+}
+
+// a thread that runs fine
+thread counter
+{
+    let i = 0;
+    loop {
+        i += 1;
+        print("counter: " + i);
+        wait_ms(100);
+        if (i >= 3) { break; }
+    }
+    print("counter thread done");
+}
+
+fn main() {
+    print("main started — broken thread will error, counter thread will finish");
+    wait_ms(400);
+    print("main done — program exits cleanly despite the thread error");
+}

@@ -87,6 +87,7 @@ pub struct Interpreter {
     thread_handles: HashMap<String, JoinHandle<()>>,
 
     pub base_path: PathBuf,
+    pub current_file: String,
     included_files: Arc<Mutex<HashSet<PathBuf>>>,
     included_envs: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<Environment>>>>>,
     pub debug_sclang: bool,
@@ -127,6 +128,7 @@ impl Interpreter {
             thread_handles: HashMap::new(),
 
             base_path: PathBuf::from("."),
+            current_file: String::new(),
             included_files: Arc::new(Mutex::new(HashSet::new())),
             included_envs: Arc::new(Mutex::new(HashMap::new())),
             debug_sclang,
@@ -157,6 +159,7 @@ impl Interpreter {
             thread_handles: HashMap::new(),
 
             base_path,
+            current_file: String::new(),
             included_files: Arc::new(Mutex::new(HashSet::new())),
             included_envs: Arc::new(Mutex::new(HashMap::new())),
             debug_sclang,
@@ -207,7 +210,7 @@ impl Interpreter {
                 ControlFlow::None => {}
             }
             // Track last expression value for REPL
-            if let Stmt::ExprStmt(_) = stmt {
+            if let Stmt::ExprStmt(..) = stmt {
                 // we just need something — grab from env or recalculate
             }
         }
@@ -229,8 +232,8 @@ impl Interpreter {
         for stmt in stmts {
             // For ExprStmt, evaluate once and capture the value directly
             // (exec_stmt evaluates but discards it, so we handle it here to avoid double evaluation)
-            if let Stmt::ExprStmt(expr) = stmt {
-                last = self.eval_expr(expr)?;
+            if let Stmt::ExprStmt(expr, line) = stmt {
+                last = self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?;
                 continue;
             }
             match self.exec_stmt(stmt)? {
@@ -249,13 +252,13 @@ impl Interpreter {
         }
 
         match stmt {
-            Stmt::ExprStmt(expr) => {
-                self.eval_expr(expr)?;
+            Stmt::ExprStmt(expr, line) => {
+                self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?;
                 Ok(ControlFlow::None)
             }
-            Stmt::Let { name, init } => {
+            Stmt::Let { name, init, line } => {
                 let val = match init {
-                    Some(expr) => self.eval_expr(expr)?.deep_clone(),
+                    Some(expr) => self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?.deep_clone(),
                     None => Value::Nil,
                 };
                 self.env.lock().unwrap().define(name.clone(), val);
@@ -402,6 +405,7 @@ impl Interpreter {
                     params: params.clone(),
                     body: *body.clone(),
                     closure: self.env.clone(),
+                    file: self.current_file.clone(),
                 };
                 self.env.lock().unwrap().define(name.clone(), func);
                 Ok(ControlFlow::None)
@@ -552,6 +556,7 @@ impl Interpreter {
             &mut self.base_path,
             canonical.parent().unwrap_or(&PathBuf::from(".")).to_path_buf(),
         );
+        let old_file = std::mem::replace(&mut self.current_file, path.to_string());
 
         // Execute all statements (but don't auto-call main)
         for stmt in &stmts {
@@ -561,9 +566,10 @@ impl Interpreter {
             }
         }
 
-        // Restore environment and base path
+        // Restore environment, base path, and current file
         self.env = old_env;
         self.base_path = old_base;
+        self.current_file = old_file;
 
         // Mark as included and cache the environment
         {
@@ -714,11 +720,13 @@ impl Interpreter {
 
         let synthdef_cache = self.synthdef_cache.clone();
         let base_path = self.base_path.clone();
+        let current_file = self.current_file.clone();
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
                 let mut interp =
                     Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, base_path);
+                interp.current_file = current_file;
                 if let Err(e) = interp.exec_stmt(&body) {
                     eprintln!("thread '{}' error: {}", thread_name, e);
                 }
@@ -874,8 +882,8 @@ impl Interpreter {
                                     ControlFlow::Break | ControlFlow::Continue => {}
                                     ControlFlow::None => {}
                                 }
-                                if let Stmt::ExprStmt(expr) = stmt {
-                                    last = self.eval_expr(expr)?;
+                                if let Stmt::ExprStmt(expr, line) = stmt {
+                                    last = self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?;
                                 }
                             }
                             Ok(last)
@@ -888,12 +896,14 @@ impl Interpreter {
                         params,
                         body,
                         closure,
+                        file,
                     } => {
                         // Trampoline loop for tail call optimization
                         let mut cur_name = name;
                         let mut cur_params = params;
                         let mut cur_body = body;
                         let mut cur_closure = closure;
+                        let mut cur_file = file;
                         let mut cur_positional = positional;
                         let mut _cur_named = named;
 
@@ -910,8 +920,10 @@ impl Interpreter {
                             }
 
                             let old_env = std::mem::replace(&mut self.env, call_env);
+                            let old_file = std::mem::replace(&mut self.current_file, cur_file.clone());
                             let result = self.exec_stmt(&cur_body);
                             self.env = old_env;
+                            self.current_file = old_file;
 
                             match result? {
                                 ControlFlow::Return(v) => return Ok(v),
@@ -928,11 +940,12 @@ impl Interpreter {
                                     };
 
                                     match callee {
-                                        Value::Function { name, params, body, closure } => {
+                                        Value::Function { name, params, body, closure, file } => {
                                             cur_name = name;
                                             cur_params = params;
                                             cur_body = body;
                                             cur_closure = closure;
+                                            cur_file = file;
                                             cur_positional = tc_pos;
                                             _cur_named = tc_named;
                                             continue;
@@ -967,6 +980,7 @@ impl Interpreter {
                 params: params.clone(),
                 body: *body.clone(),
                 closure: self.env.clone(),
+                file: self.current_file.clone(),
             }),
             Expr::ArrayLit { elements } => {
                 let mut arr = AudionArray::new();
@@ -1277,12 +1291,14 @@ impl Interpreter {
                 params,
                 body,
                 closure,
+                file,
             }) => {
                 // Trampoline loop for tail call optimization
                 let mut cur_name = fname;
                 let mut cur_params = params;
                 let mut cur_body = body;
                 let mut cur_closure = closure;
+                let mut cur_file = file;
                 let mut cur_positional = positional.to_vec();
                 let mut _cur_named = named.to_vec();
 
@@ -1298,8 +1314,10 @@ impl Interpreter {
                     }
 
                     let old_env = std::mem::replace(&mut self.env, call_env);
+                    let old_file = std::mem::replace(&mut self.current_file, cur_file.clone());
                     let result = self.exec_stmt(&cur_body);
                     self.env = old_env;
+                    self.current_file = old_file;
 
                     match result? {
                         ControlFlow::Return(v) => return Ok(v),
@@ -1315,11 +1333,12 @@ impl Interpreter {
                             };
 
                             match callee {
-                                Value::Function { name, params, body, closure } => {
+                                Value::Function { name, params, body, closure, file } => {
                                     cur_name = name;
                                     cur_params = params;
                                     cur_body = body;
                                     cur_closure = closure;
+                                    cur_file = file;
                                     cur_positional = tc_pos;
                                     _cur_named = tc_named;
                                     continue;
@@ -1373,8 +1392,8 @@ impl Interpreter {
                             ControlFlow::Break | ControlFlow::Continue => {}
                             ControlFlow::None => {}
                         }
-                        if let Stmt::ExprStmt(expr) = stmt {
-                            last = self.eval_expr(expr)?;
+                        if let Stmt::ExprStmt(expr, line) = stmt {
+                            last = self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?;
                         }
                     }
                     Ok(last)

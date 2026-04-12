@@ -5,7 +5,7 @@ use audion::ast::*;
 #[test]
 fn test_let_stmt() {
     let stmts = common::parse_source("let x = 42;");
-    assert!(matches!(&stmts[0], Stmt::Let { name, init: Some(Expr::Number(n)) } if name == "x" && *n == 42.0));
+    assert!(matches!(&stmts[0], Stmt::Let { name, init: Some(Expr::Number(n)), .. } if name == "x" && *n == 42.0));
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn test_thread_block() {
 #[test]
 fn test_named_args() {
     let stmts = common::parse_source("synth(\"default\", freq: 440, amp: 0.5);");
-    if let Stmt::ExprStmt(Expr::Call { args, .. }) = &stmts[0] {
+    if let Stmt::ExprStmt(Expr::Call { args, .. }, _) = &stmts[0] {
         assert_eq!(args.len(), 3);
         assert!(matches!(&args[0], Arg::Positional(Expr::StringLit(_))));
         assert!(matches!(&args[1], Arg::Named { name, .. } if name == "freq"));

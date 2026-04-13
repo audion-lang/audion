@@ -1212,6 +1212,7 @@ impl Interpreter {
             (BinOp::RightShift, Value::Number(a), Value::Number(b)) => {
                 Ok(Value::Number((((*a) as i64) >> ((*b) as i64)) as f64))
             }
+            (BinOp::Pow, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a.powf(*b))),
 
             _ => Err(AudionError::RuntimeError {
                 msg: format!(

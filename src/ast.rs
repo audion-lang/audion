@@ -35,6 +35,7 @@ pub enum BinOp {
     BitXor,
     LeftShift,
     RightShift,
+    Pow,
 }
 
 #[derive(Debug, Clone)]

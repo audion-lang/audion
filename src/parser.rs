@@ -498,12 +498,13 @@ impl Parser {
             return Err(self.error("invalid assignment target"));
         }
 
-        // Compound assignment: +=, -=, *=, /=
+        // Compound assignment: +=, -=, *=, /=, %=
         let op = match self.peek_kind() {
             TokenKind::PlusEq => Some(BinOp::Add),
             TokenKind::MinusEq => Some(BinOp::Sub),
             TokenKind::StarEq => Some(BinOp::Mul),
             TokenKind::SlashEq => Some(BinOp::Div),
+            TokenKind::PercentEq => Some(BinOp::Mod),
             _ => None,
         };
         if let Some(op) = op {
@@ -684,7 +685,7 @@ impl Parser {
     }
 
     fn parse_multiplication(&mut self) -> Result<Expr> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_power()?;
         loop {
             let op = match self.peek_kind() {
                 TokenKind::Star => BinOp::Mul,
@@ -701,6 +702,20 @@ impl Parser {
             };
         }
         Ok(left)
+    }
+
+    fn parse_power(&mut self) -> Result<Expr> {
+        let base = self.parse_unary()?;
+        if self.match_token(TokenKind::StarStar) {
+            let exp = self.parse_power()?; // right-associative
+            Ok(Expr::BinOp {
+                left: Box::new(base),
+                op: BinOp::Pow,
+                right: Box::new(exp),
+            })
+        } else {
+            Ok(base)
+        }
     }
 
     fn parse_unary(&mut self) -> Result<Expr> {
@@ -729,6 +744,32 @@ impl Parser {
                     expr: Box::new(expr),
                 })
             }
+            TokenKind::PlusPlus => {
+                self.advance();
+                let expr = self.parse_call()?;
+                if let Expr::Ident(name) = expr {
+                    Ok(Expr::CompoundAssign {
+                        name,
+                        op: BinOp::Add,
+                        value: Box::new(Expr::Number(1.0)),
+                    })
+                } else {
+                    Err(self.error("++ requires a variable"))
+                }
+            }
+            TokenKind::MinusMinus => {
+                self.advance();
+                let expr = self.parse_call()?;
+                if let Expr::Ident(name) = expr {
+                    Ok(Expr::CompoundAssign {
+                        name,
+                        op: BinOp::Sub,
+                        value: Box::new(Expr::Number(1.0)),
+                    })
+                } else {
+                    Err(self.error("-- requires a variable"))
+                }
+            }
             _ => self.parse_call(),
         }
     }
@@ -736,7 +777,27 @@ impl Parser {
     fn parse_call(&mut self) -> Result<Expr> {
         let mut expr = self.parse_primary()?;
         loop {
-            if self.match_token(TokenKind::LParen) {
+            if self.match_token(TokenKind::PlusPlus) {
+                if let Expr::Ident(name) = expr {
+                    expr = Expr::CompoundAssign {
+                        name,
+                        op: BinOp::Add,
+                        value: Box::new(Expr::Number(1.0)),
+                    };
+                } else {
+                    return Err(self.error("++ requires a variable"));
+                }
+            } else if self.match_token(TokenKind::MinusMinus) {
+                if let Expr::Ident(name) = expr {
+                    expr = Expr::CompoundAssign {
+                        name,
+                        op: BinOp::Sub,
+                        value: Box::new(Expr::Number(1.0)),
+                    };
+                } else {
+                    return Err(self.error("-- requires a variable"));
+                }
+            } else if self.match_token(TokenKind::LParen) {
                 let args = self.parse_arg_list()?;
                 self.expect(TokenKind::RParen)?;
                 expr = Expr::Call {

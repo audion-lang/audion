@@ -1,0 +1,258 @@
+// strings.au — string builtins reference
+//
+// Covers every string builtin with brief examples and music-relevant use cases:
+//   str_length       — character count
+//   str_upper        — uppercase
+//   str_lower        — lowercase
+//   str_trim         — strip leading/trailing whitespace
+//   str_contains     — (needle, haystack) → bool
+//   str_starts_with  — (prefix, string)   → bool
+//   str_ends_with    — (suffix, string)   → bool
+//   str_substr       — (string, start, length) → string
+//   str_replace      — (needle, replacement, haystack) → string
+//   str_explode      — (delimiter, string) → array
+//   str_join         — (glue, array)       → string
+//   str()            — any value → string
+//   int()            — string/number → integer
+//   float()          — string/number → float
+
+// --- str_length ---
+
+print("--- str_length ---");
+
+print(str_length("hello"));          // 5
+print(str_length(""));               // 0
+print(str_length("C major"));        // 7
+
+// Count characters in a note name to tell "C" from "C#" from "C##"
+let note_name = "F#";
+if (str_length(note_name) == 1) {
+    print(note_name + " is a natural note");
+} else if (str_length(note_name) == 2) {
+    print(note_name + " is a single-accidental note");
+} else {
+    print(note_name + " is a double-accidental note");
+}
+
+// --- str_upper / str_lower ---
+
+print("--- str_upper / str_lower ---");
+
+print(str_upper("hello"));           // "HELLO"
+print(str_lower("HELLO"));           // "hello"
+
+// Normalise note names before looking them up in a table
+let raw = "c#4";
+let normalised = str_upper(raw);
+print("normalised note: " + normalised);   // "C#4"
+
+// Case-insensitive OSC address comparison: lower-case both sides
+let incoming  = "/Synth/Filter/Cutoff";
+let expected  = "/synth/filter/cutoff";
+if (str_lower(incoming) == expected) {
+    print("OSC path matched (case-insensitive)");
+}
+
+// --- str_trim ---
+
+print("--- str_trim ---");
+
+print(str_trim("  hi  "));           // "hi"
+print(str_trim("\t  reverb  \n"));   // "reverb"
+
+// Trim whitespace when reading note names from a CSV cell
+let csv_cell = "  Dm7  ";
+let chord = str_trim(csv_cell);
+print("chord: '" + chord + "'");     // "Dm7"
+
+// --- str_contains ---
+
+print("--- str_contains ---");
+
+// str_contains(needle, haystack)
+print(str_contains("ell", "hello"));                // true
+print(str_contains("xyz", "hello"));                // false
+print(str_contains("audio", "audion"));             // true
+
+// Check if an OSC address targets the reverb bus
+let osc_addr = "/fx/reverb/room_size";
+if (str_contains("reverb", osc_addr)) {
+    print("routing to reverb processor");
+}
+
+// Check if a preset name contains a waveform label
+let preset = "sawtooth_bass_1";
+if (str_contains("sawtooth", preset)) {
+    print("preset uses sawtooth oscillator");
+}
+
+// --- str_starts_with / str_ends_with ---
+
+print("--- str_starts_with / str_ends_with ---");
+
+// str_starts_with(prefix, string)
+print(str_starts_with("hel", "hello"));             // true
+print(str_starts_with("/fx", "/fx/delay/time"));    // true
+print(str_starts_with("/synth", "/fx/delay/time")); // false
+
+// str_ends_with(suffix, string)
+print(str_ends_with("lo", "hello"));                // true
+print(str_ends_with(".wav", "kick_drum.wav"));      // true
+print(str_ends_with(".aif", "kick_drum.wav"));      // false
+
+// Dispatch incoming OSC messages by address prefix
+let addr = "/synth/osc1/freq";
+if (str_starts_with("/synth", addr)) {
+    print("OSC → synth engine: " + addr);
+} else if (str_starts_with("/fx", addr)) {
+    print("OSC → effects chain: " + addr);
+}
+
+// Accept only WAV samples from a file list
+let files = ["kick.wav", "snare.aif", "hat.wav", "clap.mp3"];
+let k = 0;
+loop {
+    if (str_ends_with(".wav", files[k])) {
+        print("loading: " + files[k]);
+    }
+    k++;
+    if (k >= count(files)) { break; }
+}
+
+// --- str_substr ---
+
+print("--- str_substr ---");
+
+// str_substr(string, start, length)
+print(str_substr("hello", 1, 3));                  // "ell"
+print(str_substr("hello", 0, 1));                  // "h"
+print(str_substr("hello", 2));                     // "llo"  (no length = rest of string)
+
+// Parse note name and octave from a token like "C#4"
+let token = "C#4";
+let name   = str_substr(token, 0, 2);              // "C#"
+let octave = str_substr(token, 2);                 // "4"
+print("note: " + name + "  octave: " + octave);
+
+// Extract the parameter name from an OSC path segment "/osc1/freq" → "freq"
+let segment = "/osc1/freq";
+let last_slash = 5;                                // index of last '/'
+let param = str_substr(segment, last_slash + 1);
+print("OSC param: " + param);                      // "freq"
+
+// --- str_replace ---
+
+print("--- str_replace ---");
+
+// str_replace(needle, replacement, haystack)
+print(str_replace("world", "audion", "hello world"));   // "hello audion"
+print(str_replace("_", "/", "synth_osc_freq"));         // "synth/osc/freq"
+
+// Build an OSC path from a template by swapping placeholder tokens
+let template = "/synth/{voice}/osc/{param}";
+let path = str_replace("{voice}", "1", template);
+path      = str_replace("{param}", "detune", path);
+print("resolved OSC path: " + path);              // /synth/1/osc/detune
+
+// Sanitise a preset name for use as a filename (spaces → underscores)
+let preset_name = "Dark Pad Reverb";
+let filename = str_replace(" ", "_", preset_name) + ".au";
+print("preset file: " + str_lower(filename));     // "dark_pad_reverb.au"
+
+// --- str_explode ---
+
+print("--- str_explode ---");
+
+// str_explode(delimiter, string) → array
+let parts = str_explode(",", "a,b,c");
+print(parts);                                      // ["a","b","c"]
+
+// Split a CSV line of MIDI note numbers
+let csv_line = "60,62,64,65,67,69,71,72";
+let midi_notes = str_explode(",", csv_line);
+print("MIDI notes in scale:");
+let n = 0;
+loop {
+    print("  " + midi_notes[n]);
+    n++;
+    if (n >= count(midi_notes)) { break; }
+}
+
+// Parse a space-separated sequence of note names
+let sequence = "C4 E4 G4 B4 D5";
+let seq_notes = str_explode(" ", sequence);
+print("chord tones: " + count(seq_notes));         // 5
+
+// Split an OSC address into its components
+let osc_path = "/fx/reverb/mix";
+let segments = str_explode("/", osc_path);
+// segments[0] is "" (before leading slash), segments[1] is "fx", etc.
+print("OSC namespace: " + segments[1]);            // "fx"
+print("OSC module:    " + segments[2]);            // "reverb"
+print("OSC param:     " + segments[3]);            // "mix"
+
+// --- str_join ---
+
+print("--- str_join ---");
+
+// str_join(glue, array) → string
+print(str_join(",", ["a","b","c"]));               // "a,b,c"
+print(str_join(" | ", ["kick","snare","hihat"]));  // "kick | snare | hihat"
+
+// Rebuild an OSC address from its components
+let components = ["", "synth", "osc2", "pw"];
+let rebuilt_path = str_join("/", components);
+print("rebuilt OSC path: " + rebuilt_path);        // "/synth/osc2/pw"
+
+// Format a chord name list for display
+let chord_degrees = ["I", "IV", "V", "I"];
+let progression = str_join(" - ", chord_degrees);
+print("progression: " + progression);              // "I - IV - V - I"
+
+// Build a MIDI SysEx byte string from an array of hex values
+let sysex_bytes = ["F0", "41", "10", "42", "12", "F7"];
+let sysex_str = str_join(" ", sysex_bytes);
+print("SysEx: " + sysex_str);                      // "F0 41 10 42 12 F7"
+
+// --- str() / int() / float() — type conversions ---
+
+print("--- type conversions: str(), int(), float() ---");
+
+// str(): convert any value to its string representation
+print(str(42));                                    // "42"
+print(str(3.14));                                  // "3.14"
+print(str(true));                                  // "true"
+print(str(nil));                                   // "nil"
+
+// Build MIDI status byte labels (channel 1 = 0x90 = 144)
+let status_byte = 144;
+let channel = 1;
+let label = "NoteOn ch" + str(channel) + " (0x" + hex(status_byte, 2) + ")";
+print(label);                                      // "NoteOn ch1 (0x90)"
+
+// Format a frequency reading for an OSC message string
+let freq_hz = 440.0;
+let osc_msg = "/tuner/freq " + str(freq_hz) + " Hz";
+print(osc_msg);                                    // "/tuner/freq 440 Hz"
+
+// int(): parse a string as an integer (truncates floats)
+print(int("42"));                                  // 42
+print(int("7.9"));                                 // 7   (truncated)
+print(int(3.99));                                  // 3   (truncated)
+
+// Parse a MIDI note number received as text (e.g. from a CSV or OSC string arg)
+let note_str = "69";
+let midi_note = int(note_str);
+let reference_freq = 440.0 * (2 ** ((midi_note - 69) / 12.0));
+print("MIDI " + note_str + " = " + reference_freq + " Hz");  // 440 Hz
+
+// float(): parse a string as a floating-point number
+print(float("3.14"));                              // 3.14
+print(float("440"));                               // 440.0
+print(float(42));                                  // 42.0
+
+// Parse a tempo value sent as a text OSC argument
+let tempo_str = "128.5";
+let tempo_bpm = float(tempo_str);
+let beat_ms   = 60000.0 / tempo_bpm;
+print("tempo: " + tempo_bpm + " bpm  beat: " + beat_ms + " ms");

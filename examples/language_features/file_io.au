@@ -1,12 +1,177 @@
-// bpm(120);
+// file_io.au — file and directory builtins
+//
+// Whole-file I/O (loads file into memory):
+//   file_read(path)                  → string or false
+//   file_read(path, offset)          → string from byte offset
+//   file_read(path, offset, length)  → string slice
+//   file_write(path, data)           → bytes written or false
+//   file_append(path, data)          → bytes written or false
+//   file_exists(path)                → bool
+//   file_delete(path)                → bool
+//   file_size(path)                  → bytes (number) or false
+//
+// Directory:
+//   dir_scan(path)          → array of filenames (not full paths)
+//   dir_exists(path)        → bool
+//   dir_create(path)        → bool
+//   dir_delete(path)        → bool  (directory must be empty)
+//
+// JSON:
+//   json_encode(value)      → string
+//   json_decode(string)     → value (number/string/bool/nil/array)
+//
+// For streaming / incremental access to large files see streaming_io.au.
 
-fn main()
-{
-    // write and read files
-    file_write("test.out", 12345);
-    readSome = file_read("test.out");
-    print(readSome);
+let tmp = "/tmp/audion_file_io_demo";
 
-    // scan directories
-    print(dir_scan("./"));
+// --- write / read ---
+
+print("--- file_write / file_read ---");
+
+file_write(tmp + ".txt", "hello audion\n");
+let content = file_read(tmp + ".txt");
+print("read: " + content);            // "hello audion\n"
+
+// Overwrite existing file
+file_write(tmp + ".txt", "new content");
+print("overwritten: " + file_read(tmp + ".txt"));
+
+// Write a number directly
+file_write(tmp + "_num.txt", 42);
+print("number file: " + file_read(tmp + "_num.txt"));
+
+// Read with offset and length
+file_write(tmp + "_slice.txt", "ABCDEFGHIJ");
+print("full:    " + file_read(tmp + "_slice.txt"));
+print("offset 3:" + file_read(tmp + "_slice.txt", 3));        // "DEFGHIJ"
+print("3+4:     " + file_read(tmp + "_slice.txt", 3, 4));     // "DEFG"
+
+// --- file_append ---
+
+print("--- file_append ---");
+
+file_write(tmp + "_log.txt", "line 1\n");
+file_append(tmp + "_log.txt", "line 2\n");
+file_append(tmp + "_log.txt", "line 3\n");
+print(file_read(tmp + "_log.txt"));
+
+// --- file_exists / file_size / file_delete ---
+
+print("--- file_exists / file_size / file_delete ---");
+
+print("exists (yes): " + file_exists(tmp + ".txt"));   // true
+print("exists (no):  " + file_exists("/tmp/nope_xyz")); // false
+
+let sz = file_size(tmp + "_log.txt");
+print("log size: " + sz + " bytes");
+
+file_delete(tmp + ".txt");
+print("after delete: " + file_exists(tmp + ".txt"));   // false
+
+// Returns false on missing file
+let bad = file_read("/tmp/does_not_exist_xyz.txt");
+if (!bad) { print("missing file → false"); }
+
+// --- directory operations ---
+
+print("--- dir operations ---");
+
+let test_dir = tmp + "_dir";
+print("exists before: " + dir_exists(test_dir));   // false
+
+dir_create(test_dir);
+print("exists after:  " + dir_exists(test_dir));   // true
+
+// Write files into it
+file_write(test_dir + "/a.txt", "a");
+file_write(test_dir + "/b.txt", "b");
+file_write(test_dir + "/c.au",  "// code");
+
+let listing = dir_scan(test_dir);
+print("files in dir: " + count(listing));
+
+// Filter by extension
+let au_files = [];
+let i = 0;
+loop {
+    if (str_ends_with(".au", listing[i])) {
+        push(au_files, listing[i]);
+    }
+    i++;
+    if (i >= count(listing)) { break; }
 }
+print(".au files: " + count(au_files));
+
+// Clean up
+file_delete(test_dir + "/a.txt");
+file_delete(test_dir + "/b.txt");
+file_delete(test_dir + "/c.au");
+dir_delete(test_dir);
+print("dir deleted: " + !dir_exists(test_dir));
+
+// --- JSON ---
+
+print("--- json_encode / json_decode ---");
+
+// Encode
+let config = ["bpm" => 140, "scale" => "minor", "root" => "A", "active" => true];
+let json_str = json_encode(config);
+print("encoded: " + json_str);
+
+// Decode
+let decoded = json_decode(json_str);
+print("bpm:    " + decoded["bpm"]);
+print("scale:  " + decoded["scale"]);
+print("active: " + decoded["active"]);
+
+// JSON round-trip
+let original = ["notes" => [60, 64, 67], "vel" => 90];
+let back = json_decode(json_encode(original));
+print("round-trip equal: " + str(original["vel"] == back["vel"]));   // true
+
+// Encode simple values
+print(json_encode(42));              // 42
+print(json_encode("hello"));         // "hello"
+print(json_encode(true));            // true
+print(json_encode(nil));             // null
+
+// Decode a JSON string from an API / file
+let api_response = "{\"status\":\"ok\",\"code\":200}";
+let parsed = json_decode(api_response);
+print("status: " + parsed["status"] + "  code: " + parsed["code"]);
+
+// --- practical: persist settings to a JSON file ---
+
+print("--- practical: JSON config file ---");
+
+let cfg_path = tmp + "_config.json";
+
+fn save_config(path, cfg) {
+    file_write(path, json_encode(cfg));
+}
+
+fn load_config(path, defaults) {
+    let raw = file_read(path);
+    if (!raw) { return defaults; }
+    return json_decode(raw);
+}
+
+let default_cfg = ["bpm" => 120, "reverb" => 0.3, "scene" => 1];
+save_config(cfg_path, default_cfg);
+
+let loaded = load_config(cfg_path, default_cfg);
+print("loaded bpm:    " + loaded["bpm"]);
+print("loaded reverb: " + loaded["reverb"]);
+
+// Modify and re-save
+loaded["bpm"] = 140;
+save_config(cfg_path, loaded);
+let reloaded = load_config(cfg_path, default_cfg);
+print("updated bpm:   " + reloaded["bpm"]);    // 140
+
+// --- cleanup ---
+file_delete(tmp + "_num.txt");
+file_delete(tmp + "_slice.txt");
+file_delete(tmp + "_log.txt");
+file_delete(cfg_path);
+print("done.");

@@ -1,0 +1,123 @@
+// syntax_sugar.au — increment, decrement, modulo-assign, and power operator
+//
+// Covers:
+//   i++   postfix increment — sugar for i += 1, returns the new value
+//   i--   postfix decrement — sugar for i -= 1, returns the new value
+//   ++i   prefix increment  — same as i++, returns the new value
+//   --i   prefix decrement  — same as i--, returns the new value
+//   %=    modulo assign     — i %= n  is equivalent to  i = i % n
+//   **    power operator    — right-associative: 2 ** 3 ** 2 == 512
+//
+// Note: both prefix and postfix forms desugar to CompoundAssign at parse time,
+// so they are identical in behaviour — both return the new value.
+
+// --- increment / decrement ---
+
+print("--- increment / decrement ---");
+
+let i = 0;
+i++;
+print("after i++: " + i);    // 1
+
+i--;
+print("after i--: " + i);    // 0
+
+++i;
+print("after ++i: " + i);    // 1
+
+--i;
+print("after --i: " + i);    // 0
+
+// The return value is the new value in all forms:
+let j = 4;
+let k = j++;
+print("j++ returned: " + k + "  j is now: " + j);   // 5 and 5
+
+// --- practical: loop counter with i++ ---
+
+print("--- loop counter with i++ ---");
+
+let pentatonic = ["C4", "D4", "E4", "G4", "A4"];
+let step = 0;
+loop {
+    print("step " + step + ": " + pentatonic[step]);
+    step++;
+    if (step >= count(pentatonic)) { break; }
+}
+
+// --- modulo assign: step sequencer wrapping ---
+
+print("--- modulo assign: step sequencer wrapping ---");
+
+// A 16-step drum pattern. After each tick the cursor wraps back to 0.
+let pattern = [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,1,0,0];
+let cursor = 0;
+let tick = 0;
+loop {
+    if (pattern[cursor] == 1) {
+        print("tick " + tick + "  step " + cursor + "  KICK");
+    }
+    cursor++;
+    cursor %= 16;    // keep cursor inside 0..15
+    tick++;
+    if (tick >= 32) { break; }
+}
+
+// --- ** power operator ---
+
+print("--- ** power operator ---");
+
+// Right-associativity: 2 ** 3 ** 2  evaluates as  2 ** (3 ** 2) = 2 ** 9 = 512
+let result = 2 ** 3 ** 2;
+print("2 ** 3 ** 2 = " + result);   // 512
+
+// Left-to-right for comparison: (2 ** 3) ** 2 = 8 ** 2 = 64
+let grouped = (2 ** 3) ** 2;
+print("(2 ** 3) ** 2 = " + grouped); // 64
+
+// --- practical: frequency math with ** ---
+
+print("--- frequency math with ** ---");
+
+// Equal temperament: each semitone is a factor of 2 ** (1/12).
+// freq(midi) = 440 * 2 ** ((midi - 69) / 12)
+let a4 = 440.0;
+let semitone_ratio = 2 ** (1.0 / 12.0);
+print("semitone ratio: " + semitone_ratio);   // ~1.0594630943592953
+
+// Compute frequencies for one octave starting at A4 (MIDI 69)
+let notes = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
+let k = 0;
+loop {
+    let freq = a4 * (2 ** (k / 12.0));
+    print(notes[k % 12] + ": " + freq + " Hz");
+    k++;
+    if (k >= 12) { break; }
+}
+
+// Octave doubling: each octave is 2 ** octave_number times a base frequency.
+let base = 27.5;   // A0
+print("");
+print("A octaves from A0:");
+let oct = 0;
+loop {
+    print("A" + oct + ": " + (base * (2 ** oct)) + " Hz");
+    oct++;
+    if (oct > 7) { break; }
+}
+
+// --- %=: velocity lane wrapping ---
+
+print("--- %= velocity lane wrapping ---");
+
+// Cycle through 4 velocity levels [32, 64, 96, 127] as a repeating lane.
+let velocities = [32, 64, 96, 127];
+let v_idx = 0;
+let beat = 0;
+loop {
+    print("beat " + beat + "  vel " + velocities[v_idx]);
+    v_idx++;
+    v_idx %= count(velocities);
+    beat++;
+    if (beat >= 8) { break; }
+}

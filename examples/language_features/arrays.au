@@ -1,13 +1,214 @@
+// arrays.au — array builtins reference
+//
+// Arrays in Audion are ordered hash maps:
+//   - O(1) access by integer or string key
+//   - auto-indexed when no key is given
+//   - deep-copied on assignment
+//   - can hold any value type, including functions and other arrays
+//
+// Builtins covered:
+//   count()         — number of entries
+//   push() / pop()  — add/remove at end   (index-based alias for array_push/array_pop)
+//   array_push() / array_pop()
+//   keys()          — all keys as array
+//   has_key()       — membership test
+//   remove()        — delete an entry by key
+//   seed() / rand() / array_rand()
+//   array_next() / array_prev() / array_current()
+//   array_beginning() / array_end()
+//   array_key()     — current cursor key
 
+// --- creation and access ---
 
+print("--- creation and access ---");
 
-let a = [1,2,3,4,5,6,7,8,9,10];
-let b = ["a", "b", "c"];
-print(array_next(a));
-print(array_next(a));
-print(array_next(a));
-print(array_next(a));
-a = b;
-print(array_next(a));
-print(array_next(a));
-print(array_next(a));
+// Auto-indexed (keys 0, 1, 2, …)
+let notes = ["C4", "D4", "E4", "G4", "A4"];
+print("count: " + count(notes));           // 5
+print("first: " + notes[0]);               // C4
+print("last:  " + notes[4]);               // A4
+
+// Explicit keys
+let freqs = ["A4" => 440, "A3" => 220, "A5" => 880];
+print("A4 = " + freqs["A4"] + " Hz");
+
+// Mixed
+let seq = [0 => "kick", 1 => "snare", "fill" => "roll"];
+print("seq[0]:      " + seq[0]);
+print("seq['fill']: " + seq["fill"]);
+
+// Nested arrays
+let chord_map = [
+    "maj" => [0, 4, 7],
+    "min" => [0, 3, 7],
+    "dom7" => [0, 4, 7, 10],
+];
+print("major third: " + chord_map["maj"][1]);   // 4
+
+// --- count ---
+
+print("--- count ---");
+let a = [10, 20, 30, 40];
+print(count(a));                          // 4
+print(count([]));                         // 0
+
+// --- push / pop ---
+
+print("--- push / pop ---");
+
+let stack = [];
+push(stack, "reverb");
+push(stack, "delay");
+push(stack, "chorus");
+print("stack: " + count(stack));          // 3
+
+let top = pop(stack);
+print("popped: " + top);                  // chorus
+print("remaining: " + count(stack));      // 2
+
+// array_push / array_pop are identical
+array_push(stack, "flanger");
+let last = array_pop(stack);
+print("array_pop: " + last);              // flanger
+
+// --- keys / has_key / remove ---
+
+print("--- keys / has_key / remove ---");
+
+let params = ["freq" => 440, "amp" => 0.8, "pan" => 0.0];
+let ks = keys(params);
+print("keys: " + count(ks));              // 3
+
+print(has_key(params, "freq"));           // true
+print(has_key(params, "reverb"));         // false
+
+remove(params, "pan");
+print("after remove: " + count(params));  // 2
+print(has_key(params, "pan"));            // false
+
+// --- seed / rand / array_rand ---
+
+print("--- seed / rand / array_rand ---");
+
+// seed() makes rand() deterministic — useful for reproducible generative music
+seed(42);
+print(rand(0, 100));    // deterministic: same seed = same sequence
+print(rand(0, 100));
+print(rand(0, 100));
+
+// Reset with same seed to reproduce
+seed(42);
+print(rand(0, 100));    // same first value as above
+
+// array_rand() picks a random element
+let scale = [0, 2, 4, 5, 7, 9, 11];
+seed(99);
+print("random degree: " + array_rand(scale));
+print("random degree: " + array_rand(scale));
+
+// --- cursor: array_next / array_prev / array_current ---
+
+print("--- cursor: next / prev / current ---");
+
+// The cursor is an internal pointer that moves through entries in order.
+// Useful for stepping through a sequence without an explicit index variable.
+
+let pattern = ["kick", "hat", "snare", "hat"];
+
+// array_next() advances the cursor and returns [key, value]
+// First call starts from element 0.
+let entry = array_next(pattern);
+print("next: " + entry[1]);    // kick  (value at index 0)
+entry = array_next(pattern);
+print("next: " + entry[1]);    // hat
+entry = array_next(pattern);
+print("next: " + entry[1]);    // snare
+
+// array_current() returns the entry at the current cursor position without moving
+let cur = array_current(pattern);
+print("current: " + cur[1]);   // snare (still on step 2)
+
+// array_prev() moves the cursor backward
+let prev = array_prev(pattern);
+print("prev: " + prev[1]);     // hat
+
+// array_beginning() jumps to the first entry
+array_beginning(pattern);
+print("beginning: " + array_current(pattern)[1]);  // kick
+
+// array_end() jumps to the last entry
+array_end(pattern);
+print("end: " + array_current(pattern)[1]);        // hat
+
+// array_key() returns only the key at the current cursor
+let k = array_key(pattern);
+print("key at end: " + k);    // 3 (last index)
+
+// --- practical: cycling step sequencer with cursor ---
+
+print("--- practical: step sequencer ---");
+
+let steps = [1, 0, 0, 0,  1, 0, 1, 0,  1, 0, 0, 0,  0, 1, 0, 0];
+array_beginning(steps);
+
+let tick = 0;
+loop {
+    let e = array_current(steps);
+    if (e[1] == 1) {
+        print("tick " + tick + " KICK  [step " + e[0] + "]");
+    }
+    // advance; when nil is returned we're at the end — wrap to beginning
+    let nxt = array_next(steps);
+    if (!nxt) { array_beginning(steps); }
+    tick++;
+    if (tick >= 16) { break; }
+}
+
+// --- practical: chord progression player ---
+
+print("--- practical: chord progression ---");
+
+let chords = [
+    ["root" => 60, "type" => "maj"],
+    ["root" => 65, "type" => "min"],
+    ["root" => 67, "type" => "dom7"],
+    ["root" => 60, "type" => "maj"],
+];
+
+let intervals = ["maj" => [0,4,7], "min" => [0,3,7], "dom7" => [0,4,7,10]];
+
+let ci = 0;
+loop {
+    let chord = chords[ci];
+    let root = chord["root"];
+    let ivs  = intervals[chord["type"]];
+    let tones = [];
+    let ii = 0;
+    loop {
+        push(tones, root + ivs[ii]);
+        ii++;
+        if (ii >= count(ivs)) { break; }
+    }
+    print("chord " + ci + " (" + chord["type"] + " from " + root + "): " + tones);
+    ci++;
+    if (ci >= count(chords)) { break; }
+}
+
+// --- practical: frequency table as an associative array ---
+
+print("--- practical: note frequency table ---");
+
+let note_table = [];
+let note_names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+let n = 0;
+loop {
+    let midi = 60 + n;   // C4 = 60
+    let freq = 440.0 * (2 ** ((midi - 69) / 12.0));
+    note_table[note_names[n % 12] + "4"] = freq;
+    n++;
+    if (n >= 12) { break; }
+}
+
+print("C4:  " + math_round(note_table["C4"],  2) + " Hz");
+print("A4:  " + math_round(note_table["A4"],  2) + " Hz");
+print("F#4: " + math_round(note_table["F#4"], 2) + " Hz");

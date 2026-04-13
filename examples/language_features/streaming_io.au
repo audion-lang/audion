@@ -1,0 +1,192 @@
+// streaming_io.au — handle-based streaming file I/O
+//
+// Unlike file_read/file_write which load the whole file at once, streaming
+// handles keep the file open so you can read/write incrementally without
+// loading everything into memory — essential for large files.
+//
+// file_open(path, mode)         → handle (number) or false
+//   mode "r"  — read (file must exist)
+//   mode "w"  — write (creates or truncates)
+//   mode "a"  — append (creates if missing)
+//
+// file_line(handle)             → Bytes (next line incl. \n) or false at EOF
+// file_read_chunk(handle, size) → Bytes (up to size bytes) or false at EOF
+// file_write_handle(handle, data) → bytes written or false   (string or Bytes)
+// file_seek(handle, offset)     → bool   (seek to absolute byte position)
+// file_tell(handle)             → number (current byte position)
+// file_close(handle)            → nil
+//
+// All read functions are binary-safe: they return Value::Bytes, not strings.
+// Use bytes_len(), bytes_get(), bytes_to_array() to inspect the result.
+// Convert a Bytes line to a string with bytes_to_array() + your own join, or
+// simply use str_trim() won't work on Bytes — process raw bytes directly.
+
+let tmp = "/tmp/audion_stream_demo.txt";
+
+// --- write a text file line by line ---
+
+print("--- write a file handle ---");
+
+let wh = file_open(tmp, "w");
+if (!wh) {
+    print("error: could not open file for writing");
+} else {
+    file_write_handle(wh, "line one\n");
+    file_write_handle(wh, "line two\n");
+    file_write_handle(wh, "line three\n");
+    file_close(wh);
+    print("wrote 3 lines to " + tmp);
+}
+
+// --- read line by line ---
+
+print("--- read line by line ---");
+
+let rh = file_open(tmp, "r");
+if (!rh) {
+    print("error: could not open file for reading");
+} else {
+    let line_num = 1;
+    loop {
+        let line = file_line(rh);
+        if (!line) { break; }                // false = EOF
+        print("line " + line_num + ": " + bytes_len(line) + " bytes");
+        line_num++;
+    }
+    file_close(rh);
+}
+
+// --- read in fixed-size chunks ---
+
+print("--- read in chunks ---");
+
+let rh2 = file_open(tmp, "r");
+let chunk_size = 8;
+let total_bytes = 0;
+let chunks = 0;
+loop {
+    let chunk = file_read_chunk(rh2, chunk_size);
+    if (!chunk) { break; }
+    total_bytes += bytes_len(chunk);
+    chunks++;
+}
+file_close(rh2);
+print("read " + total_bytes + " bytes in " + chunks + " chunks of " + chunk_size);
+
+// --- seek and tell ---
+
+print("--- seek and tell ---");
+
+let rh3 = file_open(tmp, "r");
+print("initial position: " + file_tell(rh3));      // 0
+
+// Skip 5 bytes, then read the rest of the first line
+file_seek(rh3, 5);
+print("after seek(5):    " + file_tell(rh3));       // 5
+
+let rest = file_read_chunk(rh3, 4);
+print("read 4 bytes from offset 5: " + bytes_len(rest) + " bytes");
+
+// Jump back to the beginning
+file_seek(rh3, 0);
+print("after seek(0):    " + file_tell(rh3));       // 0
+file_close(rh3);
+
+// --- append mode ---
+
+print("--- append mode ---");
+
+let ah = file_open(tmp, "a");
+file_write_handle(ah, "appended line\n");
+file_close(ah);
+
+// Count lines to confirm append worked
+let rh4 = file_open(tmp, "r");
+let count_lines = 0;
+loop {
+    let l = file_line(rh4);
+    if (!l) { break; }
+    count_lines++;
+}
+file_close(rh4);
+print("file now has " + count_lines + " lines");   // 4
+
+// --- binary-safe write / read ---
+
+print("--- binary write / read ---");
+
+let bin_path = "/tmp/audion_stream_demo.bin";
+
+// Write 6 arbitrary bytes including a null byte (0x00)
+let raw = array_to_bytes([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]);
+let bwh = file_open(bin_path, "w");
+file_write_handle(bwh, raw);
+file_close(bwh);
+
+let brh = file_open(bin_path, "r");
+let back = file_read_chunk(brh, 6);
+file_close(brh);
+
+let arr = bytes_to_array(back);
+print("byte 0: " + hex(arr[0], 2));   // de
+print("byte 4: " + arr[4]);           // 0  (null byte survived)
+print("byte 5: " + arr[5]);           // 255
+
+// --- practical: count lines in a large file without loading it all ---
+
+print("--- practical: line counter ---");
+
+fn count_file_lines(path) {
+    let h = file_open(path, "r");
+    if (!h) { return 0; }
+    let n = 0;
+    loop {
+        let l = file_line(h);
+        if (!l) { break; }
+        n++;
+    }
+    file_close(h);
+    return n;
+}
+
+print(tmp + " has " + count_file_lines(tmp) + " lines");
+
+// --- practical: process a CSV file row by row ---
+
+print("--- practical: CSV line processor ---");
+
+let csv_path = "/tmp/audion_demo.csv";
+let csv_wh = file_open(csv_path, "w");
+file_write_handle(csv_wh, "note,velocity,duration\n");
+file_write_handle(csv_wh, "60,80,0.5\n");
+file_write_handle(csv_wh, "64,90,0.5\n");
+file_write_handle(csv_wh, "67,70,1.0\n");
+file_close(csv_wh);
+
+let csv_rh = file_open(csv_path, "r");
+let row = 0;
+loop {
+    let raw_line = file_line(csv_rh);
+    if (!raw_line) { break; }
+    // Convert bytes to array, filter out '\n' and '\r', rebuild string
+    let byte_arr = bytes_to_array(raw_line);
+    let s = "";
+    let bi = 0;
+    loop {
+        let b = byte_arr[bi];
+        if (b != 10 && b != 13) {   // skip LF and CR
+            s = s + str(b);         // not ideal for real CSV, but demonstrates the pattern
+        }
+        bi++;
+        if (bi >= count(byte_arr)) { break; }
+    }
+    print("row " + row + ": " + bytes_len(raw_line) + " bytes");
+    row++;
+}
+file_close(csv_rh);
+
+// --- cleanup ---
+file_delete(tmp);
+file_delete(bin_path);
+file_delete(csv_path);
+print("done.");

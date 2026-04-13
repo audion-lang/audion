@@ -1,0 +1,110 @@
+// date_time.au — date/time builtins
+//
+// timestamp()    → unix time in whole seconds
+// timestamp_ms() → unix time in milliseconds
+// date(format)   → formatted date/time string (local timezone)
+// date(format, ts) → format a specific unix timestamp
+//
+// Format characters (PHP-style subset):
+//   Y  four-digit year          (e.g. 2026)
+//   m  month, zero-padded       (01–12)
+//   n  month, no padding        (1–12)
+//   d  day, zero-padded         (01–31)
+//   j  day, no padding          (1–31)
+//   H  hour 24h, zero-padded    (00–23)
+//   G  hour 24h, no padding     (0–23)
+//   g  hour 12h, no padding     (1–12)
+//   A  AM or PM
+//   i  minutes, zero-padded     (00–59)
+//   s  seconds, zero-padded     (00–59)
+//   N  ISO weekday              (1=Monday … 7=Sunday)
+//   U  unix timestamp (seconds)
+//   any other character is passed through as-is
+
+// --- timestamp ---
+
+print("--- timestamp / timestamp_ms ---");
+
+let ts  = timestamp();
+let tms = timestamp_ms();
+
+print("unix seconds:      " + ts);
+print("unix milliseconds: " + tms);
+print("ms - s*1000:       " + (tms - ts * 1000));  // offset within current second
+
+// Elapsed-time measurement (use timestamp_ms for sub-second precision)
+let t0 = timestamp_ms();
+let acc = 0;
+for (let i = 0; i < 1000000; i++) {
+    acc += i;
+}
+let elapsed = timestamp_ms() - t0;
+print("1M additions in " + elapsed + " ms  (acc=" + acc + ")");
+
+// --- date(format) ---
+
+print("--- date(format) ---");
+
+print("ISO date:         " + date("Y-m-d"));
+print("time:             " + date("H:i:s"));
+print("full datetime:    " + date("Y-m-d H:i:s"));
+print("day / month:      " + date("j/n"));
+print("weekday number:   " + date("N"));        // 1=Mon … 7=Sun
+print("12-hour clock:    " + date("g:i A"));
+print("unix in format:   " + date("U"));        // same as timestamp()
+
+// Filename-safe timestamp (no colons or spaces)
+let stamp = date("Y-m-d_H-i-s");
+print("file stamp:       " + stamp);            // e.g. 2026-04-13_14-30-00
+
+// --- date(format, timestamp) — format a specific moment ---
+
+print("--- date(format, timestamp) ---");
+
+// Format the known unix epoch start (1970-01-01 00:00:00 UTC).
+// Local timezone may shift the display hour; the date Y-m-d is reliable.
+let epoch = 0;
+print("epoch formatted:  " + date("Y-m-d", epoch));
+
+// Format a future moment: add seconds to the current timestamp
+let in_one_hour = timestamp() + 3600;
+print("one hour from now:" + date("H:i:s", in_one_hour));
+
+// --- practical: session log header ---
+
+print("--- practical: session log ---");
+
+fn log_header(session_name) {
+    let dt = date("Y-m-d H:i:s");
+    return "[" + dt + "] SESSION: " + session_name;
+}
+
+print(log_header("live set A"));
+print(log_header("rehearsal B"));
+
+// Build a dated filename for a recording
+let rec_date  = date("Ymd");          // e.g. "20260413"
+let rec_time  = date("His");          // e.g. "143022"
+let rec_file  = "rec_" + rec_date + "_" + rec_time + ".wav";
+print("recording file: " + rec_file);
+
+// --- practical: BPM-sync timing reference ---
+
+print("--- practical: BPM timing ---");
+
+let bpm_val   = 120.0;
+let beat_ms   = 60000.0 / bpm_val;
+let bar_ms    = beat_ms * 4;
+let t_start   = timestamp_ms();
+
+print("beat: " + beat_ms + " ms");
+print("bar:  " + bar_ms  + " ms");
+
+// Log bar events with timestamps
+let bar = 0;
+loop {
+    let t_bar = t_start + bar * bar_ms;
+    print("bar " + bar + "  starts at ms=" + t_bar);
+    bar++;
+    if (bar >= 4) { break; }
+}

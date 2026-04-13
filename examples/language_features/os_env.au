@@ -1,0 +1,141 @@
+// os_env.au — OS and environment builtins
+//
+// Process info:    os_process_id() / os_pid()
+//                  os_process_parent_id() / os_ppid()
+// Working dir:     os_cwd() / os_current_working_directory()
+//                  os_chdir(path) / os_current_working_directory_change(path)
+// Environment:     os_env_get(name) / os_env_set(name, value) / os_env_list()
+// Arguments:       os_args() / os_arguments()
+// System info:     os_name() / os_hostname() / os_username() / os_home()
+// Process control: os_exit(code)  [see note below]
+// Console I/O:     console_read() / console_read_password(prompt) / console_read_key()
+//                  console_error(msg)   [interactive — see note below]
+
+// --- process info ---
+
+print("--- process info ---");
+print("pid:  " + os_pid());
+print("ppid: " + os_ppid());
+
+// Long-form aliases work too:
+print("pid (long):  " + os_process_id());
+print("ppid (long): " + os_process_parent_id());
+
+// --- working directory ---
+
+print("--- working directory ---");
+let orig_dir = os_cwd();
+print("cwd: " + orig_dir);
+
+// Change directory and change back
+let tmp = "/tmp";
+let ok = os_chdir(tmp);
+print("chdir to /tmp: " + ok);
+print("cwd now: " + os_cwd());
+
+os_chdir(orig_dir);
+print("restored cwd: " + os_cwd());
+
+// os_current_working_directory() / os_current_working_directory_change() are
+// long-form aliases for os_cwd() / os_chdir()
+
+// --- environment variables ---
+
+print("--- environment variables ---");
+
+// Read a standard env variable
+let home = os_env_get("HOME");
+print("HOME: " + home);
+
+let path = os_env_get("PATH");
+if (path) {
+    print("PATH is set (length: " + str_length(path) + " chars)");
+} else {
+    print("PATH not set");
+}
+
+// Set and read back a custom variable
+os_env_set("AUDION_SESSION", "live_2026");
+let session = os_env_get("AUDION_SESSION");
+print("AUDION_SESSION: " + session);
+
+// List all environment variables as an array of "KEY=VALUE" strings
+let env_list = os_env_list();
+print("total env vars: " + count(env_list));
+
+// Find variables whose name contains "PATH"
+let path_vars = 0;
+let idx = 0;
+loop {
+    if (str_contains("PATH", env_list[idx])) {
+        path_vars++;
+    }
+    idx++;
+    if (idx >= count(env_list)) { break; }
+}
+print("variables with PATH in name: " + path_vars);
+
+// --- system info ---
+
+print("--- system info ---");
+print("os:       " + os_name());
+print("hostname: " + os_hostname());
+print("user:     " + os_username());
+print("home:     " + os_home());
+
+// Build a user-specific config path
+let config_path = os_home() + "/.audion/config.json";
+print("config path: " + config_path);
+
+// --- command-line arguments ---
+
+print("--- command-line arguments ---");
+// os_args() returns the array of arguments passed to the script.
+// When run as:  audion os_env.au foo bar 42
+// os_args() returns ["foo", "bar", "42"]
+let args = os_args();
+print("argument count: " + count(args));
+if (count(args) > 0) {
+    let i = 0;
+    loop {
+        print("arg[" + i + "]: " + args[i]);
+        i++;
+        if (i >= count(args)) { break; }
+    }
+} else {
+    print("(run with arguments to see them here)");
+}
+
+// --- console I/O  (interactive — requires a terminal) ---
+
+// These functions block until the user provides input.
+// They work correctly when running audion interactively in a terminal.
+// Do not use them in watch mode or piped contexts.
+
+// console_read()
+//   Reads one line of text from stdin. Returns the string without the newline.
+//   Example:
+//     print("Enter your name:");
+//     let name = console_read();
+//     print("Hello, " + name + "!");
+
+// console_read_password(prompt)
+//   Like console_read() but input is hidden (no echo).
+//   Example:
+//     let pw = console_read_password("Password: ");
+
+// console_read_key()
+//   Reads a single keypress without requiring Enter. Returns a string.
+//   Example:
+//     print("Press any key…");
+//     let key = console_read_key();
+//     print("You pressed: " + key);
+
+// console_error(msg)  — write to stderr (always goes to the terminal even if stdout is piped)
+console_error("this message goes to stderr");
+
+// --- process exit (commented out — would stop execution) ---
+
+// os_exit(0)    // exit with success code
+// os_exit(1)    // exit with error code
+// After os_exit() no further code runs in the current process.

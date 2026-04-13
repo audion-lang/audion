@@ -1,0 +1,158 @@
+// math.au — math_* builtins reference
+//
+// All 42 math functions, organised by category.
+// Every function takes and returns numbers.
+
+// --- constants ---
+
+print("--- constants ---");
+print("pi: "  + math_pi());         // 3.141592653589793
+print("e:  "  + math_e());          // 2.718281828459045
+
+// --- rounding and truncation ---
+
+print("--- rounding / truncation ---");
+print(math_floor(4.7));             // 4
+print(math_ceil(4.1));              // 5
+print(math_round(4.567, 2));        // 4.57   (second arg = decimal places)
+print(math_round(4.567, 0));        // 5
+print(math_trunc(4.9));             // 4      (towards zero)
+print(math_trunc(-4.9));            // -4
+print(math_fract(4.7));             // 0.7    (fractional part)
+print(math_intdiv(17, 5));          // 3      (integer division)
+
+// --- absolute value and sign ---
+
+print("--- abs / sign ---");
+print(math_abs(-5));                // 5
+print(math_abs(5));                 // 5
+print(math_sign(-3));               // -1
+print(math_sign(0));                // 0
+print(math_sign(7));                // 1
+
+// --- min / max / clamp / lerp / map ---
+
+print("--- min / max / clamp / lerp / map ---");
+print(math_min(3, 7));              // 3
+print(math_max(3, 7));              // 7
+print(math_clamp(12, 0, 10));       // 10     (value, min, max)
+print(math_clamp(-5, 0, 10));       // 0
+print(math_clamp(5,  0, 10));       // 5
+
+// linear interpolation: math_lerp(a, b, t)  →  a + (b-a)*t
+print(math_lerp(0, 100, 0.25));     // 25.0
+print(math_lerp(440, 880, 0.5));    // 660.0   (A4 → A5, halfway)
+
+// math_map(value, in_lo, in_hi, out_lo, out_hi): remap a range
+// midi velocity 0-127 → amplitude 0.0-1.0
+let vel = 100;
+let amp = math_map(vel, 0, 127, 0.0, 1.0);
+print("vel " + vel + " → amp " + math_round(amp, 3));   // 0.787
+
+// CC 0-127 → filter cutoff 200-8000 Hz
+let cc = 64;
+let cutoff = math_map(cc, 0, 127, 200, 8000);
+print("cc " + cc + " → cutoff " + math_round(cutoff, 1) + " Hz");
+
+// --- sqrt, cbrt, pow, hypot ---
+
+print("--- sqrt / cbrt / pow / hypot ---");
+print(math_sqrt(9));                // 3.0
+print(math_cbrt(27));               // 3.0
+print(math_pow(2, 10));             // 1024.0   (same as 2 ** 10)
+print(math_hypot(3, 4));            // 5.0      (Pythagorean)
+
+// Equal-temperament: freq for any MIDI note
+let midi = 69;                      // A4
+let freq = 440 * math_pow(2, (midi - 69) / 12.0);
+print("MIDI " + midi + " = " + freq + " Hz");  // 440
+
+// --- logarithms ---
+
+print("--- logarithms ---");
+print(math_log(math_e()));          // 1.0    (natural log)
+print(math_log10(1000));            // 3.0
+print(math_log2(1024));             // 10.0
+print(math_log1p(0));               // 0.0    (log(1+x), more accurate near 0)
+print(math_exp(1));                 // 2.718… (e^1)
+print(math_expm1(0));               // 0.0    (e^x - 1, more accurate near 0)
+
+// dB ↔ amplitude (useful for audio gain)
+// dB = 20 * log10(amplitude)
+let amplitude = 0.5;
+let db = 20 * math_log10(amplitude);
+print("amp " + amplitude + " = " + math_round(db, 2) + " dB");  // -6.02 dB
+
+// amplitude = 10 ^ (dB / 20)
+let db_val = -12.0;
+let amp_back = math_pow(10, db_val / 20);
+print(db_val + " dB = amp " + math_round(amp_back, 4));          // 0.2512
+
+// --- trigonometry ---
+
+print("--- trigonometry ---");
+let pi = math_pi();
+print(math_sin(0));                 // 0.0
+print(math_sin(pi / 2));            // 1.0
+print(math_cos(0));                 // 1.0
+print(math_cos(pi));                // -1.0
+print(math_tan(pi / 4));            // ~1.0
+print(math_atan2(1, 1));            // ~0.785 (π/4)
+
+// LFO value at a given phase (0.0..1.0 mapped to 0..2π)
+fn lfo_sin(phase) {
+    return math_sin(phase * 2 * math_pi());
+}
+print("LFO at phase 0.25: " + math_round(lfo_sin(0.25), 4));   // 1.0 (peak)
+print("LFO at phase 0.75: " + math_round(lfo_sin(0.75), 4));   // -1.0 (trough)
+
+// --- inverse trig ---
+
+print("--- asin / acos / atan / atan2 ---");
+print(math_round(math_asin(1), 4));     // 1.5708 (π/2)
+print(math_round(math_acos(1), 4));     // 0.0
+print(math_round(math_atan(1), 4));     // 0.7854 (π/4)
+print(math_round(math_atan2(0, -1), 4)); // 3.1416 (π)
+
+// --- hyperbolic ---
+
+print("--- hyperbolic ---");
+print(math_round(math_sinh(1), 4));     // 1.1752
+print(math_round(math_cosh(1), 4));     // 1.5431
+print(math_round(math_tanh(1), 4));     // 0.7616
+print(math_round(math_asinh(1), 4));    // 0.8814
+print(math_round(math_acosh(2), 4));    // 1.3170
+print(math_round(math_atanh(0.5), 4));  // 0.5493
+
+// --- modulo, deg/rad, predicates ---
+
+print("--- fmod / deg2rad / rad2deg / predicates ---");
+print(math_fmod(10, 3));            // 1.0    (float modulo, keeps sign)
+print(math_fmod(-10, 3));           // -1.0
+print(math_round(math_deg2rad(180), 6));  // 3.141593
+print(math_round(math_rad2deg(math_pi()), 4));  // 180.0
+print(math_is_finite(1));           // true
+print(math_is_infinite(1));         // false
+print(math_is_nan(0));              // false
+
+// --- practical: panning law (equal-power) ---
+
+print("--- practical: equal-power panning ---");
+// pan = -1.0 (full left) to 1.0 (full right)
+// angle ranges 0 (left) to π/2 (right)
+fn pan_gain(pan, side) {
+    let angle = (pan + 1) / 2 * math_pi() / 2;
+    if (side == "L") { return math_cos(angle); }
+    return math_sin(angle);
+}
+
+let pan_vals = [-1.0, -0.5, 0.0, 0.5, 1.0];
+let p = 0;
+loop {
+    let pan = pan_vals[p];
+    let l = math_round(pan_gain(pan, "L"), 3);
+    let r = math_round(pan_gain(pan, "R"), 3);
+    print("pan " + pan + "  L=" + l + "  R=" + r);
+    p++;
+    if (p >= count(pan_vals)) { break; }
+}

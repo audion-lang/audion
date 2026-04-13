@@ -164,6 +164,37 @@ fn remove_handle(id: u64) {
     net_handles().lock().unwrap().remove(&id);
 }
 
+// ---------------------------------------------------------------------------
+// File stream handle store
+// ---------------------------------------------------------------------------
+
+enum FileHandle {
+    Read(std::io::BufReader<std::fs::File>),
+    Write(std::fs::File),
+    Append(std::fs::File),
+}
+
+static NEXT_FILE_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+fn file_handles() -> &'static Mutex<HashMap<u64, Arc<Mutex<FileHandle>>>> {
+    static HANDLES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<FileHandle>>>>> = OnceLock::new();
+    HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_file_handle(handle: FileHandle) -> u64 {
+    let id = NEXT_FILE_HANDLE.fetch_add(1, Ordering::Relaxed);
+    file_handles().lock().unwrap().insert(id, Arc::new(Mutex::new(handle)));
+    id
+}
+
+fn get_file_handle(id: u64) -> Option<Arc<Mutex<FileHandle>>> {
+    file_handles().lock().unwrap().get(&id).cloned()
+}
+
+fn remove_file_handle(id: u64) {
+    file_handles().lock().unwrap().remove(&id);
+}
+
 /// Single source of truth for all builtin function names.
 /// Used by Interpreter::new() for registration and available for introspection.
 pub const BUILTIN_NAMES: &[&str] = &[
@@ -172,6 +203,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "rand", "seed", "array_rand", "time",
     "count", "push", "pop", "keys", "has_key", "remove",
     "file_read", "file_write", "file_append", "file_exists", "file_delete", "file_size",
+    "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
     "buffer_load", "buffer_free", "buffer_alloc", "buffer_read",
@@ -309,6 +341,13 @@ pub fn call_builtin(
         "file_exists" => builtin_file_exists(args),
         "file_delete" => builtin_file_delete(args),
         "file_size" => builtin_file_size(args),
+        "file_open" => builtin_file_open(args),
+        "file_line" => builtin_file_line(args),
+        "file_read_chunk" => builtin_file_read_chunk(args),
+        "file_write_handle" => builtin_file_write_handle(args),
+        "file_seek" => builtin_file_seek(args),
+        "file_tell" => builtin_file_tell(args),
+        "file_close" => builtin_file_close(args),
         "dir_scan" => builtin_dir_scan(args),
         "dir_exists" => builtin_dir_exists(args),
         "dir_create" => builtin_dir_create(args),
@@ -866,6 +905,222 @@ fn builtin_file_size(args: &[Value]) -> Result<Value> {
         Ok(meta) => Ok(Value::Number(meta.len() as f64)),
         Err(_) => Ok(Value::Bool(false)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Handle-based streaming file I/O
+// ---------------------------------------------------------------------------
+
+// file_open(path, mode) → handle (number) or false
+// mode: "r" (read), "w" (write/truncate), "a" (append)
+// Returns a numeric handle for use with file_line, file_read_chunk, file_write_handle,
+// file_seek, file_tell, file_close.
+fn builtin_file_open(args: &[Value]) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "file_open() requires 2 arguments: file_open(path, mode)".to_string(),
+        });
+    }
+    let path = require_string("file_open", &args[0])?;
+    let mode = require_string("file_open", &args[1])?;
+    match mode.as_str() {
+        "r" => match std::fs::File::open(&path) {
+            Ok(f) => {
+                let id = store_file_handle(FileHandle::Read(std::io::BufReader::new(f)));
+                Ok(Value::Number(id as f64))
+            }
+            Err(_) => Ok(Value::Bool(false)),
+        },
+        "w" => match std::fs::File::create(&path) {
+            Ok(f) => {
+                let id = store_file_handle(FileHandle::Write(f));
+                Ok(Value::Number(id as f64))
+            }
+            Err(_) => Ok(Value::Bool(false)),
+        },
+        "a" => match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(f) => {
+                let id = store_file_handle(FileHandle::Append(f));
+                Ok(Value::Number(id as f64))
+            }
+            Err(_) => Ok(Value::Bool(false)),
+        },
+        other => Err(AudionError::RuntimeError {
+            msg: format!("file_open() unknown mode {:?}: use \"r\", \"w\", or \"a\"", other),
+        }),
+    }
+}
+
+// file_line(handle) → Bytes (raw bytes up to and including \n) or false (EOF or error)
+// Binary safe: uses read_until so no UTF-8 assumption.
+fn builtin_file_line(args: &[Value]) -> Result<Value> {
+    use std::io::BufRead;
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "file_line() requires a handle argument".to_string(),
+        });
+    }
+    let id = require_number("file_line", &args[0])? as u64;
+    let handle_arc = match get_file_handle(id) {
+        Some(h) => h,
+        None => return Err(AudionError::RuntimeError {
+            msg: format!("file_line(): invalid handle {}", id),
+        }),
+    };
+    let mut guard = handle_arc.lock().unwrap();
+    match &mut *guard {
+        FileHandle::Read(reader) => {
+            let mut buf = Vec::new();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => Ok(Value::Bool(false)), // EOF
+                Ok(_) => Ok(Value::Bytes(buf)),
+                Err(_) => Ok(Value::Bool(false)),
+            }
+        }
+        _ => Err(AudionError::RuntimeError {
+            msg: "file_line() requires a handle opened in read mode".to_string(),
+        }),
+    }
+}
+
+// file_read_chunk(handle, size) → Bytes (up to `size` bytes) or false (EOF or error)
+// Binary safe.
+fn builtin_file_read_chunk(args: &[Value]) -> Result<Value> {
+    use std::io::Read;
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "file_read_chunk() requires 2 arguments: file_read_chunk(handle, size)".to_string(),
+        });
+    }
+    let id = require_number("file_read_chunk", &args[0])? as u64;
+    let size = require_number("file_read_chunk", &args[1])? as usize;
+    let handle_arc = match get_file_handle(id) {
+        Some(h) => h,
+        None => return Err(AudionError::RuntimeError {
+            msg: format!("file_read_chunk(): invalid handle {}", id),
+        }),
+    };
+    let mut guard = handle_arc.lock().unwrap();
+    match &mut *guard {
+        FileHandle::Read(reader) => {
+            let mut buf = vec![0u8; size];
+            match reader.read(&mut buf) {
+                Ok(0) => Ok(Value::Bool(false)), // EOF
+                Ok(n) => {
+                    buf.truncate(n);
+                    Ok(Value::Bytes(buf))
+                }
+                Err(_) => Ok(Value::Bool(false)),
+            }
+        }
+        _ => Err(AudionError::RuntimeError {
+            msg: "file_read_chunk() requires a handle opened in read mode".to_string(),
+        }),
+    }
+}
+
+// file_write_handle(handle, data) → number of bytes written or false
+// Accepts string or bytes. Works on write and append handles.
+fn builtin_file_write_handle(args: &[Value]) -> Result<Value> {
+    use std::io::Write;
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "file_write_handle() requires 2 arguments: file_write_handle(handle, data)".to_string(),
+        });
+    }
+    let id = require_number("file_write_handle", &args[0])? as u64;
+    let data: Vec<u8> = match &args[1] {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.clone(),
+        other => return Err(AudionError::RuntimeError {
+            msg: format!("file_write_handle(): expected string or bytes, got {}", other.type_name()),
+        }),
+    };
+    let handle_arc = match get_file_handle(id) {
+        Some(h) => h,
+        None => return Err(AudionError::RuntimeError {
+            msg: format!("file_write_handle(): invalid handle {}", id),
+        }),
+    };
+    let mut guard = handle_arc.lock().unwrap();
+    let file: &mut dyn Write = match &mut *guard {
+        FileHandle::Write(f) => f,
+        FileHandle::Append(f) => f,
+        FileHandle::Read(_) => return Err(AudionError::RuntimeError {
+            msg: "file_write_handle() requires a handle opened in write or append mode".to_string(),
+        }),
+    };
+    match file.write_all(&data) {
+        Ok(()) => Ok(Value::Number(data.len() as f64)),
+        Err(_) => Ok(Value::Bool(false)),
+    }
+}
+
+// file_seek(handle, offset) → bool
+// Seeks to absolute byte offset. Works on all handle types.
+fn builtin_file_seek(args: &[Value]) -> Result<Value> {
+    use std::io::Seek;
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "file_seek() requires 2 arguments: file_seek(handle, offset)".to_string(),
+        });
+    }
+    let id = require_number("file_seek", &args[0])? as u64;
+    let offset = require_number("file_seek", &args[1])? as u64;
+    let handle_arc = match get_file_handle(id) {
+        Some(h) => h,
+        None => return Err(AudionError::RuntimeError {
+            msg: format!("file_seek(): invalid handle {}", id),
+        }),
+    };
+    let mut guard = handle_arc.lock().unwrap();
+    // BufReader::seek discards the internal buffer, so it is safe to use here.
+    let result = match &mut *guard {
+        FileHandle::Read(r) => r.seek(std::io::SeekFrom::Start(offset)),
+        FileHandle::Write(f) => f.seek(std::io::SeekFrom::Start(offset)),
+        FileHandle::Append(f) => f.seek(std::io::SeekFrom::Start(offset)),
+    };
+    Ok(Value::Bool(result.is_ok()))
+}
+
+// file_tell(handle) → number (current byte position) or false
+fn builtin_file_tell(args: &[Value]) -> Result<Value> {
+    use std::io::Seek;
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "file_tell() requires a handle argument".to_string(),
+        });
+    }
+    let id = require_number("file_tell", &args[0])? as u64;
+    let handle_arc = match get_file_handle(id) {
+        Some(h) => h,
+        None => return Err(AudionError::RuntimeError {
+            msg: format!("file_tell(): invalid handle {}", id),
+        }),
+    };
+    let mut guard = handle_arc.lock().unwrap();
+    let result = match &mut *guard {
+        FileHandle::Read(r) => r.stream_position(),
+        FileHandle::Write(f) => f.stream_position(),
+        FileHandle::Append(f) => f.stream_position(),
+    };
+    match result {
+        Ok(pos) => Ok(Value::Number(pos as f64)),
+        Err(_) => Ok(Value::Bool(false)),
+    }
+}
+
+// file_close(handle) → nil
+// Closes and drops the file handle. Flushing happens automatically on drop.
+fn builtin_file_close(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "file_close() requires a handle argument".to_string(),
+        });
+    }
+    let id = require_number("file_close", &args[0])? as u64;
+    remove_file_handle(id);
+    Ok(Value::Nil)
 }
 
 // ---------------------------------------------------------------------------

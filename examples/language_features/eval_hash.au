@@ -1,0 +1,107 @@
+// eval_hash.au — eval and hash builtins
+//
+// eval(code)               — evaluate a string as Audion code at runtime,
+//                            in the current scope; returns the last expression
+// hash(algorithm, data)    — cryptographic hash as a hex string
+//   algorithms: "md5", "sha256", "sha512"
+
+// --- eval ---
+
+print("--- eval ---");
+
+// eval a simple expression
+let result = eval("1 + 2 + 3;");
+print("eval('1+2+3') = " + result);    // 6
+
+// eval can access and mutate the current scope
+let x = 10;
+eval("x = x * 3;");
+print("x after eval: " + x);           // 30
+
+// eval a function definition then call it
+eval("fn double(n) { return n * 2; }");
+print("double(7) = " + double(7));      // 14
+
+// Build and eval code dynamically
+let op = "+";
+let a  = 5;
+let b  = 8;
+let expr = str(a) + " " + op + " " + str(b) + ";";
+print("eval('" + expr + "') = " + eval(expr));   // 13
+
+// Generate a scale array via eval
+fn make_scale_code(root, intervals) {
+    let code = "let scale = [" + root;
+    let step = root;
+    let i = 0;
+    loop {
+        step = step + intervals[i % count(intervals)];
+        code = code + ", " + step;
+        i++;
+        if (i >= 7) { break; }
+    }
+    code = code + "];";
+    return code;
+}
+
+let major_intervals = [2, 2, 1, 2, 2, 2, 1];
+eval(make_scale_code(60, major_intervals));
+print("C major scale: " + scale);
+
+// --- hash ---
+
+print("--- hash ---");
+
+// MD5 — fast, legacy use only (not cryptographically secure)
+let md5_hello = hash("md5", "hello");
+print("md5('hello'):    " + md5_hello);
+print("length:          " + str_length(md5_hello));    // 32 hex chars
+
+// SHA-256 — current standard
+let sha256_hello = hash("sha256", "hello");
+print("sha256('hello'): " + sha256_hello);
+print("length:          " + str_length(sha256_hello)); // 64 hex chars
+
+// SHA-512 — maximum security
+let sha512_hello = hash("sha512", "hello");
+print("sha512 length:   " + str_length(sha512_hello)); // 128 hex chars
+
+// Same input always gives the same output
+let h1 = hash("sha256", "audion");
+let h2 = hash("sha256", "audion");
+print("deterministic:   " + str(h1 == h2));            // true
+
+// Different input gives different output
+let h3 = hash("sha256", "Audion");                     // capital A
+print("case sensitive:  " + str(h1 != h3));            // true
+
+// --- practical: content-addressable cache key ---
+
+print("--- practical: cache key ---");
+
+// Build a stable cache key from a SynthDef name + parameter values.
+// The same synth + params always maps to the same key — use it to
+// avoid recompiling unchanged SynthDefs.
+fn make_cache_key(synth_name, params) {
+    let param_str = str(params);
+    return str_substr(hash("sha256", synth_name + param_str), 0, 16);
+}
+
+let key1 = make_cache_key("pad", [440, 0.5, 1.2]);
+let key2 = make_cache_key("pad", [440, 0.5, 1.2]);   // same → same key
+let key3 = make_cache_key("pad", [441, 0.5, 1.2]);   // different freq → different key
+
+print("key1: " + key1);
+print("key2: " + key2);
+print("same: " + str(key1 == key2));                  // true
+print("key3: " + key3);
+print("diff: " + str(key1 != key3));                  // true
+
+// --- practical: checksum a config string ---
+
+print("--- practical: config checksum ---");
+
+let config = "bpm=140 scale=minor root=A reverb=0.4";
+let checksum = str_substr(hash("sha256", config), 0, 8);
+print("config checksum: " + checksum);
+// Store this alongside the config; recompute on load to detect tampering.

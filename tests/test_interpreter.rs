@@ -1889,3 +1889,86 @@ fn test_default_and_named_combined() {
     "#);
     assert_eq!(result, Value::String("audion is awesome".to_string()));
 }
+
+// --- Syntax sugar ---
+
+#[test]
+fn test_postfix_increment() {
+    let result = eval(r#"
+        let i = 0;
+        i++;
+        i++;
+        i;
+    "#);
+    assert_eq!(result, Value::Number(2.0));
+}
+
+#[test]
+fn test_postfix_decrement() {
+    let result = eval(r#"
+        let x = 5;
+        x--;
+        x;
+    "#);
+    assert_eq!(result, Value::Number(4.0));
+}
+
+#[test]
+fn test_prefix_increment() {
+    let result = eval(r#"
+        let i = 3;
+        ++i;
+        i;
+    "#);
+    assert_eq!(result, Value::Number(4.0));
+}
+
+#[test]
+fn test_prefix_decrement() {
+    let result = eval(r#"
+        let x = 10;
+        --x;
+        x;
+    "#);
+    assert_eq!(result, Value::Number(9.0));
+}
+
+#[test]
+fn test_increment_in_for_loop() {
+    let result = eval(r#"
+        let sum = 0;
+        for (let i = 0; i < 4; i++) {
+            sum += i;
+        }
+        sum;
+    "#);
+    assert_eq!(result, Value::Number(6.0));
+}
+
+#[test]
+fn test_modulo_assign() {
+    let result = eval(r#"
+        let x = 10;
+        x %= 3;
+        x;
+    "#);
+    assert_eq!(result, Value::Number(1.0));
+}
+
+#[test]
+fn test_power_operator() {
+    let result = eval("2 ** 10;");
+    assert_eq!(result, Value::Number(1024.0));
+}
+
+#[test]
+fn test_power_right_associative() {
+    let result = eval("2 ** 3 ** 2;"); // 2 ** (3 ** 2) = 2 ** 9 = 512
+    assert_eq!(result, Value::Number(512.0));
+}
+
+#[test]
+fn test_power_fractional() {
+    let result = eval("9.0 ** 0.5;"); // sqrt(9)
+    assert_eq!(result, Value::Number(3.0));
+}

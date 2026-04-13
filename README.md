@@ -15,7 +15,7 @@ Audion is a capable scripting language for the stuff that doesn't need introduct
 ## Quick Start
 
 - If you want to use Audion with Supercollider, download Supercollider and run it [SuperCollider](https://supercollider.github.io/) (run and "boot server")
-- Download [Nightly release](https://github.com/audion-lang/audion/releases/tag/nightly) then open a terminal and `./audion run ./examples/readme.au`
+- Download (Linux/Mac/Win) [Nightly release](https://github.com/audion-lang/audion/releases) then open a terminal and `./audion run ./examples/readme.au`
 
 
 ## Documentation

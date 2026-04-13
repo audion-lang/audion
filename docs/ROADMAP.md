@@ -11,9 +11,6 @@ rusb - Rust binding to libusb, which works across multiple platforms
 ### more array functions
 sorting, reducing, mapping
 
-### some syntax sugar
-++ -- are nice to have
-
 ### for a in array
 the c with counter is cumbersome to write some of the time, and sometimes we don't need the counter
 no looping over objects/functions, should be an error

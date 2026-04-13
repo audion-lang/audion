@@ -11,6 +11,14 @@ rusb - Rust binding to libusb, which works across multiple platforms
 ### more array functions
 sorting, reducing, mapping
 
+### some syntax sugar
+++ -- are nice to have
+
+### for a in array
+the c with counter is cumbersome to write some of the time, and sometimes we don't need the counter
+no looping over objects/functions, should be an error
+syntax `for a in iterable` not foreach keyword, avoid many keywords in the language
+
 ### yields in generators
 be able to pause generation, lazy evaluation
 
@@ -51,8 +59,6 @@ shared (tag:tag_value) { } // shared scope by tag only
 
 ### website
 
-### bundling
-bundle audion code with the library for easy distribution
 
 ### SFZ Instrument Support
 - `sfz_load("piano.sfz")` → parse SFZ file in Rust, auto-generate multi-layer SynthDef with all sample mappings

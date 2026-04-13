@@ -72,6 +72,11 @@ jobs:
             binary: audion
             archive: audion-nightly-macos-aarch64.zip
             install: ""
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary: audion
+            archive: audion-nightly-macos-x86_64.zip
+            install: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: audion.exe
@@ -101,8 +106,8 @@ jobs:
         run: |
           mkdir -p staging
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
-          cp LICENSE staging/
-          cp -r examples staging/
+          cp LICENSE README.md Cargo.toml Cargo.lock staging/
+          cp -r src examples staging/
           cp -r docs staging/
           ./staging/${{ matrix.binary }} spec > staging/docs/AGENTS.md
           cd staging && zip -r ../${{ matrix.archive }} .
@@ -113,8 +118,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force staging
           Copy-Item target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
-          Copy-Item LICENSE staging/
-          Copy-Item -Recurse examples staging/
+          Copy-Item LICENSE, README.md, Cargo.toml, Cargo.lock staging/
+          Copy-Item -Recurse src, examples staging/
           Copy-Item -Recurse docs staging/
           & .\staging\${{ matrix.binary }} spec | Out-File -Encoding utf8 staging\docs\AGENTS.md
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}

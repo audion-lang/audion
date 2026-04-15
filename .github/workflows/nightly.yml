@@ -157,4 +157,6 @@ jobs:
             artifacts/* \
             --title "Nightly Build ($DATE)" \
             --notes "Automated nightly build from \`main\` at [\`$SHA\`](../../commit/$SHA) on $DATE." \
-            --prerelease
+            --prerelease \
+            --latest=false
+          gh release edit nightly --draft=false

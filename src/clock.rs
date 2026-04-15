@@ -17,6 +17,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use rusty_link::{AblLink, SessionState};
@@ -29,18 +30,16 @@ thread_local! {
 pub struct Clock {
     bpm_bits: AtomicU64,
     start_time: Instant,
-    link: AblLink,
+    link: Mutex<Option<AblLink>>,
     quantum_bits: AtomicU64,
 }
 
 impl Clock {
     pub fn new(bpm: f64) -> Self {
-        let link = AblLink::new(bpm);
-        link.enable(false);
         Clock {
             bpm_bits: AtomicU64::new(bpm.to_bits()),
             start_time: Instant::now(),
-            link,
+            link: Mutex::new(None),
             quantum_bits: AtomicU64::new(4.0_f64.to_bits()),
         }
     }
@@ -50,20 +49,26 @@ impl Clock {
     // -----------------------------------------------------------------------
 
     pub fn link_enable(&self) {
-        self.link.enable(true);
-        self.link.enable_start_stop_sync(true);
+        let bpm = f64::from_bits(self.bpm_bits.load(Ordering::Relaxed));
+        let abl = AblLink::new(bpm);
+        abl.enable(true);
+        abl.enable_start_stop_sync(true);
+        *self.link.lock().unwrap() = Some(abl);
     }
 
     pub fn link_disable(&self) {
-        self.link.enable(false);
+        *self.link.lock().unwrap() = None;
     }
 
     pub fn link_is_enabled(&self) -> bool {
-        self.link.is_enabled()
+        self.link.lock().unwrap().is_some()
     }
 
     pub fn link_num_peers(&self) -> u64 {
-        self.link.num_peers()
+        match self.link.lock().unwrap().as_ref() {
+            Some(abl) => abl.num_peers(),
+            None => 0,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -84,21 +89,22 @@ impl Clock {
 
     pub fn set_bpm(&self, bpm: f64) {
         self.bpm_bits.store(bpm.to_bits(), Ordering::Relaxed);
-        if self.link.is_enabled() {
+        if let Some(abl) = self.link.lock().unwrap().as_ref() {
             let mut state = SessionState::new();
-            self.link.capture_app_session_state(&mut state);
-            state.set_tempo(bpm, self.link.clock_micros());
-            self.link.commit_app_session_state(&state);
+            abl.capture_app_session_state(&mut state);
+            state.set_tempo(bpm, abl.clock_micros());
+            abl.commit_app_session_state(&state);
         }
     }
 
     pub fn get_bpm(&self) -> f64 {
-        if self.link.is_enabled() {
-            let mut state = SessionState::new();
-            self.link.capture_app_session_state(&mut state);
-            state.tempo()
-        } else {
-            f64::from_bits(self.bpm_bits.load(Ordering::Relaxed))
+        match self.link.lock().unwrap().as_ref() {
+            Some(abl) => {
+                let mut state = SessionState::new();
+                abl.capture_app_session_state(&mut state);
+                state.tempo()
+            }
+            None => f64::from_bits(self.bpm_bits.load(Ordering::Relaxed)),
         }
     }
 
@@ -107,22 +113,34 @@ impl Clock {
     // -----------------------------------------------------------------------
 
     pub fn link_beat(&self) -> f64 {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.beat_at_time(self.link.clock_micros(), self.get_quantum())
+        match self.link.lock().unwrap().as_ref() {
+            Some(abl) => {
+                let mut state = SessionState::new();
+                abl.capture_app_session_state(&mut state);
+                state.beat_at_time(abl.clock_micros(), self.get_quantum())
+            }
+            None => 0.0,
+        }
     }
 
     pub fn link_phase(&self) -> f64 {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.phase_at_time(self.link.clock_micros(), self.get_quantum())
+        match self.link.lock().unwrap().as_ref() {
+            Some(abl) => {
+                let mut state = SessionState::new();
+                abl.capture_app_session_state(&mut state);
+                state.phase_at_time(abl.clock_micros(), self.get_quantum())
+            }
+            None => 0.0,
+        }
     }
 
     pub fn link_request_beat(&self, beat: f64) {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.request_beat_at_time(beat, self.link.clock_micros(), self.get_quantum());
-        self.link.commit_app_session_state(&state);
+        if let Some(abl) = self.link.lock().unwrap().as_ref() {
+            let mut state = SessionState::new();
+            abl.capture_app_session_state(&mut state);
+            state.request_beat_at_time(beat, abl.clock_micros(), self.get_quantum());
+            abl.commit_app_session_state(&state);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -130,23 +148,32 @@ impl Clock {
     // -----------------------------------------------------------------------
 
     pub fn link_play(&self) {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.set_is_playing(true, self.link.clock_micros());
-        self.link.commit_app_session_state(&state);
+        if let Some(abl) = self.link.lock().unwrap().as_ref() {
+            let mut state = SessionState::new();
+            abl.capture_app_session_state(&mut state);
+            state.set_is_playing(true, abl.clock_micros());
+            abl.commit_app_session_state(&state);
+        }
     }
 
     pub fn link_stop(&self) {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.set_is_playing(false, self.link.clock_micros());
-        self.link.commit_app_session_state(&state);
+        if let Some(abl) = self.link.lock().unwrap().as_ref() {
+            let mut state = SessionState::new();
+            abl.capture_app_session_state(&mut state);
+            state.set_is_playing(false, abl.clock_micros());
+            abl.commit_app_session_state(&state);
+        }
     }
 
     pub fn link_is_playing(&self) -> bool {
-        let mut state = SessionState::new();
-        self.link.capture_app_session_state(&mut state);
-        state.is_playing()
+        match self.link.lock().unwrap().as_ref() {
+            Some(abl) => {
+                let mut state = SessionState::new();
+                abl.capture_app_session_state(&mut state);
+                state.is_playing()
+            }
+            None => false,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -160,7 +187,7 @@ impl Clock {
     }
 
     pub fn wait_beats(&self, beats: f64) {
-        if self.link.is_enabled() {
+        if self.link_is_enabled() {
             self.wait_beats_link(beats);
         } else {
             self.wait_beats_local(beats);
@@ -185,12 +212,14 @@ impl Clock {
 
     fn wait_beats_link(&self, beats: f64) {
         let quantum = self.get_quantum();
+        let guard = self.link.lock().unwrap();
+        let Some(abl) = guard.as_ref() else { return };
         LINK_BEAT_TARGET.with(|cell| {
             let mut target = cell.borrow_mut();
 
             let mut state = SessionState::new();
-            self.link.capture_app_session_state(&mut state);
-            let now = self.link.clock_micros();
+            abl.capture_app_session_state(&mut state);
+            let now = abl.clock_micros();
 
             let target_beat = match *target {
                 Some(prev) => prev + beats,

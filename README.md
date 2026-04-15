@@ -12,10 +12,11 @@ Adion will let you syncronize and sequence any  synthesizers, DAWs, lighting rig
 Audion is a capable scripting language for the stuff that doesn't need introduction: Database Queries, network requests, data analysis. It's small enough to run on some embedded systems like the Raspberry PI.
 
 
-## Quick Start
+## Download
 
-- If you want to use Audion with Supercollider, download Supercollider and run it [SuperCollider](https://supercollider.github.io/) (run and "boot server")
-- Download (Linux/Mac/Win) [Nightly release](https://github.com/audion-lang/audion/releases) then open a terminal and `./audion run ./examples/readme.au`
+- Download (Linux/Mac/Win) [Nightly release](https://github.com/audion-lang/audion/releases)
+
+- If you want to use Audion with Supercollider, download Supercollider [SuperCollider](https://supercollider.github.io/)  and just: run it, then boot server. Open a terminal and `./audion run ./examples/readme.au`
 
 
 ## Documentation

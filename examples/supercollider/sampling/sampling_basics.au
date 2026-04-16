@@ -34,17 +34,17 @@ define kick(freq, amp, gate, rel, ffreq, pann, loop_startn)
     out(0,
         pan(pann, lpf(
                 sample(
-                    "/Volumes/worx/samples/found_things/Slide_projector_Leica_Pradovit_P_150.wav",
-                    root: freq,
+                    "/Volumes/worx/samples/kit_glitch/file_25.wav",
+                    root: 60,
                     vel_lo: 0,
                     vel_hi: 127,
                     key_lo: 0,
                     key_hi: 127,
                     loop: 1,
                     loop_start: loop_startn,
-                    loop_end: 43 * 44100,
-                    detune: 0.5,
-                    start: 0.0
+                    loop_end: 37 * 44100,
+                    detune: freq,
+                    start: loop_startn
                 ),
             ffreq))
         * env(gate, 0.001, 0, rel)
@@ -57,25 +57,50 @@ define kick(freq, amp, gate, rel, ffreq, pann, loop_startn)
 fn main()
 {
     thread kick {
+        record_start();
+        let initial_waits = [1, 2, 4, 2, 5, 1, 2, 1/2, 1/2];
+        let notes = [85, 67, 78, 77, "rand", 71];
+        let waits = [1/4, 1+0.3, 1+0.2, 1+0.1, 1, 1, "rand", "rand"];
+        let total_loops = 100;
         loop {
-            if (rand() > 0.65) {
-                wait(1/4);
-            } else {
-                wait(1);
+            next_wait = array_next(waits);
+            next_note = array_next(notes);
+            if (next_note == "rand") {
+                next_note = rand(60, 90);
             }
+            if (next_wait == "rand") {
+                next_wait = rand(0.05, 5);
+            }
+
+            // buildup
+            prewait = array_next(initial_waits, false);
+            if (prewait) {
+                wait(prewait);
+            }
+
+            wait(next_wait);
+
+            total_loops--;
+
             synth(
                 "kick",
-                loop_startn: rand(1 * 41000, 43 * 41000),
-                // freq: mtof(90),
-                freq: mtof(rand(60, 80), [200, 300, 500, 700, 800, 1100, 1200]),
-                amp: rand(0.01, 0.1),
-                rel: rand(1, 15),
-                ffreq: rand(700, 3000),
+                loop_startn: rand(0.01 * 41000, 20 * 41000),
+                freq: mtof(next_note - 12, "/Volumes/worx/soft/audion/examples/scala_scales/3-melodic-minor-et.scl"),
+                amp: rand(0.1, 0.15),
+                rel: rand(3, 15),
+                ffreq: rand(700, 9000),
                 pann: rand(-0.999, 0.999),
                 gate: 1
             );
 
-            print("loopin");
+            print(".", "");
+            if (total_loops <= 0) {
+                wait(45);
+                print("exiting");
+                record_stop();
+                wait(5);
+                break;
+            }
         }
     }
 }

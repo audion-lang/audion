@@ -319,13 +319,28 @@ impl Parser {
         Ok(left)
     }
 
+    fn parse_ugen_unary(&mut self) -> Result<UGenExpr> {
+        if self.peek_kind() == TokenKind::Minus {
+            self.advance();
+            let expr = self.parse_ugen_postfix()?;
+            // Lower `-x` to `0.0 - x` — no new UGenExpr variant needed
+            Ok(UGenExpr::BinOp {
+                left: Box::new(UGenExpr::Number(0.0)),
+                op: BinOp::Sub,
+                right: Box::new(expr),
+            })
+        } else {
+            self.parse_ugen_postfix()
+        }
+    }
+
     fn parse_ugen_mul(&mut self) -> Result<UGenExpr> {
-        let mut left = self.parse_ugen_postfix()?;
+        let mut left = self.parse_ugen_unary()?;
         loop {
             match self.peek_kind() {
                 TokenKind::Star => {
                     self.advance();
-                    let right = self.parse_ugen_postfix()?;
+                    let right = self.parse_ugen_unary()?;
                     left = UGenExpr::BinOp {
                         left: Box::new(left),
                         op: BinOp::Mul,
@@ -334,7 +349,7 @@ impl Parser {
                 }
                 TokenKind::Slash => {
                     self.advance();
-                    let right = self.parse_ugen_postfix()?;
+                    let right = self.parse_ugen_unary()?;
                     left = UGenExpr::BinOp {
                         left: Box::new(left),
                         op: BinOp::Div,

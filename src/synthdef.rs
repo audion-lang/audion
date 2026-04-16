@@ -375,21 +375,43 @@ fn get_named_number(named_args: &[(String, UGenExpr)], key: &str) -> Option<f64>
     })
 }
 
-/// Returns the SC code string for a named arg, handling both Number and Param (variable) values.
+/// Recursively convert a UGenExpr to a SC code string for simple arithmetic expressions.
+fn ugen_expr_to_sc_simple(expr: &UGenExpr) -> Option<String> {
+    match expr {
+        UGenExpr::Number(n) => {
+            if *n == (*n as i64) as f64 && n.is_finite() {
+                Some(format!("{}", *n as i64))
+            } else {
+                Some(format!("{}", n))
+            }
+        }
+        UGenExpr::Param(p) => Some(p.clone()),
+        UGenExpr::BinOp { left, op, right } => {
+            let l = ugen_expr_to_sc_simple(left)?;
+            let r = ugen_expr_to_sc_simple(right)?;
+            let op_str = match op {
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                _ => return None,
+            };
+            Some(format!("({} {} {})", l, op_str, r))
+        }
+        UGenExpr::UGenCall { .. } => {
+            // Delegate to emit_ugen with no buffer context (safe for non-sample UGen calls)
+            Some(emit_ugen(expr, &[], &mut 0, &[]))
+        }
+        _ => None,
+    }
+}
+
+/// Returns the SC code string for a named arg, handling Number, Param, and BinOp expressions.
 fn get_named_expr_sc(named_args: &[(String, UGenExpr)], key: &str) -> Option<String> {
     named_args.iter().find_map(|(name, expr)| {
         if name == key {
-            match expr {
-                UGenExpr::Number(n) => {
-                    if *n == (*n as i64) as f64 && n.is_finite() {
-                        Some(format!("{}", *n as i64))
-                    } else {
-                        Some(format!("{}", n))
-                    }
-                }
-                UGenExpr::Param(p) => Some(p.clone()),
-                _ => None,
-            }
+            ugen_expr_to_sc_simple(expr)
         } else {
             None
         }

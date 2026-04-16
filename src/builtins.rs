@@ -208,6 +208,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "json_encode", "json_decode",
     "buffer_load", "buffer_free", "buffer_alloc", "buffer_read",
     "buffer_stream_open", "buffer_stream_close",
+    "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
     "net_read", "net_write", "net_close", "net_http",
     "net_udp_bind", "net_udp_send", "net_udp_recv",
@@ -360,6 +361,9 @@ pub fn call_builtin(
         "buffer_read" => builtin_buffer_read(args, osc),
         "buffer_stream_open" => builtin_buffer_stream_open(args, osc),
         "buffer_stream_close" => builtin_buffer_stream_close(args, osc),
+        "record_start" => builtin_record_start(args, osc, base_path),
+        "record_stop" => builtin_record_stop(osc),
+        "record_path" => builtin_record_path(osc),
         "net_connect" => builtin_net_connect(args),
         "net_listen" => builtin_net_listen(args),
         "net_accept" => builtin_net_accept(args),
@@ -1559,6 +1563,75 @@ fn builtin_buffer_stream_close(args: &[Value], osc: &Arc<OscClient>) -> Result<V
     osc.buffer_close(buf_id);
     osc.buffer_free(buf_id);
     Ok(Value::Nil)
+}
+
+// ---------------------------------------------------------------------------
+// Recording builtins
+// ---------------------------------------------------------------------------
+
+// record_start() → path string
+// record_start("/path/to/file.wav") → path string
+// Compiles and loads the audion_diskout SynthDef (once per session), allocates
+// a stereo buffer opened for writing, and starts a DiskOut synth at the tail
+// of the default group so it captures all audio. Auto-generates a timestamped
+// filename in the source file's directory if no path is given.
+fn builtin_record_start(args: &[Value], osc: &Arc<OscClient>, base_path: &std::path::Path) -> Result<Value> {
+    let path = if !args.is_empty() {
+        let p = require_string("record_start", &args[0])?;
+        resolve_path(base_path, &p)
+    } else {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        base_path.join(format!("recording_{}.wav", ts)).to_string_lossy().to_string()
+    };
+
+    // Compile the DiskOut SynthDef once per session; cache bytes in OscClient
+    if !osc.has_recording_synthdef() {
+        let out_dir = crate::sclang::synthdef_output_dir();
+        let sc_code = format!(
+            "SynthDef(\\audion_diskout, {{ |bufnum=0|\n\tDiskOut.ar(bufnum, In.ar(0, 2));\n}}).writeDefFile(\"{}\");\n0.exit;\n",
+            out_dir
+        );
+        let compiled = crate::sclang::compile_synthdef("audion_diskout", &sc_code)?;
+        osc.set_recording_synthdef(compiled);
+    }
+
+    // Alloc buffer + open for writing (atomic via completion message)
+    let buf_id = osc.buffer_alloc_for_recording(&path);
+
+    // Load SynthDef with /s_new embedded as completion — synth is created only
+    // after scsynth has fully registered the SynthDef, avoiding "not found" errors
+    let node_id = osc.load_recording_synthdef_then_synth(
+        "audion_diskout",
+        &[("bufnum".to_string(), Value::Number(buf_id as f64))],
+    );
+
+    osc.set_recording_state(path.clone(), node_id, buf_id);
+    Ok(Value::String(path))
+}
+
+// record_stop() → path string (the file that was recorded), or nil
+fn builtin_record_stop(osc: &Arc<OscClient>) -> Result<Value> {
+    match osc.take_recording_state() {
+        Some((node_id, buf_id, path)) => {
+            osc.node_free(node_id);
+            osc.buffer_close(buf_id);
+            osc.buffer_free(buf_id);
+            Ok(Value::String(path))
+        }
+        None => Ok(Value::Nil),
+    }
+}
+
+// record_path() → string or nil
+// Returns the path of the current or last recording.
+fn builtin_record_path(osc: &Arc<OscClient>) -> Result<Value> {
+    match osc.get_recording_path() {
+        Some(path) => Ok(Value::String(path)),
+        None => Ok(Value::Nil),
+    }
 }
 
 // ---------------------------------------------------------------------------

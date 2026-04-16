@@ -30,6 +30,10 @@ pub struct OscClient {
     next_buffer_id: AtomicI32,
     allocated_nodes: std::sync::Mutex<Vec<i32>>,
     allocated_buffers: std::sync::Mutex<Vec<i32>>,
+    recording_path: std::sync::Mutex<Option<String>>,
+    recording_node_id: std::sync::Mutex<Option<i32>>,
+    recording_buf_id: std::sync::Mutex<Option<i32>>,
+    recording_synthdef_bytes: std::sync::Mutex<Vec<u8>>,
 }
 
 impl OscClient {
@@ -42,6 +46,10 @@ impl OscClient {
             next_buffer_id: AtomicI32::new(0),
             allocated_nodes: std::sync::Mutex::new(Vec::new()),
             allocated_buffers: std::sync::Mutex::new(Vec::new()),
+            recording_path: std::sync::Mutex::new(None),
+            recording_node_id: std::sync::Mutex::new(None),
+            recording_buf_id: std::sync::Mutex::new(None),
+            recording_synthdef_bytes: std::sync::Mutex::new(Vec::new()),
         };
         // Free all nodes in the default group (group 1) to clear orphans
         // from previous runs, crashed sessions, or test suites.
@@ -226,6 +234,125 @@ impl OscClient {
             self.send("/n_free", vec![OscType::Int(node_id)]);
         }
         self.allocated_nodes.lock().unwrap().clear();
+    }
+
+    /// Allocate a stereo buffer and open it for DiskOut recording.
+    /// Uses a completion message to chain /b_alloc → /b_write atomically.
+    /// Returns the buffer ID.
+    pub fn buffer_alloc_for_recording(&self, path: &str) -> i32 {
+        let buf_id = self.next_buffer_id.fetch_add(1, Ordering::Relaxed);
+
+        let write_msg = OscMessage {
+            addr: "/b_write".to_string(),
+            args: vec![
+                OscType::Int(buf_id),
+                OscType::String(path.to_string()),
+                OscType::String("wav".to_string()),
+                OscType::String("int24".to_string()),
+                OscType::Int(0), // start frame
+                OscType::Int(0), // num frames (0 = all, i.e. open-ended)
+                OscType::Int(1), // leave open for streaming writes
+            ],
+        };
+        let write_bytes = encoder::encode(&OscPacket::Message(write_msg)).unwrap_or_default();
+
+        self.send(
+            "/b_alloc",
+            vec![
+                OscType::Int(buf_id),
+                OscType::Int(65536), // buffer size in frames (~1.5s at 44.1kHz)
+                OscType::Int(2),     // stereo
+                OscType::Blob(write_bytes),
+            ],
+        );
+        self.allocated_buffers.lock().unwrap().push(buf_id);
+        buf_id
+    }
+
+    /// Create a synth added to the tail of the default group.
+    /// Tail placement ensures it captures audio produced by all other synths.
+    pub fn synth_new_tail(&self, def_name: &str, controls: &[(String, Value)]) -> i32 {
+        let node_id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
+
+        let mut args: Vec<OscType> = vec![
+            OscType::String(def_name.to_string()),
+            OscType::Int(node_id),
+            OscType::Int(1), // add action: addToTail
+            OscType::Int(1), // target: default group
+        ];
+        for (name, val) in controls {
+            args.push(OscType::String(name.clone()));
+            match val {
+                Value::Number(n) => args.push(OscType::Float(*n as f32)),
+                _ => args.push(OscType::Float(0.0)),
+            }
+        }
+        self.send("/s_new", args);
+        self.allocated_nodes.lock().unwrap().push(node_id);
+        node_id
+    }
+
+    /// Returns true if the recording SynthDef has been compiled and cached.
+    pub fn has_recording_synthdef(&self) -> bool {
+        !self.recording_synthdef_bytes.lock().unwrap().is_empty()
+    }
+
+    /// Cache the compiled SynthDef bytes for reuse across record_start calls.
+    pub fn set_recording_synthdef(&self, bytes: Vec<u8>) {
+        *self.recording_synthdef_bytes.lock().unwrap() = bytes;
+    }
+
+    /// Load the recording SynthDef onto scsynth and, once loaded, create the
+    /// DiskOut synth — embedded as a completion message so the synth is only
+    /// spawned after the SynthDef is fully registered.
+    pub fn load_recording_synthdef_then_synth(&self, def_name: &str, controls: &[(String, Value)]) -> i32 {
+        let synthdef_bytes = self.recording_synthdef_bytes.lock().unwrap().clone();
+        let node_id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
+
+        let mut synth_args: Vec<OscType> = vec![
+            OscType::String(def_name.to_string()),
+            OscType::Int(node_id),
+            OscType::Int(1), // addToTail
+            OscType::Int(1), // default group
+        ];
+        for (name, val) in controls {
+            synth_args.push(OscType::String(name.clone()));
+            match val {
+                Value::Number(n) => synth_args.push(OscType::Float(*n as f32)),
+                _ => synth_args.push(OscType::Float(0.0)),
+            }
+        }
+
+        let synth_msg = OscMessage { addr: "/s_new".to_string(), args: synth_args };
+        let synth_bytes = encoder::encode(&OscPacket::Message(synth_msg)).unwrap_or_default();
+
+        self.send("/d_recv", vec![
+            OscType::Blob(synthdef_bytes),
+            OscType::Blob(synth_bytes),
+        ]);
+        self.allocated_nodes.lock().unwrap().push(node_id);
+        node_id
+    }
+
+    /// Save recording state so record_stop / record_path can access it.
+    pub fn set_recording_state(&self, path: String, node_id: i32, buf_id: i32) {
+        *self.recording_path.lock().unwrap() = Some(path);
+        *self.recording_node_id.lock().unwrap() = Some(node_id);
+        *self.recording_buf_id.lock().unwrap() = Some(buf_id);
+    }
+
+    /// Consume recording state (node + buf), leaving path intact for record_path().
+    /// Returns (node_id, buf_id, path) or None if not recording.
+    pub fn take_recording_state(&self) -> Option<(i32, i32, String)> {
+        let node_id = self.recording_node_id.lock().unwrap().take()?;
+        let buf_id = self.recording_buf_id.lock().unwrap().take()?;
+        let path = self.recording_path.lock().unwrap().clone().unwrap_or_default();
+        Some((node_id, buf_id, path))
+    }
+
+    /// Return the path of the current or last recording, or None if never started.
+    pub fn get_recording_path(&self) -> Option<String> {
+        self.recording_path.lock().unwrap().clone()
     }
 
     fn send(&self, addr: &str, args: Vec<OscType>) {

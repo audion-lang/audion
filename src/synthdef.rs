@@ -42,7 +42,7 @@ pub const UGEN_NAMES: &[&str] = &[
     // Effects
     "reverb", "gverb", "delay", "delay_c", "delay_n", "delay_l",
     "allpass_n", "allpass_l", "allpass_c", "comb_n", "comb_c",
-    "coin_gate", "pluck",
+    "coin_gate", "pluck", "klank",
     // Distortion / dynamics
     "tanh", "atan", "wrap", "fold", "softclip", "dist",
     "compander", "limiter", "amplitude", "normalizer",
@@ -56,7 +56,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "in", "out", "pan", "pan4", "splay", "balance2",
     "local_in", "local_out",
     // Buffer
-    "PlayBuf", "buf_wr", "record_buf", "local_buf",
+    "PlayBuf", "buf_rd", "phasor", "buf_wr", "record_buf", "local_buf", "buf_rate_scale",
     // Granular
     "Dust", "Impulse", "TRand", "GrainBuf", "GrainSin", "GrainFM", "grains_t",
     // Signal processing
@@ -889,6 +889,16 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
             let coef = args.get(5).map(|s| s.as_str()).unwrap_or("0.5");
             format!("Pluck.ar({}, {}, {}, {}, {}, {})", sig, trig, maxtime, time, decay, coef)
         }
+        "klank" => {
+            // klank(input, freqs, amps, rings)
+            // freqs/amps/rings should be array() expressions → SC Array literals
+            // Wraps in Klank.ar(`[...]) Ref to prevent SC multichannel expansion
+            let input = args.first().map(|s| s.as_str()).unwrap_or("0");
+            let freqs = args.get(1).map(|s| s.as_str()).unwrap_or("[]");
+            let amps  = args.get(2).map(|s| s.as_str()).unwrap_or("[]");
+            let rings = args.get(3).map(|s| s.as_str()).unwrap_or("[]");
+            format!("Klank.ar(`[{}, {}, {}], {})", freqs, amps, rings, input)
+        }
 
         // === Category 4: Nonlinear Processing (Distortion, Waveshaping) ===
         "tanh" => {
@@ -1117,6 +1127,27 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
         }
 
         // Buffer playback
+        "buf_rate_scale" => {
+            // BufRateScale.kr(bufnum) — sample-rate ratio for correct PlayBuf pitch
+            let bufnum = args.first().map(|s| s.as_str()).unwrap_or("0");
+            format!("BufRateScale.kr({})", bufnum)
+        }
+        "phasor" => {
+            // phasor(trig, rate, start, end) — ramp phase between start/end frames
+            // use with buf_rd for precise loop points
+            let trig  = args.first().map(|s| s.as_str()).unwrap_or("0");
+            let rate  = args.get(1).map(|s| s.as_str()).unwrap_or("1");
+            let start = args.get(2).map(|s| s.as_str()).unwrap_or("0");
+            let end   = args.get(3).map(|s| s.as_str()).unwrap_or("44100");
+            format!("Phasor.ar({}, {}, {}, {})", trig, rate, start, end)
+        }
+        "buf_rd" => {
+            // buf_rd(numChannels, bufnum, phase) — read buffer at a phase signal
+            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
+            let bufnum   = args.get(1).map(|s| s.as_str()).unwrap_or("0");
+            let phase    = args.get(2).map(|s| s.as_str()).unwrap_or("0");
+            format!("BufRd.ar({}, {}, {}, 1, 4)", numchans, bufnum, phase)
+        }
         "PlayBuf" => {
             // PlayBuf.ar(numChannels, bufnum, rate, trigger, startPos, loop)
             let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");

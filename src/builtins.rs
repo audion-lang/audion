@@ -206,7 +206,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
-    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read",
+    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query",
     "buffer_stream_open", "buffer_stream_close",
     "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
@@ -358,6 +358,7 @@ pub fn call_builtin(
         "buffer_load" => builtin_buffer_load(args, osc),
         "buffer_free" => builtin_buffer_free(args, osc),
         "buffer_alloc" => builtin_buffer_alloc(args, osc),
+        "buffer_query" => builtin_buffer_query(args, osc),
         "buffer_read" => builtin_buffer_read(args, osc),
         "buffer_stream_open" => builtin_buffer_stream_open(args, osc),
         "buffer_stream_close" => builtin_buffer_stream_close(args, osc),
@@ -1484,6 +1485,27 @@ fn builtin_buffer_free(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
     let buf_id = require_number("buffer_free", &args[0])? as i32;
     osc.buffer_free(buf_id);
     Ok(Value::Nil)
+}
+
+// buffer_query(buf_id) → [num_frames, num_channels, sample_rate] or nil
+// Sends /b_query to scsynth and waits for the /b_info reply (500ms timeout).
+fn builtin_buffer_query(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "buffer_query() requires a buffer ID".to_string(),
+        });
+    }
+    let buf_id = require_number("buffer_query", &args[0])? as i32;
+    match osc.buffer_query(buf_id) {
+        Some((frames, chans, sr)) => {
+            let mut arr = AudionArray::new();
+            arr.push_auto(Value::Number(frames as f64));
+            arr.push_auto(Value::Number(chans as f64));
+            arr.push_auto(Value::Number(sr as f64));
+            Ok(Value::Array(Arc::new(Mutex::new(arr))))
+        }
+        None => Ok(Value::Nil),
+    }
 }
 
 // buffer_alloc(num_frames, num_channels) → buffer ID (number)

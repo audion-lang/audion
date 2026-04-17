@@ -186,10 +186,18 @@ impl Interpreter {
     pub fn run(&mut self, stmts: &[Stmt]) -> Result<Value> {
         let last = self.run_without_join(stmts)?;
         self.join_threads();
+        // Call shutdown() if defined — runs after all threads have finished
+        let has_shutdown = {
+            let e = self.env.lock().unwrap();
+            matches!(e.get("shutdown"), Some(Value::Function { .. }))
+        };
+        if has_shutdown {
+            self.call_function("shutdown", &[], &[])?;
+        }
         Ok(last)
     }
 
-    /// Run all statements and call main() if defined, but do NOT join threads.
+    /// Run all statements and call initialise() then main() if defined, but do NOT join threads.
     /// Used by --watch mode so threads keep running until a file change is detected.
     pub fn run_without_join(&mut self, stmts: &[Stmt]) -> Result<Value> {
         let mut last = Value::Nil;
@@ -213,6 +221,15 @@ impl Interpreter {
             if let Stmt::ExprStmt(..) = stmt {
                 // we just need something — grab from env or recalculate
             }
+        }
+
+        // Call initialise() if defined — runs before main()
+        let has_initialise = {
+            let e = self.env.lock().unwrap();
+            matches!(e.get("initialise"), Some(Value::Function { .. }))
+        };
+        if has_initialise {
+            self.call_function("initialise", &[], &[])?;
         }
 
         // After top-level execution, check for main()

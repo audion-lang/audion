@@ -104,7 +104,40 @@ impl OscClient {
         self.send("/d_recv", vec![OscType::Blob(synthdef_bytes.to_vec())]);
     }
 
+    /// Query scsynth for buffer info via /b_query → /b_info reply.
+    /// Returns (num_frames, num_channels, sample_rate) or None on timeout.
+    pub fn buffer_query(&self, buf_id: i32) -> Option<(i32, i32, f32)> {
+        self.send("/b_query", vec![OscType::Int(buf_id)]);
+
+        // Read replies until we get /b_info for our buffer, or timeout (500ms)
+        let _ = self.socket.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let mut buf = [0u8; 1024];
+        loop {
+            match self.socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
+                        if msg.addr == "/b_info" && msg.args.len() >= 4 {
+                            if let rosc::OscType::Int(id) = msg.args[0] {
+                                if id == buf_id {
+                                    let frames = match msg.args[1] { rosc::OscType::Int(n) => n, _ => 0 };
+                                    let chans  = match msg.args[2] { rosc::OscType::Int(n) => n, _ => 0 };
+                                    let sr     = match msg.args[3] { rosc::OscType::Float(f) => f, _ => 44100.0 };
+                                    let _ = self.socket.set_read_timeout(None);
+                                    return Some((frames, chans, sr));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break, // timeout or error
+            }
+        }
+        let _ = self.socket.set_read_timeout(None);
+        None
+    }
+
     /// Allocate a buffer and read a sound file into it.
+    /// Blocks until scsynth confirms with /done /b_allocRead (up to 10s for large files).
     /// Returns the buffer ID.
     pub fn buffer_alloc_read(&self, path: &str) -> i32 {
         let buf_id = self.next_buffer_id.fetch_add(1, Ordering::Relaxed);
@@ -118,6 +151,26 @@ impl OscClient {
             ],
         );
         self.allocated_buffers.lock().unwrap().push(buf_id);
+        // Wait for /done /b_allocRead confirmation so the buffer is ready to use
+        let _ = self.socket.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let mut buf = [0u8; 1024];
+        loop {
+            match self.socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
+                        if msg.addr == "/done" {
+                            if let Some(rosc::OscType::String(cmd)) = msg.args.first() {
+                                if cmd == "/b_allocRead" {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break, // timeout — proceed anyway
+            }
+        }
+        let _ = self.socket.set_read_timeout(None);
         buf_id
     }
 

@@ -26,3 +26,4 @@ whoami = "1"
 dirs = "5"
 rusty_link = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
+midly = "0.5"

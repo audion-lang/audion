@@ -216,6 +216,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "midi_config", "midi_note", "midi_cc", "midi_program",
     "midi_out", "midi_clock", "midi_start", "midi_stop", "midi_panic",
     "midi_listen", "midi_bpm_sync",
+    "midi_read", "midi_write",
     "osc_config", "osc_send", "osc_listen", "osc_recv", "osc_close",
     "array_push", "array_pop",
     "array_next", "array_prev", "array_current",
@@ -388,6 +389,8 @@ pub fn call_builtin(
         "midi_panic" => builtin_midi_panic(midi),
         "midi_listen" => builtin_midi_listen(args, midi, dmx, osc, osc_protocol, clock, env, shutdown, base_path),
         "midi_bpm_sync" => builtin_midi_bpm_sync(args, midi, clock, env, shutdown),
+        "midi_read" => builtin_midi_read(args, base_path),
+        "midi_write" => builtin_midi_write(args, base_path),
         "osc_config" => builtin_osc_config(args, osc_protocol),
         "osc_send" => builtin_osc_send(args, osc_protocol),
         "osc_listen" => builtin_osc_listen(args, osc_protocol),
@@ -2391,6 +2394,260 @@ fn builtin_midi_stop(midi: &Arc<MidiClient>) -> Result<Value> {
 fn builtin_midi_panic(midi: &Arc<MidiClient>) -> Result<Value> {
     midi.panic();
     Ok(Value::Nil)
+}
+
+// midi_read("file.mid") → array of event arrays
+// Each event: ["note_on", "note" => 60, "vel" => 100, "tick" => 0, "track" => 0, "channel" => 1]
+fn builtin_midi_read(args: &[Value], base_path: &std::path::Path) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "midi_read() requires a file path as first argument".to_string(),
+        });
+    }
+    let path_str = require_string("midi_read", &args[0])?;
+    let path = resolve_path(base_path, &path_str);
+
+    let data = std::fs::read(&path).map_err(|e| AudionError::RuntimeError {
+        msg: format!("midi_read(): cannot read '{}': {}", path, e),
+    })?;
+
+    let smf = midly::Smf::parse(&data).map_err(|e| AudionError::RuntimeError {
+        msg: format!("midi_read(): failed to parse MIDI file: {}", e),
+    })?;
+
+    // Extract PPQ from timing header
+    let ppq = match smf.header.timing {
+        midly::Timing::Metrical(t) => t.as_int() as f64,
+        midly::Timing::Timecode(fps, sub) => (fps.as_f32() * sub as f32) as f64,
+    };
+
+    let mut events = AudionArray::new();
+    events.set(Value::String("ppq".to_string()), Value::Number(ppq));
+
+    for (track_idx, track) in smf.tracks.iter().enumerate() {
+        let mut absolute_tick: u64 = 0;
+        for event in track {
+            absolute_tick += event.delta.as_int() as u64;
+
+            let maybe_ev: Option<AudionArray> = match &event.kind {
+                midly::TrackEventKind::Midi { channel, message } => {
+                    let ch = channel.as_int() as f64 + 1.0;
+                    let tick = absolute_tick as f64;
+                    let tr = track_idx as f64;
+                    match message {
+                        midly::MidiMessage::NoteOn { key, vel } => {
+                            let mut arr = AudionArray::new();
+                            let t = if vel.as_int() == 0 { "note_off" } else { "note_on" };
+                            arr.push_auto(Value::String(t.to_string()));
+                            arr.set(Value::String("note".to_string()), Value::Number(key.as_int() as f64));
+                            arr.set(Value::String("vel".to_string()), Value::Number(vel.as_int() as f64));
+                            arr.set(Value::String("tick".to_string()), Value::Number(tick));
+                            arr.set(Value::String("track".to_string()), Value::Number(tr));
+                            arr.set(Value::String("channel".to_string()), Value::Number(ch));
+                            Some(arr)
+                        }
+                        midly::MidiMessage::NoteOff { key, vel } => {
+                            let mut arr = AudionArray::new();
+                            arr.push_auto(Value::String("note_off".to_string()));
+                            arr.set(Value::String("note".to_string()), Value::Number(key.as_int() as f64));
+                            arr.set(Value::String("vel".to_string()), Value::Number(vel.as_int() as f64));
+                            arr.set(Value::String("tick".to_string()), Value::Number(tick));
+                            arr.set(Value::String("track".to_string()), Value::Number(tr));
+                            arr.set(Value::String("channel".to_string()), Value::Number(ch));
+                            Some(arr)
+                        }
+                        midly::MidiMessage::Controller { controller, value } => {
+                            let mut arr = AudionArray::new();
+                            arr.push_auto(Value::String("cc".to_string()));
+                            arr.set(Value::String("num".to_string()), Value::Number(controller.as_int() as f64));
+                            arr.set(Value::String("value".to_string()), Value::Number(value.as_int() as f64));
+                            arr.set(Value::String("tick".to_string()), Value::Number(tick));
+                            arr.set(Value::String("track".to_string()), Value::Number(tr));
+                            arr.set(Value::String("channel".to_string()), Value::Number(ch));
+                            Some(arr)
+                        }
+                        midly::MidiMessage::ProgramChange { program } => {
+                            let mut arr = AudionArray::new();
+                            arr.push_auto(Value::String("program".to_string()));
+                            arr.set(Value::String("num".to_string()), Value::Number(program.as_int() as f64));
+                            arr.set(Value::String("tick".to_string()), Value::Number(tick));
+                            arr.set(Value::String("track".to_string()), Value::Number(tr));
+                            arr.set(Value::String("channel".to_string()), Value::Number(ch));
+                            Some(arr)
+                        }
+                        midly::MidiMessage::PitchBend { bend } => {
+                            let mut arr = AudionArray::new();
+                            arr.push_auto(Value::String("pitchbend".to_string()));
+                            arr.set(Value::String("value".to_string()), Value::Number(bend.as_int() as f64));
+                            arr.set(Value::String("tick".to_string()), Value::Number(tick));
+                            arr.set(Value::String("track".to_string()), Value::Number(tr));
+                            arr.set(Value::String("channel".to_string()), Value::Number(ch));
+                            Some(arr)
+                        }
+                        _ => None,
+                    }
+                }
+                midly::TrackEventKind::Meta(meta) => match meta {
+                    midly::MetaMessage::Tempo(us) => {
+                        let bpm = 60_000_000.0 / us.as_int() as f64;
+                        let mut arr = AudionArray::new();
+                        arr.push_auto(Value::String("tempo".to_string()));
+                        arr.set(Value::String("bpm".to_string()), Value::Number(bpm));
+                        arr.set(Value::String("tick".to_string()), Value::Number(absolute_tick as f64));
+                        arr.set(Value::String("track".to_string()), Value::Number(track_idx as f64));
+                        Some(arr)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            if let Some(arr) = maybe_ev {
+                events.push_auto(Value::Array(Arc::new(Mutex::new(arr))));
+            }
+        }
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(events))))
+}
+
+// midi_write("file.mid", events) → true or false
+// events: array of event arrays as returned by midi_read()
+// Writes a single-track Format-0 MIDI file at 480 PPQN.
+// Each event needs: type (first positional value), tick, and type-specific fields.
+fn builtin_midi_write(args: &[Value], base_path: &std::path::Path) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "midi_write() requires 2 arguments: midi_write(path, events)".to_string(),
+        });
+    }
+    let path_str = require_string("midi_write", &args[0])?;
+    let path = resolve_path(base_path, &path_str);
+    let events_arc = require_array("midi_write", &args[1])?;
+    let events_guard = events_arc.lock().unwrap();
+
+    const PPQN: u16 = 480;
+
+    // Collect (absolute_tick, TrackEvent) pairs
+    let mut raw: Vec<(u64, midly::TrackEvent<'static>)> = Vec::new();
+
+    for (_, ev_val) in events_guard.entries() {
+        let arr_arc = match ev_val {
+            Value::Array(a) => a.clone(),
+            _ => continue,
+        };
+        let arr = arr_arc.lock().unwrap();
+
+        let ev_type = match arr.get(&Value::Number(0.0)) {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+
+        let tick = match arr.get(&Value::String("tick".to_string())) {
+            Some(Value::Number(n)) => *n as u64,
+            _ => 0,
+        };
+
+        let channel_num = match arr.get(&Value::String("channel".to_string())) {
+            Some(Value::Number(n)) => ((*n as u8).saturating_sub(1)) & 0x0F,
+            _ => 0,
+        };
+        let channel = midly::num::u4::from(channel_num);
+
+        let message: Option<midly::MidiMessage> = match ev_type.as_str() {
+            "note_on" => {
+                let note = match arr.get(&Value::String("note".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => continue,
+                };
+                let vel = match arr.get(&Value::String("vel".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => midly::num::u7::from(64u8),
+                };
+                Some(midly::MidiMessage::NoteOn { key: note, vel })
+            }
+            "note_off" => {
+                let note = match arr.get(&Value::String("note".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => continue,
+                };
+                let vel = match arr.get(&Value::String("vel".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => midly::num::u7::from(0u8),
+                };
+                Some(midly::MidiMessage::NoteOff { key: note, vel })
+            }
+            "cc" => {
+                let num = match arr.get(&Value::String("num".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => continue,
+                };
+                let val = match arr.get(&Value::String("value".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => continue,
+                };
+                Some(midly::MidiMessage::Controller { controller: num, value: val })
+            }
+            "program" => {
+                let num = match arr.get(&Value::String("num".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u7::from(*n as u8 & 0x7F),
+                    _ => continue,
+                };
+                Some(midly::MidiMessage::ProgramChange { program: num })
+            }
+            "pitchbend" => {
+                let val = match arr.get(&Value::String("value".to_string())) {
+                    Some(Value::Number(n)) => midly::num::u14::from(*n as u16 & 0x3FFF),
+                    _ => continue,
+                };
+                Some(midly::MidiMessage::PitchBend { bend: midly::PitchBend(val) })
+            }
+            _ => None,
+        };
+
+        if let Some(msg) = message {
+            raw.push((tick, midly::TrackEvent {
+                delta: midly::num::u28::from(0u32), // placeholder, fixed below
+                kind: midly::TrackEventKind::Midi { channel, message: msg },
+            }));
+        }
+    }
+
+    // Sort by absolute tick and convert to delta ticks
+    raw.sort_by_key(|(t, _)| *t);
+
+    let mut track: Vec<midly::TrackEvent<'static>> = Vec::with_capacity(raw.len() + 1);
+    let mut prev_tick: u64 = 0;
+    for (abs_tick, mut ev) in raw {
+        let delta = (abs_tick - prev_tick).min(u32::MAX as u64) as u32;
+        ev.delta = midly::num::u28::from(delta);
+        track.push(ev);
+        prev_tick = abs_tick;
+    }
+
+    // End of track
+    track.push(midly::TrackEvent {
+        delta: midly::num::u28::from(0u32),
+        kind: midly::TrackEventKind::Meta(midly::MetaMessage::EndOfTrack),
+    });
+
+    let smf = midly::Smf {
+        header: midly::Header {
+            format: midly::Format::SingleTrack,
+            timing: midly::Timing::Metrical(midly::num::u15::from(PPQN)),
+        },
+        tracks: vec![track],
+    };
+
+    let mut buf = Vec::new();
+    if smf.write_std(&mut buf).is_err() {
+        return Ok(Value::Bool(false));
+    }
+
+    match std::fs::write(&path, &buf) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(_) => Ok(Value::Bool(false)),
+    }
 }
 
 // Helper: Parse MIDI message bytes into Audion event array

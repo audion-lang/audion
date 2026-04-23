@@ -1,0 +1,110 @@
+bpm(120);
+
+fn file_random(dir) {
+    let files = dir_scan(dir);
+    let idx = rand(0, count(files));
+    return dir + files[idx];
+}
+
+// player1 — play a sample once and finish
+// bufnum is passed in at runtime so any file can be used
+define player1(freq, amp, gate, att, rel, bufnum) {
+    out(2, pan(0,
+        PlayBuf(2, bufnum, buf_rate_scale(bufnum) * (freq / 440), 1, 0, 0)
+        * env(gate, att, 0, rel) * amp
+    ));
+}
+
+// player2 — loop between precise frame positions, same as sample() in sampling_basics.au
+// loop_start / loop_end are in frames (e.g. 44100 = 1s at 44.1kHz, 48000 = 1s at 48kHz)
+define player2(freq, amp, gate, att, rel, pann, bufnum, loop_start, loop_end) {
+    let rate  = buf_rate_scale(bufnum) * (freq / 440);
+    let phase = phasor(0, rate, loop_start, loop_end);
+    let sig   = buf_rd(2, bufnum, phase);
+    out(2, pan(pann, sig * env(gate, att, 0, rel) * amp));
+}
+
+
+define somerev(chan) {
+    // option 1: mix to mono and use one gverb
+    // let sig  = in(chan, 2);
+    // let mono = (sig[0] + sig[1]) * 0.5;
+    // out(0, gverb(mono * 0.45, 51, 11, 0.95));
+
+    // option 2: stereo
+    let sig  = in(chan, 2);
+    out(0, gverb(sig[0] * 0.45, 300, 25, 0.0, 0.0, 100, 0.9, 0.5, 0.9));
+    out(0, gverb(sig[1] * 0.45, 300, 25, 0.0, 0.0, 100, 0.9, 0.5, 0.9));
+}
+
+synth("somerev", chan:2);
+
+fn play_random_file(folder) {
+    // putting a thread into a function gives us polyphony
+    thread play_random_file {
+        let buf = buffer_load(file_random(folder));
+        let rel = rand(20, 40);
+        synth("player1",
+            bufnum: buf,
+            freq:   mtof(rand(12, 92)),
+            amp:    rand(0.3, 0.6),
+            gate:   1,
+            att:    3,
+            rel:    rel
+        );
+        wait(rel);          // wait for release to finish
+        buffer_free(buf);   // then free
+    }
+}
+
+fn play_random_sample_loop(folder) {
+    thread play_random_file_loop {
+
+    }
+
+}
+
+
+fn song()
+{
+    // one-shot: load a random file each iteration, play it through once
+    thread main1 {
+        loop {
+            wait(rand(1, 1/2, 1/4));
+            play_random_file("/Volumes/worx/dvoinoi/11_arch/03_sound_bank_recordings/");
+        }
+    }
+
+    // // looping: load a random file, carve out a loop region inside it
+    // thread player2 {
+    //     loop {
+    //         let buf        = buffer_load(file_random("/Volumes/worx/dvoinoi/11_arch/03_sound_bank_recordings/"));
+    //         let info       = buffer_query(buf);   // [num_frames, num_channels, sample_rate]
+    //         let len        = info[0];
+    //         let lstart     = rand(0.05 * len, 0.4 * len);
+    //         let lend       = lstart + rand(0.05 * len, 0.3 * len);
+    //         wait(1);
+    //         let rel = rand(8, 20);
+    //         synth("player2",
+    //             bufnum:     buf,
+    //             freq:       mtof(rand(48, 72)),
+    //             amp:        rand(0.2, 0.5),
+    //             gate:       1,
+    //             att:        rand(5, 15),
+    //             rel:        rel,
+    //             pann:       rand(-0.8, 0.8),
+    //             loop_start: lstart,
+    //             loop_end:   lend
+    //         );
+    //         wait(1);
+    //         wait(rel);          // wait for release to finish
+    //         buffer_free(buf);   // then free
+    //     }
+    // }
+}
+
+
+fn main()
+{
+    song();
+}

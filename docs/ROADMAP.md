@@ -31,11 +31,6 @@ sequence/melodic generators and modifiers
 ### AI model invocation/training features
 there are some nice crates but things are not very stable right now, ongoing
 
-### full midi file support
-- `midi_read("file.mid")` and `midi_write("file.mid", data)`
-- Each event as a simple array: `["type" => "note_on", "note" => 60, "vel" => 100, "tick" => 0]`
-- Binary parsing handled in Rust (e.g. `midly` crate), exposed as clean Audion arrays
-
 ### UI/window
 - will be implemented as separate binary, see audion-window repo
 
@@ -68,12 +63,6 @@ shared (tag:tag_value) { } // shared scope by tag only
 ### User-defined types and more oop (TBD)
 - inheritance seems likely
 
-### Handle-based streaming IO
-- `file_open("path", "r")` / `file_open("path", "w")` / `file_open("path", "a")` — returns a handle
-- `file_line(handle)` — read next line (for processing large/infinite files line by line)
-- `file_read_chunk(handle, size)` — read N bytes at a time
-- `file_seek(handle, offset)` — seek to position
-- `file_close(handle)` — close handle
 
 
 

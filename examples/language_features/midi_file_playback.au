@@ -1,0 +1,159 @@
+// midi_file_playback.au — parse a MIDI file and reproduce it with a sine oscillator
+//
+// Usage:
+//   audion midi_file_playback.au your_file.mid
+//   audion midi_file_playback.au your_file.mid 120
+//
+// The MIDI file is read, all note_on/note_off events are extracted, and each
+// note is played through a simple sine oscillator SynthDef.
+// Timing is derived from the file's own tick resolution (PPQ) and tempo events
+// embedded in the file. If no tempo event is found, 120 BPM is assumed.
+
+// ---------------------------------------------------------------------------
+// SynthDef: a minimal sine oscillator with an amplitude envelope
+//   freq  — pitch in Hz
+//   amp   — amplitude (0.0–1.0)
+//   gate  — envelope gate (1 = open, 0 = release)
+//   att   — attack time in seconds
+//   rel   — release time in seconds
+// ---------------------------------------------------------------------------
+define sine_tone(freq, amp, gate, att, rel)
+{
+    let sig = sine(freq) * env(gate, att, 0, rel);
+    out(0, sig * amp);
+}
+
+// ---------------------------------------------------------------------------
+// Parse the MIDI file
+// ---------------------------------------------------------------------------
+
+let filepath = os_arguments();
+filepath = filepath[1];
+if (filepath == nil) {
+    print("usage: audion midi_file_playback.au <file.mid> [bpm]");
+    return;
+}
+
+let data = midi_read(filepath);
+if (data == false) {
+    print("error: could not read '" + filepath + "'");
+    return;
+}
+
+let ppq = data["ppq"];
+print("ppq: " + str(ppq));
+
+// ---------------------------------------------------------------------------
+// Scan for tempo events to build a BPM map.
+// We use only the first tempo event for simplicity; most single-track files
+// have just one. Falls back to the BPM passed as os_arguments()[2], or 120.
+// ---------------------------------------------------------------------------
+
+let file_bpm = 120.0;
+let n = count(data);
+
+for (let i = 0; i < n; i += 1) {
+    let ev = data[i];
+    if (ev != nil && ev[0] == "tempo") {
+        file_bpm = ev["bpm"];
+        break;
+    }
+}
+
+// Command-line override: audion midi_file_playback.au file.mid 90
+let bpm_arg = os_arguments()[2];
+if (bpm_arg != nil) {
+    file_bpm = num(bpm_arg);
+}
+
+print("bpm: " + str(file_bpm));
+
+// seconds per tick
+let spt = (60.0 / file_bpm) / ppq;
+
+// ---------------------------------------------------------------------------
+// Separate note_on and note_off events and sort by tick.
+// We collect all channel events into a single timeline so poly works.
+// ---------------------------------------------------------------------------
+
+// Build a flat list of actions: each entry is [tick, type, note, vel]
+let timeline = [];
+
+for (let i = 0; i < n; i += 1) {
+    let ev = data[i];
+    if (ev == nil) {
+        continue;
+    }
+    let t = ev[0];
+    if (t == "note_on" || t == "note_off") {
+        push(timeline, ev);
+    }
+}
+
+print("events: " + str(count(timeline)));
+
+if (count(timeline) == 0) {
+    print("no note events found in file");
+    return;
+}
+
+// ---------------------------------------------------------------------------
+// Playback: walk the timeline in tick order.
+// We track the current tick position and wait() the delta between events.
+// ---------------------------------------------------------------------------
+
+// Keep a map of currently-playing note → synth gate so we can release notes.
+// (Audion synths release automatically when gate goes low — we retrigger with
+//  gate:0 to tell the envelope to close.)
+let playing = [];   // parallel arrays: notes[] and their active gate-off calls
+let active_notes = [];
+
+fn note_on_event(note, vel) {
+    let freq = mtof(note);
+    let amp  = vel / 127.0 * 0.5;   // scale velocity to reasonable amplitude
+    synth("sine_tone", freq: freq, amp: amp, gate: 1, att: 0.01, rel: 0.3);
+    push(active_notes, note);
+}
+
+fn note_off_event(note) {
+    // Send a gate-off for this frequency so the envelope releases.
+    // Because synths are fire-and-release in Audion, we rely on the release
+    // time set at note_on. Here we just remove it from our tracking array.
+    let i = 0;
+    loop {
+        if (i >= count(active_notes)) { break; }
+        if (active_notes[i] == note) {
+            remove(active_notes, i);
+            break;
+        }
+        i += 1;
+    }
+}
+
+print("playing...");
+
+let prev_tick = 0;
+
+for (let i = 0; i < count(timeline); i += 1) {
+    let ev   = timeline[i];
+    let tick = ev["tick"];
+    let note = ev["note"];
+    let vel  = ev["vel"];
+    let type = ev[0];
+
+    // Wait the delta from the previous event
+    let delta_ticks = tick - prev_tick;
+    if (delta_ticks > 0) {
+        wait(delta_ticks * spt);
+    }
+    prev_tick = tick;
+
+    if (type == "note_on" && vel > 0) {
+        note_on_event(note, vel);
+    } else {
+        // note_off or note_on with vel==0
+        note_off_event(note);
+    }
+}
+
+print("done.");

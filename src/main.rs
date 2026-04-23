@@ -79,6 +79,10 @@ enum Commands {
         /// Show generated SuperCollider code for debugging
         #[arg(long)]
         debug_sclang: bool,
+
+        /// Extra arguments passed to the script via os_arguments()
+        #[arg(trailing_var_arg = true, num_args = 0..)]
+        script_args: Vec<String>,
     },
 }
 
@@ -89,8 +93,8 @@ fn main() {
         Some(Commands::Spec) => {
             print!("{}", spec::generate());
         }
-        Some(Commands::Run { file, server, bpm, watch, debug_sclang }) => {
-            run_file(&file, &server, bpm, debug_sclang, watch);
+        Some(Commands::Run { file, server, bpm, watch, debug_sclang, script_args }) => {
+            run_file(&file, &server, bpm, debug_sclang, watch, &script_args);
         }
         None => {
             repl::run_repl("127.0.0.1:57110", 120.0);
@@ -150,7 +154,7 @@ fn make_interpreter(
     interp
 }
 
-fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: bool) {
+fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: bool, script_args: &[String]) {
     let osc = Arc::new(osc::OscClient::new(server));
     let midi = Arc::new(midi::MidiClient::new());
     let dmx_client = Arc::new(dmx::DmxClient::new());
@@ -175,7 +179,9 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     .expect("failed to set Ctrl+C handler");
 
     let base_path = path.canonicalize().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()));
-    let args: Vec<String> = std::env::args().collect();
+    // args[0] = script file path, args[1..] = user-supplied extras
+    let mut args: Vec<String> = vec![path.to_string_lossy().to_string()];
+    args.extend_from_slice(script_args);
 
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
 

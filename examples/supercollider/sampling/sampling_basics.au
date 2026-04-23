@@ -29,47 +29,255 @@ fn file_random(dir) {
     return dir + files[idx];
 }
 
-define kick(freq, amp, gate, rel, ffreq, pann, loop_startn)
+define kick(freq, amp, gate, att, rel, ffreq, pann, loop_startn, loop_len, lfo_freq, out_chan)
 {
-    out(0,
-        pan(pann, lpf(
-                sample(
-                    "/Volumes/worx/samples/kit_glitch/file_25.wav",
-                    root: 60,
-                    vel_lo: 0,
-                    vel_hi: 127,
-                    key_lo: 0,
-                    key_hi: 127,
-                    loop: 1,
-                    loop_start: loop_startn,
-                    loop_end: 37 * 44100,
-                    detune: freq,
-                    start: loop_startn
-                ),
-            ffreq))
-        * env(gate, 0.001, 0, rel)
-        * amp
-    );
+
+    let sig = pan(pann, lpf(
+            sample(
+                "/Volumes/worx/samples/field_03/221225-131921.wav",
+                root: 60,
+                vel_lo: 0,
+                vel_hi: 127,
+                key_lo: 0,
+                key_hi: 127,
+                loop: 1,
+                loop_start: loop_startn,
+                loop_end: loop_startn + loop_len + (1.5 * lfo_noise2(lfo_freq)),
+                detune: freq,
+                start: loop_startn
+            ),
+        ffreq))
+    * env(gate, att, 0, rel)
+    * amp;
+    out(0, sig);
+    out(4, sig);
+    out(6, sig);
+}
+
+// Metallic alien FDN — Richard Devine / IDM style
+//
+// params:
+//   in_bus    — input bus
+//   decay     — feedback amount 0–1 (higher = longer tail / more chaos)
+//   size      — delay time scale: 0.0 = ms-range (tight metal), 1.0 = seconds-range (cavernous)
+//   diffuse   — 0.0 = discrete echoes (delay), 1.0 = diffuse wash (reverb)
+//   mod_rate  — LFO speed for delay shimmer in Hz (try 0.3–8.0)
+//   mod_depth — shimmer depth as fraction of delay time (try 0.02–0.2)
+//
+// alien IDM preset:  decay:0.88 size:0.35 diffuse:0.6  mod_rate:2.1  mod_depth:0.09
+// long cavern:       decay:0.92 size:0.85 diffuse:0.75 mod_rate:0.4  mod_depth:0.05
+// tight metallic:    decay:0.80 size:0.05 diffuse:0.2  mod_rate:6.0  mod_depth:0.15
+// pure echo delay:   decay:0.75 size:0.5  diffuse:0.0  mod_rate:0.0  mod_depth:0.0
+//
+define metallic_fdn(in_bus, decay, size, diffuse, mod_rate, mod_depth) {
+    let input = in(in_bus, 2);
+
+    // Smoothed noise LFOs at inharmonic rates — creates non-repeating metallic shimmer
+    let lfo0 = lfo_noise2(mod_rate * 0.73) * mod_depth;
+    let lfo1 = lfo_noise2(mod_rate * 1.37) * mod_depth;
+    let lfo2 = lfo_noise2(mod_rate * 0.51) * mod_depth;
+    let lfo3 = lfo_noise2(mod_rate * 1.91) * mod_depth;
+
+    // 8-tap feedback delay network
+    let delrd = local_in(8);
+
+    // Allpass pre-diffusion — when diffuse=0 decaytime=0 so it's nearly transparent
+    let pre0 = allpass_c(input[0], 0.05, 0.021, diffuse * 0.4);
+    let pre1 = allpass_c(pre0,    0.05, 0.033, diffuse * 0.3);
+    let pre2 = allpass_c(input[1], 0.05, 0.019, diffuse * 0.4);
+    let pre3 = allpass_c(pre2,    0.05, 0.027, diffuse * 0.3);
+
+    // Hadamard cross-mix — normalized by 0.25 (4 feedback terms per node)
+    // without this normalization each iteration amplifies by ~4x and diverges
+    let fb = 0.25;
+    let m0 = pre0 + (delrd[0] + delrd[4] - delrd[6]) * fb;
+    let m1 = pre1 + (delrd[1] + delrd[5] - delrd[7]) * fb;
+    let m2 = pre0 + (delrd[4] + delrd[6] - delrd[2]) * fb;
+    let m3 = pre1 + (delrd[5] + delrd[7] - delrd[3]) * fb;
+    let m4 = pre2 + (delrd[0] - delrd[4] + delrd[6]) * fb;
+    let m5 = pre3 + (delrd[1] - delrd[5] + delrd[7]) * fb;
+    let m6 = pre2 + (0 - delrd[2] - delrd[4] - delrd[6]) * fb;
+    let m7 = pre3 + (0 - delrd[3] - delrd[5] - delrd[7]) * fb;
+
+    // size=0 → scale=10ms, size=1 → scale=4s
+    let scale = 0.01 + size * 3.99;
+
+    // Inharmonic ratios (not multiples of each other) — avoids pitched comb resonance
+    // LFO is multiplied by scale so modulation is always proportional to delay length
+    let t0 = scale * (0.131 + lfo0);
+    let t1 = scale * (0.179 + lfo1);
+    let t2 = scale * (0.233 + lfo2);
+    let t3 = scale * (0.311 + lfo3);
+    let t4 = scale * (0.397 + lfo0);
+    let t5 = scale * (0.457 + lfo1);
+    let t6 = scale * (0.541 + lfo2);
+    let t7 = scale * (0.631 + lfo3);
+
+    // Cubic interpolation delays — max 4.5s covers full range + mod headroom
+    let d0 = delay_c(m0 * decay, 4.5, t0);
+    let d1 = delay_c(m1 * decay, 4.5, t1);
+    let d2 = delay_c(m2 * decay, 4.5, t2);
+    let d3 = delay_c(m3 * decay, 4.5, t3);
+    let d4 = delay_c(m4 * decay, 4.5, t4);
+    let d5 = delay_c(m5 * decay, 4.5, t5);
+    let d6 = delay_c(m6 * decay, 4.5, t6);
+    let d7 = delay_c(m7 * decay, 4.5, t7);
+
+    // Comb resonators — metallic ring/singing quality
+    // cap ring_decay so short sizes don't accumulate indefinitely
+    let ring_decay = decay * 1.5;
+    let ring0 = comb_c(tanh(m0 + m2), 0.04, 0.0107, ring_decay);
+    let ring1 = comb_c(tanh(m4 + m6), 0.04, 0.0131, ring_decay);
+
+    // Sum 4 taps each side — scale so max theoretical sum (~4.0) hits tanh gently
+    // tanh on output = hard ceiling regardless of what accumulates inside
+    let wet_l = tanh((d0 + d2 + d4 + d6) * 0.22 + ring0 * 0.07);
+    let wet_r = tanh((d1 + d3 + d5 + d7) * 0.22 + ring1 * 0.07);
+
+    // tanh() soft-saturates before feeding back — hard ceiling prevents divergence
+    // sounds like tape saturation / transformer drive at high decay values
+    local_out(array(tanh(d0), tanh(d1), tanh(d2), tanh(d3), tanh(d4), tanh(d5), tanh(d6), tanh(d7)));
+    out(0, array(wet_l, wet_r));
+
 }
 
 
+synth("metallic_fdn", in_bus: 4, decay:0.88, size:0.35, diffuse:0.95,  mod_rate:1.21,  mod_depth:0.039);
 
-fn main()
+// 32-node resonator bank — runs parallel to FDN on same input bus
+// 4 interleaved inharmonic series:
+//   n^1.5 (metal bar) | φⁿ×0.5 (golden ratio) | prime/2 | 3^(n/9) (tritave)
+// Two banks detuned ×1.007 for stereo width
+//
+// bright metal ping:  base_freq:120 decay:0.4  amp:0.35
+// low alien body:     base_freq:55  decay:1.2  amp:0.5
+// tight noise burst:  base_freq:300 decay:0.08 amp:0.6
+//
+define resonator_bank(in_bus, base_freq, decay, amp) {
+    let input = in(in_bus, 2);
+    let excite = input[0] + input[1];
+
+    let freqs_l = array(
+        1.0*base_freq,       2.828427*base_freq,  5.196152*base_freq,  8.0*base_freq,
+        11.18034*base_freq,  14.69694*base_freq,  18.52026*base_freq,  22.62742*base_freq,
+        0.809017*base_freq,  1.309017*base_freq,  2.118034*base_freq,  3.427051*base_freq,
+        5.545085*base_freq,  8.972136*base_freq,  14.517221*base_freq, 23.489357*base_freq,
+        1.0*base_freq,       1.5*base_freq,        2.5*base_freq,       3.5*base_freq,
+        5.5*base_freq,       6.5*base_freq,        8.5*base_freq,       9.5*base_freq,
+        1.129831*base_freq,  1.276518*base_freq,  1.442250*base_freq,  1.629498*base_freq,
+        1.841058*base_freq,  2.080084*base_freq,  2.350143*base_freq,  2.655264*base_freq
+    );
+    let freqs_r = array(
+        1.007*base_freq,     2.848226*base_freq,  5.232525*base_freq,  8.056*base_freq,
+        11.258602*base_freq, 14.799819*base_freq, 18.649902*base_freq, 22.785812*base_freq,
+        0.814680*base_freq,  1.318180*base_freq,  2.132860*base_freq,  3.451040*base_freq,
+        5.583901*base_freq,  9.034941*base_freq,  14.618842*base_freq, 23.653783*base_freq,
+        1.007*base_freq,     1.5105*base_freq,     2.5175*base_freq,    3.5245*base_freq,
+        5.5385*base_freq,    6.5455*base_freq,     8.5595*base_freq,    9.5665*base_freq,
+        1.137740*base_freq,  1.285454*base_freq,  1.452346*base_freq,  1.640904*base_freq,
+        1.853945*base_freq,  2.094645*base_freq,  2.366594*base_freq,  2.673851*base_freq
+    );
+    let amps = array(
+        1.0,     0.70711, 0.57735, 0.5,     0.44721, 0.40825, 0.37796, 0.35355,
+        0.70000, 0.49497, 0.40415, 0.35000, 0.31305, 0.28577, 0.26458, 0.24749,
+        0.80000, 0.64980, 0.57538, 0.52780, 0.49363, 0.46735, 0.44623, 0.42871,
+        0.90000, 0.73103, 0.64730, 0.59378, 0.55533, 0.52577, 0.50201, 0.48230
+    );
+    let rings = array(
+        1.0*decay,     0.75786*decay, 0.64439*decay, 0.57435*decay,
+        0.52531*decay, 0.48836*decay, 0.45916*decay, 0.43528*decay,
+        0.85000*decay, 0.69041*decay, 0.61134*decay, 0.56079*decay,
+        0.52448*decay, 0.49656*decay, 0.47412*decay, 0.45550*decay,
+        1.10000*decay, 0.92499*decay, 0.83582*decay, 0.77782*decay,
+        0.73561*decay, 0.70284*decay, 0.67627*decay, 0.65406*decay,
+        1.20000*decay, 1.00908*decay, 0.91180*decay, 0.84853*decay,
+        0.80249*decay, 0.76673*decay, 0.73775*decay, 0.71352*decay
+    );
+
+    let left  = klank(excite, freqs_l, amps, rings);
+    let right = klank(excite, freqs_r, amps, rings);
+    out(0, array(tanh(left * amp), tanh(right * amp)));
+}
+
+resonators = synth("resonator_bank", in_bus: 6, base_freq: 40, decay: 0.955, amp: 0.009);
+
+fn song()
 {
-    thread kick {
-        record_start();
-        let initial_waits = [1, 2, 4, 2, 5, 1, 2, 1/2, 1/2];
+
+    thread extranoises {
+        seed("julene.b");
+        let initial_waits = [25, 22, 41, 22, 51, 12, 21, 1, 2];
         let notes = [85, 67, 78, 77, "rand", 71];
         let waits = [1/4, 1+0.3, 1+0.2, 1+0.1, 1, 1, "rand", "rand"];
-        let total_loops = 100;
+        let amps = [0.1, 0.15, 0.13, 0.09, 0.134, 0.12, 0.14, 0.15, "rand", 0.13];
+        let total_loops = 15;
+        let max_att = 5;
         loop {
             next_wait = array_next(waits);
             next_note = array_next(notes);
+            next_amp = array_next(amps);
+            if (next_note == "rand") {
+                next_note = rand(60, 70);
+            }
+            if (next_wait == "rand") {
+                next_wait = rand(0.05, 5);
+            }
+            if (next_amp == "rand") {
+                next_amp = rand(0.1, 0.15);
+            }
+            prewait = array_next(initial_waits);
+            if (prewait) {
+                wait(prewait);
+            }
+            wait(next_wait);
+            total_loops--;
+            max_att++;
+
+            bpm(90 + total_loops); // slow down
+
+            synth(
+                "kick",
+                loop_startn: rand(11 * 41000, 19 * 41000),
+                freq: mtof(next_note, "/Volumes/worx/soft/audion/examples/scala_scales/3-melodic-minor-et.scl"),
+                amp: next_amp,
+                att: rand(12, 10+max_att),
+                rel: rand(15, 25),
+                ffreq: rand(1700, 5900),
+                pann: rand(-0.999, 0.999),
+                loop_len: 1000 * rand(1.0001, 1.5001),
+                lfo_freq: rand(1.0001, 1.5001),
+                gate: 1,
+                out_chan: array_rand([0])
+            );
+            if (total_loops <= 0) {
+                wait(45);
+                print("exiting");
+                wait(5);
+                break;
+            }
+        }
+    }
+
+    thread kick {
+        seed("julene.b");
+        let initial_waits = [1, 2, 4, 2, 5, 1, 2, 1/2, 1/2];
+        let notes = [85, 67, 78, 77, "rand", 71];
+        let waits = [1/4, 1+0.3, 1+0.2, 1+0.1, 1, 1, "rand", "rand"];
+        let amps = [0.1, 0.15, 0.13, 0.09, 0.134, 0.12, 0.14, 0.15, "rand", 0.13];
+        let total_loops = 80;
+        let max_att = 5;
+        loop {
+            next_wait = array_next(waits);
+            next_note = array_next(notes);
+            next_amp = array_next(amps);
             if (next_note == "rand") {
                 next_note = rand(60, 90);
             }
             if (next_wait == "rand") {
                 next_wait = rand(0.05, 5);
+            }
+            if (next_amp == "rand") {
+                next_amp = rand(0.1, 0.15);
             }
 
             // buildup
@@ -81,26 +289,52 @@ fn main()
             wait(next_wait);
 
             total_loops--;
-
+            max_att++;
             synth(
                 "kick",
-                loop_startn: rand(0.01 * 41000, 20 * 41000),
+                loop_startn: rand(1 * 41000, 39 * 41000),
                 freq: mtof(next_note - 12, "/Volumes/worx/soft/audion/examples/scala_scales/3-melodic-minor-et.scl"),
-                amp: rand(0.1, 0.15),
-                rel: rand(3, 15),
+                amp: next_amp,
+                att: rand(5 + math_round(max_att/2), max_att),
+                rel: rand(15, 25),
                 ffreq: rand(700, 9000),
                 pann: rand(-0.999, 0.999),
-                gate: 1
+                loop_len: rand(100.0001, 101.5001),
+                lfo_freq: rand(1.0001, 151.5001),
+                gate: 1,
+                out_chan: array_rand([0])
             );
+            set(resonators, base_freq: mtof(next_note - 48, "/Volumes/worx/soft/audion/examples/scala_scales/3-melodic-minor-et.scl"));
+            set(resonators, decay: rand(0.01, 10.1));
 
-            print(".", "");
+
+            // print(".", "");
             if (total_loops <= 0) {
                 wait(45);
                 print("exiting");
-                record_stop();
                 wait(5);
                 break;
             }
         }
     }
 }
+
+
+fn initialise()
+{
+    record_start();
+    wait(2);
+}
+
+fn main()
+{
+    song();
+}
+
+fn shutdown()
+{
+    wait(10);
+    record_stop();
+}
+
+

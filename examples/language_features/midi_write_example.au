@@ -1,0 +1,76 @@
+// midi_write_example.au — build a MIDI event array by hand and write it to a file
+//
+// Usage:
+//   audion run examples/language_features/midi_write_example.au
+//
+// Writes "output.mid" in the current directory: a simple 4-note melody
+// (C4 D4 E4 G4) each lasting one quarter note at 480 PPQN / 120 BPM.
+//
+// Event format (same as midi_read returns):
+//   [0: "note_on"|"note_off"|"tempo"|"cc"|"program", "tick": <int>, ...]
+//   note_on / note_off  → also "note": 0-127, "vel": 0-127, "channel": 1-16
+//   tempo               → also "bpm": <float>
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Build a note_on event
+fn make_note_on(note, vel, tick) {
+    let ev = [];
+    push(ev, "note_on");
+    ev["note"]    = note;
+    ev["vel"]     = vel;
+    ev["tick"]    = tick;
+    ev["channel"] = 1;
+    return ev;
+}
+
+// Build a note_off event
+fn make_note_off(note, tick) {
+    let ev = [];
+    push(ev, "note_off");
+    ev["note"]    = note;
+    ev["vel"]     = 0;
+    ev["tick"]    = tick;
+    ev["channel"] = 1;
+    return ev;
+}
+
+// ---------------------------------------------------------------------------
+// Sequence: C4(60) D4(62) E4(64) G4(67), one quarter note each
+// 480 PPQN → 1 quarter note = 480 ticks
+// ---------------------------------------------------------------------------
+
+let ppq    = 480;
+let notes  = [60, 62, 64, 67];
+let events = [];
+
+// Tempo event — 120 BPM (optional but good practice)
+let tempo_ev = [];
+push(tempo_ev, "tempo");
+tempo_ev["tick"] = 0;
+tempo_ev["bpm"]  = 120.0;
+push(events, tempo_ev);
+
+// Generate note_on / note_off pairs
+let tick = 0;
+for (let i = 0; i < count(notes); i += 1) {
+    let note = notes[i];
+    push(events, make_note_on(note, 80, tick));
+    push(events, make_note_off(note, tick + ppq));
+    tick = tick + ppq;
+}
+
+// ---------------------------------------------------------------------------
+// Write
+// ---------------------------------------------------------------------------
+
+let out_path = "output.mid";
+let ok = midi_write(out_path, events);
+
+if (ok) {
+    print("wrote " + str(count(events)) + " events to " + out_path);
+} else {
+    print("midi_write() failed");
+}

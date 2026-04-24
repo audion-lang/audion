@@ -401,3 +401,33 @@ pub fn builtin_math_cbrt(args: &[Value]) -> Result<Value> {
     Ok(Value::Number(n.cbrt()))
 }
 
+// math_wrap(n, lo, hi) → cyclically wrap n into [lo, hi), works with floats
+pub fn builtin_math_wrap(args: &[Value]) -> Result<Value> {
+    require_at_least("math_wrap", args, 3)?;
+    let n = require_number("math_wrap", &args[0])?;
+    let lo = require_number("math_wrap", &args[1])?;
+    let hi = require_number("math_wrap", &args[2])?;
+    if hi == lo {
+        return Ok(Value::Number(lo));
+    }
+    let range = hi - lo;
+    let wrapped = lo + ((n - lo) % range + range) % range;
+    Ok(Value::Number(wrapped))
+}
+
+// math_fold(n, lo, hi) → fold/bounce n back and forth between lo and hi, works with floats
+pub fn builtin_math_fold(args: &[Value]) -> Result<Value> {
+    require_at_least("math_fold", args, 3)?;
+    let n = require_number("math_fold", &args[0])?;
+    let lo = require_number("math_fold", &args[1])?;
+    let hi = require_number("math_fold", &args[2])?;
+    if hi == lo {
+        return Ok(Value::Number(lo));
+    }
+    let range = hi - lo;
+    // fold into [0, 2*range), then mirror the upper half
+    let t = ((n - lo) % (2.0 * range) + 2.0 * range) % (2.0 * range);
+    let folded = if t <= range { lo + t } else { hi - (t - range) };
+    Ok(Value::Number(folded))
+}
+

@@ -219,6 +219,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "midi_read", "midi_write",
     "osc_config", "osc_send", "osc_listen", "osc_recv", "osc_close",
     "array_push", "array_pop",
+    "array_cycle", "array_rotate",
     "array_next", "array_prev", "array_current",
     "array_end", "array_beginning", "array_key",
     "str_explode", "str_join",
@@ -242,7 +243,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "math_rad2deg", "math_round",
     "math_sin", "math_sinh", "math_sqrt", "math_sign",
     "math_tan", "math_tanh", "math_trunc",
-    "math_clamp",
+    "math_clamp", "math_wrap", "math_fold",
     "console_read", "console_read_password", "console_read_key", "console_error",
     "os_env_get", "os_env_set", "os_env_list",
     "os_process_id", "os_pid",
@@ -398,6 +399,7 @@ pub fn call_builtin(
         "osc_close" => builtin_osc_close(args, osc_protocol),
         "array_push" => builtin_push(args),
         "array_pop" => builtin_pop(args),
+        "array_cycle" | "array_rotate" => builtin_array_cycle(args),
         "array_next" => builtin_array_next(args),
         "array_prev" => builtin_array_prev(args),
         "array_current" => builtin_array_current(args),
@@ -465,6 +467,8 @@ pub fn call_builtin(
         "math_tanh" => crate::math::builtin_math_tanh(args),
         "math_sign" => crate::math::builtin_math_sign(args),
         "math_clamp" => crate::math::builtin_math_clamp(args),
+        "math_wrap" => crate::math::builtin_math_wrap(args),
+        "math_fold" => crate::math::builtin_math_fold(args),
         "math_intdiv" => crate::math::builtin_math_intdiv(args),
         "math_lerp" => crate::math::builtin_math_lerp(args),
         "math_map" => crate::math::builtin_math_map(args),
@@ -763,6 +767,46 @@ fn builtin_pop(args: &[Value]) -> Result<Value> {
         Some((_, v)) => Ok(v),
         None => Ok(Value::Nil),
     }
+}
+
+fn builtin_array_cycle(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "array_cycle(array, n) requires at least 1 argument".to_string(),
+        });
+    }
+    let arr = require_array("array_cycle", &args[0])?;
+    let n: i64 = if args.len() >= 2 {
+        require_number("array_cycle", &args[1])? as i64
+    } else {
+        1
+    };
+
+    let guard = arr.lock().unwrap();
+    let entries = guard.entries();
+
+    if entries.is_empty() {
+        drop(guard);
+        return Ok(Value::Array(Arc::new(Mutex::new(AudionArray::new()))));
+    }
+
+    let len = entries.len();
+    let keys: Vec<Value> = entries.iter().map(|(k, _)| k.clone()).collect();
+    let mut values: Vec<Value> = entries.iter().map(|(_, v)| v.clone()).collect();
+    drop(guard);
+
+    // normalise n into [0, len) so rotate never panics
+    let n = ((n % len as i64) + len as i64) as usize % len;
+    // positive n → each value shifts one slot forward (rotate_right)
+    // negative n was flipped to a positive rotate_left equivalent above
+    values.rotate_right(n);
+
+    let mut result = AudionArray::new();
+    for (key, val) in keys.into_iter().zip(values.into_iter()) {
+        result.set(key, val);
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
 }
 
 fn builtin_keys(args: &[Value]) -> Result<Value> {

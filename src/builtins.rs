@@ -219,7 +219,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "midi_read", "midi_write",
     "osc_config", "osc_send", "osc_listen", "osc_recv", "osc_close",
     "array_push", "array_pop",
-    "array_cycle", "array_rotate",
+    "array_cycle", "array_rotate", "array_chunk",
     "array_next", "array_prev", "array_current",
     "array_end", "array_beginning", "array_key",
     "str_explode", "str_join",
@@ -400,6 +400,7 @@ pub fn call_builtin(
         "array_push" => builtin_push(args),
         "array_pop" => builtin_pop(args),
         "array_cycle" | "array_rotate" => builtin_array_cycle(args),
+        "array_chunk" => builtin_array_chunk(args),
         "array_next" => builtin_array_next(args),
         "array_prev" => builtin_array_prev(args),
         "array_current" => builtin_array_current(args),
@@ -804,6 +805,36 @@ fn builtin_array_cycle(args: &[Value]) -> Result<Value> {
     let mut result = AudionArray::new();
     for (key, val) in keys.into_iter().zip(values.into_iter()) {
         result.set(key, val);
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
+}
+
+fn builtin_array_chunk(args: &[Value]) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "array_chunk(array, size) requires 2 arguments".to_string(),
+        });
+    }
+    let arr = require_array("array_chunk", &args[0])?;
+    let size = require_number("array_chunk", &args[1])? as usize;
+    if size == 0 {
+        return Err(AudionError::RuntimeError {
+            msg: "array_chunk: size must be greater than 0".to_string(),
+        });
+    }
+
+    let guard = arr.lock().unwrap();
+    let values: Vec<Value> = guard.entries().iter().map(|(_, v)| v.clone()).collect();
+    drop(guard);
+
+    let mut result = AudionArray::new();
+    for (i, chunk) in values.chunks(size).enumerate() {
+        let mut chunk_arr = AudionArray::new();
+        for (j, val) in chunk.iter().enumerate() {
+            chunk_arr.set(Value::Number(j as f64), val.clone());
+        }
+        result.set(Value::Number(i as f64), Value::Array(Arc::new(Mutex::new(chunk_arr))));
     }
 
     Ok(Value::Array(Arc::new(Mutex::new(result))))

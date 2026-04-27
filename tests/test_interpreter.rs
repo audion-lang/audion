@@ -1384,6 +1384,40 @@ fn test_array_pop_alias() {
     );
 }
 
+#[test]
+fn test_array_chunk_basic() {
+    // chunk into groups of 2
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4], 2); count(c);"),
+        Value::Number(2.0)
+    );
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4], 2); c[0][1];"),
+        Value::Number(2.0)
+    );
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4], 2); c[1][0];"),
+        Value::Number(3.0)
+    );
+}
+
+#[test]
+fn test_array_chunk_uneven() {
+    // last chunk is smaller when array doesn't divide evenly
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4, 5], 2); count(c);"),
+        Value::Number(3.0)
+    );
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4, 5], 2); count(c[2]);"),
+        Value::Number(1.0)
+    );
+    assert_eq!(
+        eval("let c = array_chunk([1, 2, 3, 4, 5], 2); c[2][0];"),
+        Value::Number(5.0)
+    );
+}
+
 // --- OSC protocol tests ---
 
 #[test]

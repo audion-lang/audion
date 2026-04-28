@@ -17,7 +17,7 @@ bpm(120);
 define fm2(freq, amp, gate, ratio, index, fb, atk, sus, rel) {
     let mf = freq * ratio;
     let mod = SinOscFB(mf, fb) * mf * index;
-    out(0, pan(0, sine(freq + mod) * env(gate, atk, sus, rel) * amp));
+    out(0, pan(0, sine(freq + mod) * env_perc(gate, atk, sus, rel) * amp));
 }
 
 // --- 4-Operator FM: Serial Chain ---
@@ -35,7 +35,7 @@ define fm4_serial(freq, amp, gate,
     let f2 = freq * r2;
     let op2 = sine(f2 + op3) * f2 * x2;
     let op1 = sine(freq * r1 + op2);
-    out(0, pan(0, op1 * env(gate, atk, sus, rel) * amp));
+    out(0, pan(0, op1 * env_perc(gate, atk, sus, rel) * amp));
 }
 
 // --- 4-Operator FM: Parallel Pairs ---
@@ -54,7 +54,7 @@ define fm4_pairs(freq, amp, gate,
     let op4 = sine(f4) * f4 * x4;
     let op3 = SinOscFB(freq * r3 + op4, fb2);
     let sig = op1 * (1 - mix) + op3 * mix;
-    out(0, pan(0, sig * env(gate, atk, sus, rel) * amp));
+    out(0, pan(0, sig * env_perc(gate, atk, sus, rel) * amp));
 }
 
 // --- 8-Operator FM: Four Carrier/Modulator Pairs (Digitone-style) ---
@@ -90,7 +90,7 @@ define fm8(freq, amp, gate,
     let car4 = SinOscFB(freq * c4 + mod4, fb4) * a4;
     // Sum all carriers
     let sig = car1 + car2 + car3 + car4;
-    out(0, pan(0, sig * env(gate, atk, sus, rel) * amp));
+    out(0, pan(0, sig * env_perc(gate, atk, sus, rel) * amp));
 }
 
 // --- 8-Operator FM: Full Serial Chain ---
@@ -116,7 +116,7 @@ define fm8_serial(freq, amp, gate,
     let f2 = freq * r2;
     let op2 = sine(f2 + op3) * f2 * x2;
     let op1 = sine(freq * r1 + op2);
-    out(0, pan(0, op1 * env(gate, atk, sus, rel) * amp));
+    out(0, pan(0, op1 * env_perc(gate, atk, sus, rel) * amp));
 }
 
 // --- 8-Operator FM with Reverb + LFO-modulated filter ---
@@ -145,7 +145,7 @@ define fm8_lush(freq, amp, gate,
     let car4 = SinOscFB(freq * c4 + mod4, fb4) * a4;
     let raw = car1 + car2 + car3 + car4;
     let filtered = lpf(raw, filt + lfo_sine(lfo_rate) * lfo_depth);
-    let wet = reverb(filtered * env(gate, atk, sus, rel) * amp, rmix, rroom, rdamp);
+    let wet = reverb(filtered * env_perc(gate, atk, sus, rel) * amp, rmix, rroom, rdamp);
     out(0, pan(lfo_tri(0.07), wet));
 }
 

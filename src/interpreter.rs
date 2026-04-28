@@ -1047,6 +1047,23 @@ impl Interpreter {
                     }),
                 }
             }
+            Expr::ArrayPushAssign { object, value } => {
+                let obj = self.eval_expr(object)?;
+                let val = self.eval_expr(value)?;
+                match obj {
+                    Value::Array(arr) => {
+                        let mut guard = arr.lock().unwrap();
+                        guard.push_auto(val.clone());
+                        Ok(val)
+                    }
+                    _ => Err(AudionError::RuntimeError {
+                        msg: format!("[] push syntax requires an array, got {}", obj.type_name()),
+                    }),
+                }
+            }
+            Expr::ArrayPushLhs { .. } => Err(AudionError::RuntimeError {
+                msg: "[] push syntax requires assignment: array[] = value".to_string(),
+            }),
             Expr::CompoundIndexAssign {
                 object,
                 index,

@@ -1,0 +1,103 @@
+// math_more.au — control-level envelopes and LFOs
+//
+// How to build smoothly-evolving values at scheduler time,
+// using math_* builtins and closures.
+// Useful for modulating synth parameters over time instead of using rand().
+
+// --- make_lfo: array-based interpolating LFO ---
+//
+// make_lfo(data, freq, mode)
+//   data  — array of values defining the shape, e.g. [-1, 0, 1, 0]
+//   freq  — cycles per beat (mode="beat") or per second (mode="time")
+//   mode  — "beat" syncs to BPM via link_beat(); "time" uses elapsed seconds
+//
+// Returns a zero-argument closure. Call it at any point to get the
+// interpolated value at the current position in the cycle.
+
+fn make_lfo(data, freq, mode) {
+    return fn() {
+        let t = 0;
+        if (mode == "beat") { t = link_beat(); } else { t = time(); }
+        let n = count(data);
+        let pos = math_wrap(t * freq, 0, 1);    // 0..1 phase in cycle
+        let fi  = pos * n;                       // float index into data
+        let i   = math_floor(fi) % n;
+        let j   = (i + 1) % n;
+        return math_lerp(data[i], data[j], math_fract(fi));
+    };
+}
+
+// --- examples ---
+
+// Sine-like shape over 4 data points, 1 cycle per second
+let shape_lfo = make_lfo([0, 1, 0, -1], 1, "time");
+
+print("--- shape_lfo values at t=0..0.9 (1 cycle/sec, 10 steps) ---");
+let k = 0;
+loop {
+    print(math_round(shape_lfo(), 3));
+    wait_ms(100);
+    k++;
+    if (k >= 10) { break; }
+}
+
+// Subtle index-modulation shape for FM: stays in [0.005, 0.015]
+let x8_lfo = make_lfo([0.005, 0.008, 0.015, 0.012, 0.005], 0.5, "time");
+
+print("--- x8_lfo values (replaces rand for FM index modulation) ---");
+let m = 0;
+loop {
+    print(math_round(x8_lfo(), 4));
+    wait_ms(120);
+    m++;
+    if (m >= 8) { break; }
+}
+
+// Beat-synced: 1 full sweep every 2 beats (freq = 0.5 cyc/beat)
+// Useful with link_beat() when Ableton Link is active.
+// let beat_lfo = make_lfo([-1, 0, 1, 0], 0.5, "beat");
+// synth("my_synth", ["x" => beat_lfo()]);
+
+// --- make_lfo_curve: same as make_lfo but with a curve parameter ---
+//
+// curve = 1   → linear (identical to make_lfo)
+// curve > 1   → exponential: slow approach, fast arrival at next point
+//               e.g. curve=2 (squared), curve=3 (cubed)
+// curve < 1   → logarithmic: fast departure, slow arrival at next point
+//               e.g. curve=0.5 (square root), curve=0.25
+
+fn make_lfo_curve(data, freq, mode, curve) {
+    return fn() {
+        let t = 0;
+        if (mode == "beat") { t = link_beat(); } else { t = time(); }
+        let n   = count(data);
+        let pos = math_wrap(t * freq, 0, 1);
+        let fi  = pos * n;
+        let i   = math_floor(fi) % n;
+        let j   = (i + 1) % n;
+        let frac = math_pow(math_fract(fi), curve);  // apply curve to segment fraction
+        return math_lerp(data[i], data[j], frac);
+    };
+}
+
+// --- compare linear vs exponential vs logarithmic on [0, 1] ---
+// All three traverse the same data at the same speed,
+// but the shape of each segment between points differs.
+
+let data = [0, 1];   // one ramp from 0 to 1 per cycle
+
+let lfo_lin = make_lfo_curve(data, 1, "time", 1);    // linear
+let lfo_exp = make_lfo_curve(data, 1, "time", 3);    // exponential (cubed)
+let lfo_log = make_lfo_curve(data, 1, "time", 0.33); // logarithmic (cube root)
+
+print("--- linear | exponential (^3) | logarithmic (^0.33) ---");
+let q = 0;
+loop {
+    let lin = math_round(lfo_lin(), 3);
+    let exp = math_round(lfo_exp(), 3);
+    let log = math_round(lfo_log(), 3);
+    print(lin + "  |  " + exp + "  |  " + log);
+    wait_ms(80);
+    q++;
+    if (q >= 12) { break; }
+}

@@ -502,6 +502,13 @@ impl Parser {
                     value: Box::new(value),
                 });
             }
+            if let Expr::ArrayPushLhs { object } = expr {
+                let value = self.parse_assignment()?;
+                return Ok(Expr::ArrayPushAssign {
+                    object,
+                    value: Box::new(value),
+                });
+            }
             if let Expr::MemberAccess { object, field } = expr {
                 let value = self.parse_assignment()?;
                 return Ok(Expr::MemberAssign {
@@ -551,6 +558,10 @@ impl Parser {
                 });
             }
             return Err(self.error("invalid compound assignment target"));
+        }
+
+        if let Expr::ArrayPushLhs { .. } = &expr {
+            return Err(self.error("[] push syntax requires assignment: array[] = value"));
         }
 
         Ok(expr)
@@ -820,12 +831,19 @@ impl Parser {
                     args,
                 };
             } else if self.match_token(TokenKind::LBracket) {
-                let index = self.parse_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                expr = Expr::Index {
-                    object: Box::new(expr),
-                    index: Box::new(index),
-                };
+                if std::mem::discriminant(&self.peek_kind()) == std::mem::discriminant(&TokenKind::RBracket) {
+                    self.advance(); // consume ]
+                    expr = Expr::ArrayPushLhs {
+                        object: Box::new(expr),
+                    };
+                } else {
+                    let index = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket)?;
+                    expr = Expr::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                }
             } else if self.match_token(TokenKind::Dot) {
                 let field = self.expect_ident()?;
                 expr = Expr::MemberAccess {

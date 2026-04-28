@@ -102,6 +102,13 @@ pub enum Expr {
         index: Box<Expr>,
         value: Box<Expr>,
     },
+    ArrayPushLhs {
+        object: Box<Expr>,
+    },
+    ArrayPushAssign {
+        object: Box<Expr>,
+        value: Box<Expr>,
+    },
     CompoundIndexAssign {
         object: Box<Expr>,
         index: Box<Expr>,

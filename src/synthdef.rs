@@ -36,7 +36,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "lpf", "hpf", "bpf", "rlpf", "rhpf", "resonz", "moog_ff", "brf", "formlet",
     "lag", "leak_dc", "ringz", "one_pole", "two_pole", "ramp", "mid_eq", "slew",
     // Envelopes
-    "env", "line", "xline", "decay", "linen",
+    "env", "env_perc", "line", "xline", "decay", "linen",
     // LFOs
     "lfo_sine", "lfo_saw", "lfo_tri", "lfo_pulse", "lfo_noise", "lfo_step",
     // Effects
@@ -594,6 +594,17 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
             let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
             let dec = args.get(2).map(|s| s.as_str()).unwrap_or("1");
             format!("Decay2.ar({}, {}, {})", sig, atk, dec)
+        }
+        // Percussive envelope: always uses Env.perc, frees synth when done
+        // env_perc(gate, atk, rel) — no sustain, triggers on gate
+        "env_perc" => {
+            let gate = args.first().map(|s| s.as_str()).unwrap_or("gate");
+            let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
+            let rel = args.get(2).map(|s| s.as_str()).unwrap_or("0.3");
+            format!(
+                "EnvGen.kr(Env.perc({}, {}), {}, doneAction: 2)",
+                atk, rel, gate
+            )
         }
         "linen" => { // TODO remove?
             // Linen.kr(gate, attackTime, susLevel, releaseTime, doneAction)

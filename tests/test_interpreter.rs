@@ -1377,6 +1377,22 @@ fn test_array_push_alias() {
 }
 
 #[test]
+fn test_array_push_bracket_syntax() {
+    assert_eq!(
+        eval("let a = [10, 20]; a[] = 30; a[2];"),
+        Value::Number(30.0)
+    );
+}
+
+#[test]
+fn test_array_push_bracket_syntax_multiple() {
+    assert_eq!(
+        eval("let a = []; a[] = 1; a[] = 2; a[] = 3; count(a);"),
+        Value::Number(3.0)
+    );
+}
+
+#[test]
 fn test_array_pop_alias() {
     assert_eq!(
         eval("let a = [10, 20]; let r = array_pop(a); r;"),

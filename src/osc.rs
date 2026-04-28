@@ -51,10 +51,6 @@ impl OscClient {
             recording_buf_id: std::sync::Mutex::new(None),
             recording_synthdef_bytes: std::sync::Mutex::new(Vec::new()),
         };
-        // Free all nodes in the default group (group 1) to clear orphans
-        // from previous runs, crashed sessions, or test suites.
-        // This is equivalent to SuperCollider's Cmd+Period (CmdPeriod).
-        client.send("/g_freeAll", vec![OscType::Int(1)]);
         client
     }
 

@@ -214,7 +214,8 @@ impl Clock {
         let quantum = self.get_quantum();
         let guard = self.link.lock().unwrap();
         let Some(abl) = guard.as_ref() else { return };
-        LINK_BEAT_TARGET.with(|cell| {
+
+        let delta_us = LINK_BEAT_TARGET.with(|cell| {
             let mut target = cell.borrow_mut();
 
             let mut state = SessionState::new();
@@ -231,11 +232,14 @@ impl Clock {
             *target = Some(target_beat);
 
             let target_time = state.time_at_beat(target_beat, quantum);
-            let delta_us = target_time - now;
-            if delta_us > 0 {
-                std::thread::sleep(Duration::from_micros(delta_us as u64));
-            }
+            target_time - now
         });
+
+        drop(guard); // release mutex before sleeping so other threads aren't blocked
+
+        if delta_us > 0 {
+            std::thread::sleep(Duration::from_micros(delta_us as u64));
+        }
     }
 
     pub fn wait_ms(&self, ms: f64) {

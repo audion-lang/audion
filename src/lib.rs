@@ -17,6 +17,7 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod define_cache;
 pub mod clock;
 pub mod environment;
 pub mod error;

@@ -26,7 +26,8 @@ pub fn eval(src: &str) -> Value {
     let clock = Arc::new(Clock::new(120.0));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache);
+    let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache);
     interp.run_line(&stmts).unwrap()
 }
 

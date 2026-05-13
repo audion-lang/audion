@@ -2849,6 +2849,7 @@ fn call_user_function(
 
             // Create temporary interpreter to execute the callback
             let synthdef_cache = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+            let define_cache = std::sync::Arc::new(std::sync::Mutex::new(crate::define_cache::DefineCache::new()));
             let mut interp = crate::interpreter::Interpreter::new_for_thread(
                 call_env,
                 osc.clone(),
@@ -2859,6 +2860,7 @@ fn call_user_function(
                 shutdown.clone(),
                 false,
                 synthdef_cache,
+                define_cache,
                 base_path.to_path_buf(),
             );
 

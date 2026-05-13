@@ -24,6 +24,7 @@ use clap::{Parser, Subcommand};
 
 mod ast;
 mod builtins;
+mod define_cache;
 mod clock;
 mod dmx;
 mod environment;
@@ -140,12 +141,13 @@ fn make_interpreter(
     shutdown: &Arc<AtomicBool>,
     debug_sclang: bool,
     synthdef_cache: &Arc<Mutex<std::collections::HashMap<String, (u64, Vec<u8>)>>>,
+    define_cache: &Arc<Mutex<define_cache::DefineCache>>,
     args: &[String],
     base_path: &Option<PathBuf>,
 ) -> interpreter::Interpreter {
     let env = Arc::new(Mutex::new(environment::Environment::new()));
     let mut interp = interpreter::Interpreter::new(
-        env, osc.clone(), midi.clone(), dmx_client.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(),
+        env, osc.clone(), midi.clone(), dmx_client.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(), define_cache.clone(),
     );
     interp.set_args(args.to_vec());
     if let Some(ref bp) = base_path {
@@ -162,6 +164,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let clock_inst = Arc::new(clock::Clock::new(bpm));
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let define_cache = Arc::new(Mutex::new(define_cache::DefineCache::new()));
 
     // Set up Ctrl+C handler
     let osc_cleanup = osc.clone();
@@ -188,7 +191,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     if !watch {
         let source = read_source(path);
         let stmts = try_compile(&source, "").unwrap_or_else(|| std::process::exit(1));
-        let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
         interp.current_file = file_name.clone();
         if let Err(e) = interp.run(&stmts) {
             eprintln!("{}", e);
@@ -208,7 +211,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let mut last_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
     if let Some(stmts) = try_compile(&source, "watch: ") {
-        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
         new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
             Ok(_) => { interp = Some(new_interp); }
@@ -248,7 +251,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
         }
 
         builtins::reset_assert_stats();
-        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
         new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
             Ok(_) => {

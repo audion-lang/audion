@@ -76,6 +76,8 @@ fn hash_synthdef(name: &str, params: &[String], body: &UGenExpr) -> u64 {
 /// Cache entry for a compiled SynthDef: (ast_hash, compiled_bytes)
 pub type SynthDefCache = Arc<Mutex<HashMap<String, (u64, Vec<u8>)>>>;
 
+pub type SharedDefineCache = Arc<Mutex<crate::define_cache::DefineCache>>;
+
 pub struct Interpreter {
     pub env: Arc<Mutex<Environment>>,
     pub osc: Arc<OscClient>,
@@ -95,6 +97,9 @@ pub struct Interpreter {
     /// Maps synthdef name -> (ast_hash, compiled_bytes).
     /// Persists across reloads within a single watch session.
     pub synthdef_cache: SynthDefCache,
+    /// Persistent disk cache for compiled SynthDefs.
+    /// Survives process restarts; consulted when the in-memory cache misses.
+    pub define_cache: SharedDefineCache,
 }
 
 impl Interpreter {
@@ -108,6 +113,7 @@ impl Interpreter {
         shutdown: Arc<AtomicBool>,
         debug_sclang: bool,
         synthdef_cache: SynthDefCache,
+        define_cache: SharedDefineCache,
     ) -> Self {
         // Register builtins in the environment (single source of truth: builtins::BUILTIN_NAMES)
         {
@@ -133,6 +139,7 @@ impl Interpreter {
             included_envs: Arc::new(Mutex::new(HashMap::new())),
             debug_sclang,
             synthdef_cache,
+            define_cache,
         }
     }
 
@@ -146,6 +153,7 @@ impl Interpreter {
         shutdown: Arc<AtomicBool>,
         debug_sclang: bool,
         synthdef_cache: SynthDefCache,
+        define_cache: SharedDefineCache,
         base_path: PathBuf,
     ) -> Self {
         Interpreter {
@@ -164,6 +172,7 @@ impl Interpreter {
             included_envs: Arc::new(Mutex::new(HashMap::new())),
             debug_sclang,
             synthdef_cache,
+            define_cache,
         }
     }
 
@@ -460,59 +469,64 @@ impl Interpreter {
                 // Compute hash of this SynthDef's AST
                 let ast_hash = hash_synthdef(name, params, body);
 
-                // Check cache for compiled SynthDef bytecode
-                let cached_bytes = {
+                // Tier 1: in-memory cache (fastest, no I/O)
+                let mem_hit = {
                     let cache = self.synthdef_cache.lock().unwrap();
                     cache.get(name).and_then(|(cached_hash, bytes)| {
-                        if *cached_hash == ast_hash {
-                            Some(bytes.clone())
-                        } else {
-                            None
-                        }
+                        if *cached_hash == ast_hash { Some(bytes.clone()) } else { None }
                     })
                 };
 
-                let bytes = if let Some(cached) = cached_bytes {
-                    // Cache hit - skip sclang compilation, reuse compiled bytes
-                    if buffers.is_empty() {
-                        eprintln!("  reusing cached synth '{}'", name);
-                    } else {
-                        eprintln!(
-                            "  reusing cached synth '{}' ({} sample{})",
-                            name,
-                            buffers.len(),
-                            if buffers.len() == 1 { "" } else { "s" }
-                        );
-                    }
+                let bytes = if let Some(cached) = mem_hit {
+                    eprintln!("  cached synth '{}' (memory)", name);
                     cached
                 } else {
-                    // Cache miss - compile via sclang
-                    let out_dir = crate::sclang::synthdef_output_dir();
-                    let sclang_code =
-                        crate::synthdef::generate_sclang(name, params, body, &out_dir, &buffers);
-                    if self.debug_sclang {
-                        eprintln!("\n=== SC code for '{}' ===\n{}", name, sclang_code);
-                    }
-                    let compiled = crate::sclang::compile_synthdef(name, &sclang_code)?;
-
-                    // Store in cache
-                    {
-                        let mut cache = self.synthdef_cache.lock().unwrap();
-                        cache.insert(name.clone(), (ast_hash, compiled.clone()));
-                    }
-
-                    if buffers.is_empty() {
-                        println!("defined synth '{}'", name);
+                    // Tier 2: disk .adc cache — derive the source file's absolute path
+                    let source_abs: Option<PathBuf> = if !self.current_file.is_empty() {
+                        let p = PathBuf::from(&self.current_file);
+                        Some(if p.is_absolute() { p } else { self.base_path.join(p) })
                     } else {
-                        println!(
-                            "defined synth '{}' ({} sample{})",
-                            name,
-                            buffers.len(),
-                            if buffers.len() == 1 { "" } else { "s" }
-                        );
-                    }
+                        None
+                    };
 
-                    compiled
+                    let disk_hit = source_abs.as_deref().and_then(|src| {
+                        self.define_cache.lock().unwrap().get(src, name, ast_hash)
+                    });
+
+                    if let Some(cached) = disk_hit {
+                        eprintln!("  cached synth '{}' (disk)", name);
+                        // Promote to in-memory cache so subsequent reloads skip disk I/O
+                        self.synthdef_cache.lock().unwrap().insert(name.clone(), (ast_hash, cached.clone()));
+                        cached
+                    } else {
+                        // Tier 3: compile via sclang
+                        let out_dir = crate::sclang::synthdef_output_dir();
+                        let sclang_code =
+                            crate::synthdef::generate_sclang(name, params, body, &out_dir, &buffers);
+                        if self.debug_sclang {
+                            eprintln!("\n=== SC code for '{}' ===\n{}", name, sclang_code);
+                        }
+                        let compiled = crate::sclang::compile_synthdef(name, &sclang_code)?;
+
+                        // Store in both caches
+                        self.synthdef_cache.lock().unwrap().insert(name.clone(), (ast_hash, compiled.clone()));
+                        if let Some(src) = source_abs.as_deref() {
+                            self.define_cache.lock().unwrap().put(src, name, ast_hash, compiled.clone());
+                        }
+
+                        if buffers.is_empty() {
+                            println!("defined synth '{}'", name);
+                        } else {
+                            println!(
+                                "defined synth '{}' ({} sample{})",
+                                name,
+                                buffers.len(),
+                                if buffers.len() == 1 { "" } else { "s" }
+                            );
+                        }
+
+                        compiled
+                    }
                 };
 
                 // Load the SynthDef (cached or freshly compiled) onto the server
@@ -736,13 +750,14 @@ impl Interpreter {
         let thread_name = name.to_string();
 
         let synthdef_cache = self.synthdef_cache.clone();
+        let define_cache = self.define_cache.clone();
         let base_path = self.base_path.clone();
         let current_file = self.current_file.clone();
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
                 let mut interp =
-                    Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, base_path);
+                    Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, define_cache, base_path);
                 interp.current_file = current_file;
                 if let Err(e) = interp.exec_stmt(&body) {
                     eprintln!("thread '{}' error: {}", thread_name, e);

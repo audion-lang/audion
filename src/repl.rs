@@ -62,7 +62,8 @@ pub fn run_repl(server: &str, bpm: f64) {
     .expect("failed to set Ctrl+C handler");
 
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interpreter = Interpreter::new(env, osc, midi, dmx, osc_proto, clock, shutdown, false, synthdef_cache);
+    let define_cache = Arc::new(Mutex::new(crate::define_cache::DefineCache::new()));
+    let mut interpreter = Interpreter::new(env, osc, midi, dmx, osc_proto, clock, shutdown, false, synthdef_cache, define_cache);
 
     // Store command-line arguments
     let args: Vec<String> = std::env::args().collect();

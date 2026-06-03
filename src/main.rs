@@ -32,6 +32,7 @@ mod error;
 mod interpreter;
 mod lexer;
 mod math;
+mod ml;
 mod midi;
 mod strings;
 mod sequences;

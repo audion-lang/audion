@@ -294,6 +294,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "dmx_set", "dmx_set_range",
     "dmx_send", "dmx_blackout",
     "assert",
+    "ml_markov_train", "ml_markov_generate", "ml_markov_next",
+    "ml_weighted_choice", "ml_softmax", "ml_entropy", "ml_normalize",
 ];
 
 /// Resolve a potentially relative path against the source file's base directory.
@@ -563,6 +565,13 @@ pub fn call_builtin(
         "dmx_send" => builtin_dmx_send(dmx),
         "dmx_blackout" => builtin_dmx_blackout(dmx),
         "assert" => builtin_assert(args),
+        "ml_markov_train" => crate::ml::builtin_ml_markov_train(args),
+        "ml_markov_generate" => crate::ml::builtin_ml_markov_generate(args),
+        "ml_markov_next" => crate::ml::builtin_ml_markov_next(args),
+        "ml_weighted_choice" => crate::ml::builtin_ml_weighted_choice(args),
+        "ml_softmax" => crate::ml::builtin_ml_softmax(args),
+        "ml_entropy" => crate::ml::builtin_ml_entropy(args),
+        "ml_normalize" => crate::ml::builtin_ml_normalize(args),
         _ => Err(AudionError::RuntimeError {
             msg: format!("unknown builtin '{}'", name),
         }),

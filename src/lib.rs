@@ -24,6 +24,7 @@ pub mod error;
 pub mod interpreter;
 pub mod lexer;
 pub mod math;
+pub mod ml;
 pub mod strings;
 pub mod sequences;
 pub mod melodies;

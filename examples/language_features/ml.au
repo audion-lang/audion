@@ -1,0 +1,332 @@
+// ml.au — machine learning builtins for generative music
+//
+// ml_markov_train(notes, order)       — learn transition probabilities from a sequence
+// ml_markov_generate(model, length)   — generate a new sequence from a trained model
+// ml_markov_next(model, context)      — get probability distribution for the next value
+// ml_weighted_choice(values, weights) — pick one item using weights as probabilities
+// ml_softmax(values, [temperature])   — turn scores into probabilities that sum to 1
+// ml_entropy(probabilities)           — measure unpredictability of a distribution (bits)
+// ml_normalize(values)                — scale an array so it sums to 1
+//
+// For Kalman filter builtins see ml_kalman.au.
+
+// =============================================================================
+// 1. ml_markov_train + ml_markov_generate
+// =============================================================================
+//
+// Train a Markov model on a sequence of values (any numbers — MIDI notes,
+// frequencies, rhythmic values, CC values, etc.), then generate new sequences
+// that follow the same statistical patterns.
+//
+// order = how many previous values the next one depends on.
+//   order 1 → "given the last note, what comes next?"
+//   order 2 → "given the last two notes, what comes next?" (more melodic memory)
+//
+// The model uses Katz backoff: if a high-order context has no match in the
+// training data it falls back to order-1. So you can always generate, even
+// from contexts not seen in training.
+
+print("--- ml_markov_train / ml_markov_generate ---");
+print("");
+
+// C major pentatonic: C D E G A across two octaves
+let corpus = [60, 62, 64, 67, 69,  67, 64, 62, 60, 62,
+              64, 67, 69, 72, 74,  72, 69, 67, 64, 62,
+              60, 67, 64, 62, 60,  69, 67, 64, 62, 60];
+
+// --- order 1: short memory, more varied ---
+let model1 = ml_markov_train(corpus, 1);
+let seq1   = ml_markov_generate(model1, 16);
+
+print("order-1 (each note depends only on the previous):");
+let out1 = "";
+let i = 0;
+loop {
+    out1 = out1 + seq1[i];
+    i++;
+    if (i >= count(seq1)) { break; }
+    out1 = out1 + " ";
+}
+print(out1);
+
+// --- order 2: two-note memory, more phrase-like movement ---
+let model2 = ml_markov_train(corpus, 2);
+let seq2   = ml_markov_generate(model2, 16);
+
+print("order-2 (each note depends on the previous two):");
+let out2 = "";
+let j = 0;
+loop {
+    out2 = out2 + seq2[j];
+    j++;
+    if (j >= count(seq2)) { break; }
+    out2 = out2 + " ";
+}
+print(out2);
+
+// Generate with a specific starting context (must match model order)
+// Starting on [67, 69] = G then A → likely continues upward
+let seq3 = ml_markov_generate(model2, 8, [67, 69]);
+print("order-2 starting from G→A: ");
+let out3 = "";
+let k = 0;
+loop {
+    out3 = out3 + seq3[k];
+    k++;
+    if (k >= count(seq3)) { break; }
+    out3 = out3 + " ";
+}
+print(out3);
+
+// =============================================================================
+// 2. ml_markov_next — inspect the probability distribution
+// =============================================================================
+//
+// Instead of generating a full sequence, ask: given the current context,
+// what does the model think comes next, and with what probability?
+//
+// Returns an array of [value, probability] pairs, sorted by probability desc.
+// Useful for:
+//   - Choosing note transitions conditionally (e.g. only pick high-probability notes)
+//   - Displaying "suggestions" for a live player
+//   - Combining with ml_softmax or ml_weighted_choice for further shaping
+
+print("");
+print("--- ml_markov_next: probability distribution for next note ---");
+
+// What note most likely follows E(64) → G(67)?
+let dist = ml_markov_next(model2, [64, 67]);
+
+print("after E→G, likely continuations:");
+let d = 0;
+loop {
+    let pair  = dist[d];
+    let note  = pair[0];
+    let prob  = math_round(pair[1] * 100, 1);
+    print("  MIDI " + note + "  →  " + prob + "%");
+    d++;
+    if (d >= count(dist)) { break; }
+}
+
+// You can feed the top result straight into ml_weighted_choice (see section 4)
+// or filter by probability threshold before playing.
+
+// =============================================================================
+// 3. ml_weighted_choice — pick one item by weight
+// =============================================================================
+//
+// A standalone utility: given any array of values and a matching array of
+// weights, pick one value. Weights don't need to sum to 1 — they're relative.
+//
+// Musical uses:
+//   - Pick a scale degree weighted toward root and fifth
+//   - Choose a rhythm duration (quarter notes more common than triplets)
+//   - Select a sample from a pool with preference
+
+print("");
+print("--- ml_weighted_choice: biased note selection ---");
+
+// C major scale degrees with weights: root and fifth strongly favoured
+let notes   = [60, 62, 64, 65, 67, 69, 71, 72];
+let weights = [5,  1,  2,  1,  4,  1,  1,  3 ];  // C, D, E, F, G, A, B, C
+
+print("picking 12 notes (root/fifth/octave favoured):");
+let picks = "";
+let p = 0;
+loop {
+    picks = picks + ml_weighted_choice(notes, weights);
+    p++;
+    if (p >= 12) { break; }
+    picks = picks + " ";
+}
+print(picks);
+
+// Rhythm durations: 1=quarter, 0.5=eighth, 0.25=sixteenth, 2=half
+let durations = [1, 0.5, 0.25, 2];
+let dur_weights = [4, 3, 1, 2];
+print("picking 8 rhythm durations:");
+let durs = "";
+let r = 0;
+loop {
+    durs = durs + ml_weighted_choice(durations, dur_weights);
+    r++;
+    if (r >= 8) { break; }
+    durs = durs + " ";
+}
+print(durs);
+
+// =============================================================================
+// 4. ml_softmax — convert raw scores into a probability distribution
+// =============================================================================
+//
+// Softmax turns a set of arbitrary scores into probabilities that sum to 1.
+// Higher scores get higher probability, but nothing is ever zero — even
+// unlikely choices have a small chance.
+//
+// temperature controls the spread:
+//   low temperature (e.g. 0.3) → peaky: best option dominates
+//   temperature = 1.0          → balanced (default)
+//   high temperature (e.g. 3.0) → flat: all options roughly equally likely
+//
+// Musical use: score each note by how "good" it sounds in context
+// (e.g. chord tones = high score, chromatic passing = low score),
+// then use ml_softmax to get playable probabilities.
+
+print("");
+print("--- ml_softmax: score → probability, with temperature ---");
+
+// Scores for C D E F G A B — higher = more "tonal" over Cmaj chord
+let scores = [3.0, 1.0, 2.5, 0.5, 3.0, 1.5, 0.5];
+let names  = ["C", "D", "E", "F", "G", "A", "B"];
+
+let cold = ml_softmax(scores, 0.4);   // low temp: C and G dominate
+let warm = ml_softmax(scores, 1.0);   // default
+let hot  = ml_softmax(scores, 4.0);   // high temp: nearly uniform
+
+print("note | score | cool(0.4) | normal(1.0) | hot(4.0)");
+let s = 0;
+loop {
+    let name  = names[s];
+    let score = scores[s];
+    let c = math_round(cold[s] * 100, 1);
+    let w = math_round(warm[s] * 100, 1);
+    let h = math_round(hot[s]  * 100, 1);
+    print(" " + name + "   |  " + score + "  |   " + c + "%     |    " + w + "%     |   " + h + "%");
+    s++;
+    if (s >= count(scores)) { break; }
+}
+
+// After ml_softmax you can feed directly into ml_weighted_choice:
+//   let probs = ml_softmax(scores, 0.5);
+//   let next_note = ml_weighted_choice(notes, probs);
+
+// =============================================================================
+// 5. ml_entropy — measure predictability of a distribution
+// =============================================================================
+//
+// Shannon entropy (in bits): how unpredictable is this distribution?
+//
+//   entropy = 0        → completely predictable (one option has probability 1)
+//   entropy = log2(N)  → maximally random (all N options equally likely)
+//
+// Musical uses:
+//   - Track how "boring" or "chaotic" a generated melody is becoming
+//   - Use entropy to drive meta-decisions: "if entropy is low, inject randomness"
+//   - Compare two scales/modes by their transition predictability
+
+print("");
+print("--- ml_entropy: measuring predictability ---");
+
+// Completely predictable: always the same note
+let certain = ml_normalize([1, 0, 0, 0, 0]);
+print("always C (certain):    " + math_round(ml_entropy(certain), 3) + " bits");
+
+// Biased toward root/fifth (musical)
+let musical = ml_normalize([5, 1, 2, 1, 4, 1, 1, 3]);
+print("biased (musical):      " + math_round(ml_entropy(musical), 3) + " bits");
+
+// All equal (pure random)
+let uniform = ml_normalize([1, 1, 1, 1, 1, 1, 1, 1]);
+print("all equal (random):    " + math_round(ml_entropy(uniform), 3) + " bits  ← max for 8 options = " + math_round(math_log2(8), 3));
+
+// Entropy of ml_softmax output at different temperatures
+let probs_cold = ml_softmax(scores, 0.3);
+let probs_warm = ml_softmax(scores, 1.0);
+let probs_hot  = ml_softmax(scores, 5.0);
+print("softmax temp 0.3:      " + math_round(ml_entropy(probs_cold), 3) + " bits  (peaky, predictable)");
+print("softmax temp 1.0:      " + math_round(ml_entropy(probs_warm), 3) + " bits");
+print("softmax temp 5.0:      " + math_round(ml_entropy(probs_hot), 3)  + " bits  (flat, unpredictable)");
+
+// =============================================================================
+// 6. ml_normalize — scale an array to sum to 1
+// =============================================================================
+//
+// The simplest of the ml_ builtins: divides every element by the total sum.
+// Useful whenever you have raw counts or weights and need proper probabilities.
+//
+// Note: ml_weighted_choice and ml_softmax accept unnormalized weights,
+// so you only need ml_normalize when you explicitly want the 0..1 probability
+// values — e.g. to pass to ml_entropy, or to print/inspect them.
+
+print("");
+print("--- ml_normalize: counts → probabilities ---");
+
+// Raw note counts from an analysed melody
+let counts = [8, 3, 6, 1, 7, 2, 1, 4];   // how often each note appeared
+let probs  = ml_normalize(counts);
+
+print("note frequency → probability:");
+let n = 0;
+loop {
+    let pct = math_round(probs[n] * 100, 1);
+    print("  count " + counts[n] + "  →  " + pct + "%");
+    n++;
+    if (n >= count(counts)) { break; }
+}
+
+// Chain: normalize → entropy → weighted_choice
+let melody_probs = ml_normalize([8, 3, 6, 1, 7, 2, 1]);
+print("entropy of observed melody distribution: "
+    + math_round(ml_entropy(melody_probs), 3) + " bits");
+
+// =============================================================================
+// 7. Putting it together — adaptive generative loop
+// =============================================================================
+//
+// Use entropy to decide when to inject randomness into a Markov sequence.
+// If the current distribution is too predictable (low entropy), boost temperature.
+// If it's too chaotic (high entropy), lower temperature.
+//
+// This runs without SuperCollider — prints what would be played.
+
+print("");
+print("--- adaptive generation: entropy-driven temperature ---");
+
+let run_model = ml_markov_train(corpus, 2);
+let context   = [60, 62];   // start on C→D
+let entropy_target = 1.8;   // bits: aim for "musical but not boring"
+
+let step = 0;
+loop {
+    let dist2 = ml_markov_next(run_model, context);
+    if (count(dist2) == 0) {
+        context = [60, 62];   // reset if no transitions found
+        step++;
+        if (step >= 12) { break; }
+        continue;
+    }
+
+    // Extract values and raw probabilities from dist2
+    let vals = [];
+    let raw  = [];
+    let e = 0;
+    loop {
+        let pair = dist2[e];
+        vals[e]  = pair[0];
+        raw[e]   = pair[1];
+        e++;
+        if (e >= count(dist2)) { break; }
+    }
+
+    let current_entropy = ml_entropy(raw);
+
+    // Adjust temperature: low entropy → raise temp (add variety)
+    //                     high entropy → lower temp (add structure)
+    let temp = 1.0;
+    if (current_entropy < entropy_target - 0.3) { temp = 2.5; }
+    if (current_entropy > entropy_target + 0.3) { temp = 0.4; }
+
+    let shaped = ml_softmax(raw, temp);
+    let chosen = ml_weighted_choice(vals, shaped);
+
+    print("step " + step
+        + " | entropy: " + math_round(current_entropy, 2)
+        + " | temp: " + temp
+        + " | MIDI: " + chosen);
+
+    // Slide context window forward by one
+    context = [context[1], chosen];
+
+    step++;
+    if (step >= 12) { break; }
+}

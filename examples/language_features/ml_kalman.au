@@ -1,0 +1,174 @@
+// ml_kalman.au — Kalman filter builtins for smoothing, interpolation, and prediction
+//
+// Five builtins, two usage modes:
+//
+//   BATCH (offline, whole array):
+//     ml_kalman_filter(array, Q, R)          — smooth a noisy sequence
+//     ml_kalman_smooth(start, end, steps, v) — organic trajectory between two values
+//
+//   STEP-BY-STEP (online, one value at a time):
+//     ml_kalman_state(x, Q, R)               — create initial state object
+//     ml_kalman_update(state, measurement)   — feed one value, returns new state
+//     ml_kalman_predict(state, steps)        — extrapolate forward N steps
+//
+// Q = process noise: how much the true signal is allowed to drift per step.
+//     Small Q → heavy smoothing, assumes slow-moving signal.
+//     Large Q → light smoothing, follows measurements more closely.
+//
+// R = measurement noise: how noisy your input data is.
+//     Small R → trust the measurements.
+//     Large R → distrust measurements, lean on the model.
+//
+// The Q/R ratio is what matters. Q=0.1, R=1.0 gives a lot of smoothing.
+// Q=1.0, R=0.1 gives almost no smoothing.
+
+// =============================================================================
+// 1. ml_kalman_filter — smooth a noisy array (batch)
+// =============================================================================
+//
+// Simulates a jittery control signal — e.g. a sensor reading or raw random LFO —
+// and smooths it. Compare raw vs filtered output.
+
+print("--- ml_kalman_filter: smooth a noisy cutoff sequence ---");
+
+let noisy = [820, 1400, 600, 1900, 750, 1600, 500, 2100, 900, 1200];
+
+// Q=20 (signal can drift a fair bit), R=400 (measurements are quite noisy)
+let smooth = ml_kalman_filter(noisy, 20, 400);
+
+let i = 0;
+loop {
+    let raw = math_round(noisy[i], 0);
+    let flt = math_round(smooth[i], 0);
+    print("raw: " + raw + "  filtered: " + flt);
+    i++;
+    if (i >= count(noisy)) { break; }
+}
+
+// Try different Q/R ratios:
+//   ml_kalman_filter(noisy, 1, 400)   — very heavy smoothing (trusts model)
+//   ml_kalman_filter(noisy, 400, 1)   — almost no smoothing (trusts measurements)
+
+// =============================================================================
+// 2. ml_kalman_smooth — organic trajectory between two values (Brownian bridge)
+// =============================================================================
+//
+// Generate a parameter arc from one value to another over N steps.
+// volatility=0 is a straight lerp. Higher volatility = more organic wandering,
+// but the path always starts and ends exactly where you specify.
+//
+// Use this to morph filter cutoff, pan, reverb depth, or pitch over a phrase.
+
+print("");
+print("--- ml_kalman_smooth: filter cutoff arc over 8 steps ---");
+
+// Arc from 200 Hz to 6000 Hz over 8 steps, medium wandering
+let arc = ml_kalman_smooth(200, 6000, 8, 400);
+
+let j = 0;
+loop {
+    print("step " + j + ": " + math_round(arc[j], 1) + " Hz");
+    j++;
+    if (j >= count(arc)) { break; }
+}
+
+print("");
+print("--- compare: no volatility (lerp) vs high volatility ---");
+
+let lerp_arc  = ml_kalman_smooth(0, 127, 9, 0);    // straight line
+let wild_arc  = ml_kalman_smooth(0, 127, 9, 30);   // organic
+
+let k = 0;
+loop {
+    let l = math_round(lerp_arc[k], 1);
+    let w = math_round(wild_arc[k], 1);
+    print("lerp: " + l + "   organic: " + w);
+    k++;
+    if (k >= count(lerp_arc)) { break; }
+}
+
+// =============================================================================
+// 3. ml_kalman_state / ml_kalman_update / ml_kalman_predict — live tracking
+// =============================================================================
+//
+// For use inside a sequencer loop: feed one measurement per tick,
+// read the current filtered value, and look ahead N steps.
+//
+// state[0] = x      — current filtered estimate (the value you use)
+// state[1] = P      — current uncertainty (lower = more confident)
+// state[2] = Q      — process noise (set at creation)
+// state[3] = R      — measurement noise (set at creation)
+// state[4] = x_prev — previous estimate (used internally for prediction)
+
+print("");
+print("--- ml_kalman_state/update/predict: tracking a drifting value ---");
+
+// Simulate a slowly rising signal with noise: base + drift + jitter
+let base  = 300.0;
+let drift = 80.0;   // total rise over 10 steps
+
+// Create state: initial value = 300, Q=5 (slow drift), R=200 (noisy readings)
+let state = ml_kalman_state(300, 5, 200);
+
+let step = 0;
+loop {
+    // Simulated noisy measurement: linear rise + random jitter
+    let true_val  = base + drift * (step / 9);
+    let jitter    = (rand() - 0.5) * 300;
+    let measured  = true_val + jitter;
+
+    state = ml_kalman_update(state, measured);
+
+    let x      = math_round(state[0], 1);    // current filtered value
+    let unc    = math_round(state[1], 1);    // uncertainty
+    let future = ml_kalman_predict(state, 3); // next 3 predicted values
+
+    let p1 = math_round(future[0], 1);
+    let p2 = math_round(future[1], 1);
+    let p3 = math_round(future[2], 1);
+
+    print("step " + step + " | meas: " + math_round(measured, 1)
+        + " | filtered: " + x
+        + " | uncertainty: " + unc
+        + " | predict+1..3: [" + p1 + ", " + p2 + ", " + p3 + "]");
+
+    step++;
+    if (step >= 10) { break; }
+}
+
+// =============================================================================
+// 4. Musical example — pre-schedule automation using prediction
+// =============================================================================
+//
+// A common sequencing pattern: use ml_kalman_update to track a slowly evolving
+// parameter (e.g. from a random walk or external input), then use
+// ml_kalman_predict to look ahead and schedule synth changes before they arrive.
+//
+// This sketch runs without SuperCollider — it just prints what would be sent.
+
+print("");
+print("--- musical: track evolving reverb depth, pre-schedule 2 steps ahead ---");
+
+// Reverb depth random walk: each step nudges by a small random amount
+let reverb = 0.2;
+let rev_state = ml_kalman_state(0.2, 0.002, 0.05);
+
+let beat = 0;
+loop {
+    // Slowly evolving reverb depth: random walk clamped to [0, 1]
+    reverb = math_clamp(reverb + (rand() - 0.5) * 0.08, 0.0, 1.0);
+
+    rev_state = ml_kalman_update(rev_state, reverb);
+
+    let current = math_round(rev_state[0], 3);
+    let ahead   = ml_kalman_predict(rev_state, 2);
+    let in2     = math_round(ahead[1], 3);   // value 2 beats from now
+
+    print("beat " + beat + " | reverb now: " + current + " | predicted in 2 beats: " + in2);
+    // In a real sequencer:
+    //   set("my_synth", ["reverb" => current]);
+    //   — and schedule ahead using in2 for smooth transitions
+
+    beat++;
+    if (beat >= 8) { break; }
+}

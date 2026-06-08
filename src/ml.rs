@@ -594,6 +594,338 @@ pub fn builtin_ml_entropy(args: &[Value]) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Kalman utilities
+// ---------------------------------------------------------------------------
+
+/// Box-Muller transform: two uniform [0,1] samples → one standard normal N(0,1).
+///
+/// Why Box-Muller? We only have `random_f64()` (uniform). To get Gaussian noise
+/// for the Brownian bridge we need N(0,1). Box-Muller is the classic two-liner:
+///
+///   if U1, U2 ~ Uniform(0,1) then
+///   Z = sqrt(-2 ln U1) * cos(2π U2)  ~  N(0,1)
+///
+/// We clamp U1 away from 0 to avoid ln(0) = -∞.
+fn randn() -> f64 {
+    let u1 = crate::builtins::random_f64().max(1e-15);
+    let u2 = crate::builtins::random_f64();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_filter(array, Q, R)
+//
+// 1-D Kalman filter (constant model) for smoothing a noisy sequence.
+//
+// At each step we track:
+//   x  — best estimate of the true value
+//   P  — our uncertainty about x (error covariance)
+//
+// Each step is two phases:
+//   PREDICT: uncertainty grows by Q (the signal can drift a little)
+//     x_pred = x
+//     P_pred = P + Q
+//
+//   UPDATE: blend prediction with the new noisy measurement z
+//     K = P_pred / (P_pred + R)   ← Kalman gain, 0..1
+//     x = x_pred + K * (z - x_pred)
+//     P = (1 - K) * P_pred
+//
+// K is the key: high Q/R → trust measurements, low Q/R → trust model.
+//
+// Q (process noise) — how much the true signal can change per step.
+//   Small Q → assume slow-moving signal, heavy smoothing.
+//   Large Q → assume fast-moving signal, follows measurements more closely.
+//
+// R (measurement noise) — how noisy your input data is.
+//   Small R → trust the measurements.
+//   Large R → distrust measurements, rely on prediction.
+//
+// Musical use: smooth a jittery LFO, sensor stream, or random parameter array.
+//   let smooth = ml_kalman_filter(raw, 0.1, 1.0);
+// ---------------------------------------------------------------------------
+
+pub fn builtin_ml_kalman_filter(args: &[Value]) -> Result<Value> {
+    require_at_least("ml_kalman_filter", args, 3)?;
+    let arr = require_array("ml_kalman_filter", &args[0])?;
+    let q = require_number("ml_kalman_filter", &args[1])?;
+    let r = require_number("ml_kalman_filter", &args[2])?;
+
+    if q < 0.0 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_filter() Q (process noise) must be >= 0".to_string(),
+        });
+    }
+    if r <= 0.0 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_filter() R (measurement noise) must be > 0".to_string(),
+        });
+    }
+
+    let measurements = array_to_f64_vec("ml_kalman_filter", &arr)?;
+    if measurements.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_filter() array cannot be empty".to_string(),
+        });
+    }
+
+    // Initialise: first measurement is our best guess, uncertainty = R.
+    let mut x = measurements[0];
+    let mut p = r;
+
+    let mut result = AudionArray::new();
+    result.push_auto(Value::Number(x));
+
+    for &z in &measurements[1..] {
+        // --- PREDICT ---
+        // x doesn't change (constant model), but uncertainty grows.
+        let p_pred = p + q;
+
+        // --- UPDATE ---
+        // K: how much to trust the new measurement vs our prediction.
+        // If p_pred is large (we're uncertain) → K → 1 → lean on measurement.
+        // If r is large (measurement is noisy) → K → 0 → lean on prediction.
+        let k = p_pred / (p_pred + r);
+        x += k * (z - x);          // nudge estimate toward measurement
+        p = (1.0 - k) * p_pred;    // our uncertainty shrinks after each update
+
+        result.push_auto(Value::Number(x));
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_smooth(start, end, steps, [volatility])
+//
+// Generate an organic trajectory from `start` to `end` over `steps` points.
+//
+// This is a BROWNIAN BRIDGE — mathematically equivalent to sampling from the
+// RTS (Rauch-Tung-Striebel) Kalman smoother posterior with two anchor points.
+//
+// The idea:
+//   1. Generate a random walk W where W[0] = 0, each step += randn() * volatility
+//   2. Subtract the linear drift so the walk starts AND ends at 0:
+//        bridge[t] = W[t] - (t/N) * W[N]
+//   3. Add it on top of the linear interpolation between start and end:
+//        x[t] = lerp(start, end, t/N) + bridge[t]
+//
+// Step 2 is the key insight: we "de-trend" the random walk so its endpoints
+// are pinned, while everything in between wanders organically.
+//
+// volatility = 0  → perfect straight line (lerp)
+// volatility small → slight organic curve
+// volatility large → wild excursions, still hits start and end exactly
+//
+// Musical use: morph a filter cutoff, generate a pitch contour, evolve
+// dynamics over a phrase.
+//   let arc = ml_kalman_smooth(200, 8000, 16, 300);
+// ---------------------------------------------------------------------------
+
+pub fn builtin_ml_kalman_smooth(args: &[Value]) -> Result<Value> {
+    require_at_least("ml_kalman_smooth", args, 3)?;
+    let start      = require_number("ml_kalman_smooth", &args[0])?;
+    let end        = require_number("ml_kalman_smooth", &args[1])?;
+    let steps      = require_number("ml_kalman_smooth", &args[2])? as usize;
+    let volatility = if args.len() >= 4 {
+        require_number("ml_kalman_smooth", &args[3])?
+    } else {
+        0.0
+    };
+
+    if steps < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_smooth() steps must be >= 2".to_string(),
+        });
+    }
+    if volatility < 0.0 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_smooth() volatility must be >= 0".to_string(),
+        });
+    }
+
+    let n = steps - 1; // number of intervals (steps - 1 gaps between steps points)
+
+    // Build the random walk W: cumulative sum of Gaussian steps.
+    // W[0] = 0 by construction.
+    let mut w = vec![0.0f64; steps];
+    for i in 1..steps {
+        w[i] = w[i - 1] + randn() * volatility;
+    }
+
+    // w[n] is where the walk ended up. We need to subtract a linear ramp
+    // so that w[0] stays 0 and w[n] becomes 0 — that's the bridge correction.
+    let w_end = w[n];
+
+    let mut result = AudionArray::new();
+    for t in 0..steps {
+        let t_frac = t as f64 / n as f64;
+        // Linear interpolation between start and end:
+        let lerp = start + (end - start) * t_frac;
+        // Brownian bridge: remove drift so both endpoints are pinned:
+        let bridge = w[t] - t_frac * w_end;
+        result.push_auto(Value::Number(lerp + bridge));
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_state / ml_kalman_update / ml_kalman_predict
+//
+// Step-by-step Kalman filter for live/real-time use in sequencer loops.
+//
+// State is an Audion array of 5 numbers: [x, P, Q, R, x_prev]
+//   x      — current best estimate of the true value
+//   P      — current uncertainty (error covariance)
+//   Q      — process noise (baked in so you don't repeat it each call)
+//   R      — measurement noise
+//   x_prev — estimate from previous step (used by ml_kalman_predict)
+//
+// Usage:
+//   let state = ml_kalman_state(400, 0.05, 1.0);
+//   loop {
+//       state = ml_kalman_update(state, noisy_reading);
+//       let x      = state[0];            // current filtered value
+//       let future = ml_kalman_predict(state, 4); // next 4 predicted values
+//   }
+// ---------------------------------------------------------------------------
+
+/// State array indices — named constants for clarity.
+const KS_X:     i64 = 0;  // current estimate
+const KS_P:     i64 = 1;  // uncertainty
+const KS_Q:     i64 = 2;  // process noise (stored in state)
+const KS_R:     i64 = 3;  // measurement noise (stored in state)
+const KS_XPREV: i64 = 4;  // previous estimate (for velocity calculation)
+
+fn kalman_state_get(fn_name: &str, arr: &AudionArray, idx: i64) -> Result<f64> {
+    array_get_num(arr, idx).ok_or_else(|| AudionError::RuntimeError {
+        msg: format!("{}() invalid state array (missing index {})", fn_name, idx),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_state(initial_x, Q, R)
+//
+// Create a fresh Kalman state. Initial uncertainty P is set to R (measurement
+// noise) — meaning "we're about as uncertain as one noisy reading".
+// ---------------------------------------------------------------------------
+
+pub fn builtin_ml_kalman_state(args: &[Value]) -> Result<Value> {
+    require_at_least("ml_kalman_state", args, 3)?;
+    let x = require_number("ml_kalman_state", &args[0])?;
+    let q = require_number("ml_kalman_state", &args[1])?;
+    let r = require_number("ml_kalman_state", &args[2])?;
+
+    if q < 0.0 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_state() Q (process noise) must be >= 0".to_string(),
+        });
+    }
+    if r <= 0.0 {
+        return Err(AudionError::RuntimeError {
+            msg: "ml_kalman_state() R (measurement noise) must be > 0".to_string(),
+        });
+    }
+
+    // [x, P=R, Q, R, x_prev=x]
+    // P starts at R: "our initial uncertainty equals the noise of one measurement"
+    // x_prev starts at x: velocity = 0 until we have a second reading
+    let mut state = AudionArray::new();
+    state.push_auto(Value::Number(x));  // KS_X
+    state.push_auto(Value::Number(r));  // KS_P  (start uncertain = 1 measurement's worth)
+    state.push_auto(Value::Number(q));  // KS_Q
+    state.push_auto(Value::Number(r));  // KS_R
+    state.push_auto(Value::Number(x));  // KS_XPREV
+
+    Ok(Value::Array(Arc::new(Mutex::new(state))))
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_update(state, measurement)
+//
+// Feed one noisy measurement into the filter. Returns a new state array.
+//
+// Rust note: we take the state by value (the Arc clone is cheap — it's just
+// a reference count bump), extract the numbers, compute, and return a fresh
+// array. Audion state is immutable-by-replacement, matching the language's
+// assignment semantics.
+// ---------------------------------------------------------------------------
+
+pub fn builtin_ml_kalman_update(args: &[Value]) -> Result<Value> {
+    require_at_least("ml_kalman_update", args, 2)?;
+    let state_arc = require_array("ml_kalman_update", &args[0])?;
+    let z         = require_number("ml_kalman_update", &args[1])?;
+
+    let state_locked = state_arc.lock().unwrap();
+    let x = kalman_state_get("ml_kalman_update", &state_locked, KS_X)?;
+    let p = kalman_state_get("ml_kalman_update", &state_locked, KS_P)?;
+    let q = kalman_state_get("ml_kalman_update", &state_locked, KS_Q)?;
+    let r = kalman_state_get("ml_kalman_update", &state_locked, KS_R)?;
+    drop(state_locked);
+
+    // PREDICT: uncertainty grows by Q (signal may have drifted since last step)
+    let p_pred = p + q;
+
+    // UPDATE: Kalman gain — how much to trust the new measurement
+    //   K close to 1 → lean on measurement (we were uncertain, or measurement is clean)
+    //   K close to 0 → lean on prediction  (we were confident, or measurement is noisy)
+    let k     = p_pred / (p_pred + r);
+    let x_new = x + k * (z - x);       // nudge estimate toward measurement
+    let p_new = (1.0 - k) * p_pred;    // uncertainty shrinks after each update
+
+    // Build new state; old x becomes x_prev for velocity tracking
+    let mut new_state = AudionArray::new();
+    new_state.push_auto(Value::Number(x_new)); // KS_X
+    new_state.push_auto(Value::Number(p_new)); // KS_P
+    new_state.push_auto(Value::Number(q));     // KS_Q (unchanged)
+    new_state.push_auto(Value::Number(r));     // KS_R (unchanged)
+    new_state.push_auto(Value::Number(x));     // KS_XPREV = old x
+
+    Ok(Value::Array(Arc::new(Mutex::new(new_state))))
+}
+
+// ---------------------------------------------------------------------------
+// ml_kalman_predict(state, steps)
+//
+// Extrapolate the current trajectory forward `steps` steps.
+// Returns an array of predicted values (not including the current estimate).
+//
+// Velocity is estimated as (x - x_prev) — the trend of the last step.
+// This is a first-order extrapolation: simple, stable, and good for short
+// horizons (4–16 steps). For longer horizons the uncertainty grows fast anyway.
+//
+// Rust note: `t as f64` casts the usize loop index to f64 for multiplication.
+// Rust requires explicit casts between numeric types — no silent widening.
+// ---------------------------------------------------------------------------
+
+pub fn builtin_ml_kalman_predict(args: &[Value]) -> Result<Value> {
+    require_at_least("ml_kalman_predict", args, 2)?;
+    let state_arc = require_array("ml_kalman_predict", &args[0])?;
+    let steps     = require_number("ml_kalman_predict", &args[1])? as usize;
+
+    if steps == 0 {
+        return Ok(Value::Array(Arc::new(Mutex::new(AudionArray::new()))));
+    }
+
+    let state_locked = state_arc.lock().unwrap();
+    let x      = kalman_state_get("ml_kalman_predict", &state_locked, KS_X)?;
+    let x_prev = kalman_state_get("ml_kalman_predict", &state_locked, KS_XPREV)?;
+    drop(state_locked);
+
+    // Estimated velocity: how much did x change last step?
+    // If this is the first update x == x_prev, so velocity = 0 (flat prediction).
+    let velocity = x - x_prev;
+
+    let mut result = AudionArray::new();
+    for t in 1..=steps {
+        result.push_auto(Value::Number(x + velocity * t as f64));
+    }
+
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
+}
+
+// ---------------------------------------------------------------------------
 // ml_normalize(values)
 //
 // Normalize an array so it sums to 1.

@@ -296,6 +296,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "assert",
     "ml_markov_train", "ml_markov_generate", "ml_markov_next",
     "ml_weighted_choice", "ml_softmax", "ml_entropy", "ml_normalize",
+    "ml_kalman_filter", "ml_kalman_smooth",
+    "ml_kalman_state", "ml_kalman_update", "ml_kalman_predict",
 ];
 
 /// Resolve a potentially relative path against the source file's base directory.
@@ -572,6 +574,11 @@ pub fn call_builtin(
         "ml_softmax" => crate::ml::builtin_ml_softmax(args),
         "ml_entropy" => crate::ml::builtin_ml_entropy(args),
         "ml_normalize" => crate::ml::builtin_ml_normalize(args),
+        "ml_kalman_filter" => crate::ml::builtin_ml_kalman_filter(args),
+        "ml_kalman_smooth" => crate::ml::builtin_ml_kalman_smooth(args),
+        "ml_kalman_state"  => crate::ml::builtin_ml_kalman_state(args),
+        "ml_kalman_update" => crate::ml::builtin_ml_kalman_update(args),
+        "ml_kalman_predict"=> crate::ml::builtin_ml_kalman_predict(args),
         _ => Err(AudionError::RuntimeError {
             msg: format!("unknown builtin '{}'", name),
         }),

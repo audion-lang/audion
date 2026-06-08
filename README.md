@@ -11,6 +11,9 @@ Adion will let you syncronize and sequence any  synthesizers, DAWs, lighting rig
 
 Audion is a capable scripting language for the stuff that doesn't need introduction: Database Queries, network requests, data analysis. It's small enough to run on some embedded systems like the Raspberry PI.
 
+## Demos
+
+- Listen to audion demos on [Soundcloud](https://soundcloud.com/audion-75565851)
 
 ## Download
 

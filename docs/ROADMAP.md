@@ -5,6 +5,10 @@ This is a list of features that will be added, the order is not definite and thi
 ### error handling
 has been improved but we may want to *catch* errors in situations like API calls etc.
 
+### Embedded Subset
+- export a subset of audion to C for defined targets: teensy/daisy/others
+- define workflow: prototype in audion, export audion subset to C, compile to target 
+
 ### binding to libusb
 rusb - Rust binding to libusb, which works across multiple platforms
 

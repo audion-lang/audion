@@ -192,6 +192,11 @@ pub enum Stmt {
         incr: Option<Expr>,
         body: Box<Stmt>,
     },
+    ForIn {
+        var: String,
+        iter: Expr,
+        body: Box<Stmt>,
+    },
     Return(Option<Expr>),
     Break,
     Continue,

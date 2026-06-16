@@ -160,6 +160,21 @@ impl Parser {
         self.advance(); // consume 'for'
         self.expect(TokenKind::LParen)?;
 
+        // for (ident in expr) { ... }
+        let is_for_in = matches!(self.peek_kind_at(0), TokenKind::Ident(_))
+            && self.peek_kind_at(1) == TokenKind::Ident("in".to_string());
+        if is_for_in {
+            let var = match self.advance().kind.clone() {
+                TokenKind::Ident(name) => name,
+                _ => unreachable!(),
+            };
+            self.advance(); // consume 'in'
+            let iter = self.parse_expr()?;
+            self.expect(TokenKind::RParen)?;
+            let body = Box::new(self.parse_block_or_stmt()?);
+            return Ok(Stmt::ForIn { var, iter, body });
+        }
+
         // init
         let init = if self.match_token(TokenKind::Semicolon) {
             None

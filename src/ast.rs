@@ -194,7 +194,7 @@ pub enum Stmt {
     },
     ForIn {
         var: String,
-        iter: Expr,
+        iter: Box<Expr>,
         body: Box<Stmt>,
     },
     Return(Option<Expr>),

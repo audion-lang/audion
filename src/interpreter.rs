@@ -386,34 +386,7 @@ impl Interpreter {
                 Ok(ControlFlow::None)
             }
             Stmt::ForIn { var, iter, body } => {
-                let arr = match self.eval_expr(iter)? {
-                    Value::Array(a) => a,
-                    other => return Err(AudionError::RuntimeError {
-                        msg: format!("for-in requires an array, got {}", other.type_name()),
-                    }),
-                };
-                let items: Vec<Value> = arr.lock().unwrap().entries().iter().map(|(_, v): &(Value, Value)| v.clone()).collect();
-                let parent = self.env.clone();
-                let child = Arc::new(Mutex::new(Environment::new_child(parent.clone())));
-                self.env = child;
-                'forin: for item in items {
-                    self.env.lock().unwrap().define(var.clone(), item);
-                    match self.exec_stmt(body)? {
-                        ControlFlow::Break => break 'forin,
-                        ControlFlow::Continue => continue 'forin,
-                        ControlFlow::Return(v) => {
-                            self.env = parent;
-                            return Ok(ControlFlow::Return(v));
-                        }
-                        tc @ ControlFlow::TailCall { .. } => {
-                            self.env = parent;
-                            return Ok(tc);
-                        }
-                        ControlFlow::None => {}
-                    }
-                }
-                self.env = parent;
-                Ok(ControlFlow::None)
+                self.exec_for_in(var, &iter, body)
             }
             Stmt::Return(expr) => {
                 match expr {
@@ -459,7 +432,7 @@ impl Interpreter {
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
-                    body: *body.clone(),
+                    body: body.clone(),
                     closure: self.env.clone(),
                     file: self.current_file.clone(),
                 };
@@ -756,6 +729,32 @@ impl Interpreter {
         Ok(current)
     }
 
+    fn exec_for_in(&mut self, var: &str, iter: &Expr, body: &Stmt) -> Result<ControlFlow> {
+        let arr = match self.eval_expr(iter)? {
+            Value::Array(a) => a,
+            other => return Err(AudionError::RuntimeError {
+                msg: format!("for-in requires an array, got {}", other.type_name()),
+            }),
+        };
+        let items: Vec<Value> = arr.lock().unwrap().entries().iter().map(|(_, v): &(Value, Value)| v.clone()).collect();
+        let parent = self.env.clone();
+        let child = Arc::new(Mutex::new(Environment::new_child(parent.clone())));
+        let old_env = std::mem::replace(&mut self.env, child);
+        'forin: for item in items {
+            self.env.lock().unwrap().define(var.to_string(), item);
+            match self.exec_stmt(body) {
+                Err(e) => { self.env = old_env; return Err(e); }
+                Ok(ControlFlow::Break) => break 'forin,
+                Ok(ControlFlow::Continue) => continue 'forin,
+                Ok(ControlFlow::Return(v)) => { self.env = old_env; return Ok(ControlFlow::Return(v)); }
+                Ok(tc @ ControlFlow::TailCall { .. }) => { self.env = old_env; return Ok(tc); }
+                Ok(ControlFlow::None) => {}
+            }
+        }
+        self.env = old_env;
+        Ok(ControlFlow::None)
+    }
+
     fn exec_block(&mut self, stmts: &[Stmt]) -> Result<ControlFlow> {
         for stmt in stmts {
             let flow = self.exec_stmt(stmt)?;
@@ -1040,7 +1039,7 @@ impl Interpreter {
             Expr::FnExpr { params, body } => Ok(Value::Function {
                 name: "<anonymous>".to_string(),
                 params: params.clone(),
-                body: *body.clone(),
+                body: body.clone(),
                 closure: self.env.clone(),
                 file: self.current_file.clone(),
             }),

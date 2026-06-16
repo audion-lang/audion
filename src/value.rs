@@ -235,7 +235,7 @@ pub enum Value {
     Function {
         name: String,
         params: Vec<Param>,
-        body: Stmt,
+        body: Box<Stmt>,
         closure: Arc<Mutex<Environment>>,
         file: String,
     },
@@ -331,7 +331,7 @@ impl Value {
                             Value::Function {
                                 name: fn_name.clone(),
                                 params: params.clone(),
-                                body: body.clone(),
+                                body: Box::new(*body.clone()),
                                 closure: new_closure,
                                 file: file.clone(),
                             },

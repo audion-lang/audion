@@ -69,6 +69,61 @@ fn test_for_loop() {
 }
 
 #[test]
+fn test_for_in_basic() {
+    // sum values in an array literal
+    assert_eq!(
+        eval("let sum = 0; for (x in [10, 20, 30]) { sum += x; } sum;"),
+        Value::Number(60.0)
+    );
+}
+
+#[test]
+fn test_for_in_break() {
+    // stop after hitting 20
+    assert_eq!(
+        eval("let sum = 0; for (x in [10, 20, 30]) { if (x == 20) { break; } sum += x; } sum;"),
+        Value::Number(10.0)
+    );
+}
+
+#[test]
+fn test_for_in_continue() {
+    // skip 20
+    assert_eq!(
+        eval("let sum = 0; for (x in [10, 20, 30]) { if (x == 20) { continue; } sum += x; } sum;"),
+        Value::Number(40.0)
+    );
+}
+
+#[test]
+fn test_for_in_nested() {
+    // nested for-in: build sum of products
+    assert_eq!(
+        eval("let sum = 0; for (a in [1, 2]) { for (b in [3, 4]) { sum += a * b; } } sum;"),
+        Value::Number(21.0) // 1*3 + 1*4 + 2*3 + 2*4 = 3+4+6+8
+    );
+}
+
+#[test]
+fn test_for_in_string_values() {
+    // iterate an array of strings, count elements
+    assert_eq!(
+        eval(r#"let n = 0; for (s in ["a", "bb", "ccc"]) { n += str_length(s); } n;"#),
+        Value::Number(6.0)
+    );
+}
+
+#[test]
+fn test_for_in_non_array_error() {
+    // passing a non-array should produce an error value, not a panic
+    let result = std::panic::catch_unwind(|| {
+        eval("for (x in 42) { x; }");
+    });
+    // interpreter returns an error — eval() panics on Err, so catch_unwind fires
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_first_class_functions() {
     assert_eq!(
         eval("let f = fn(x) { return x * 2; }; f(21);"),

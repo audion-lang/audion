@@ -7,18 +7,13 @@ has been improved but we may want to *catch* errors in situations like API calls
 
 ### Embedded Subset
 - export a subset of audion to C for defined targets: teensy/daisy/others
-- define workflow: prototype in audion, export audion subset to C, compile to target 
+- define workflow: prototype in audion, export audion subset to C, compile to target
 
 ### binding to libusb
 rusb - Rust binding to libusb, which works across multiple platforms
 
 ### more array functions
 sorting, reducing, mapping
-
-### for a in array
-the c with counter is cumbersome to write some of the time, and sometimes we don't need the counter
-no looping over objects/functions, should be an error
-syntax `for a in iterable` not foreach keyword, avoid many keywords in the language
 
 ### yields in generators
 be able to pause generation, lazy evaluation

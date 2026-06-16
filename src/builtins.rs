@@ -219,6 +219,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "midi_read", "midi_write",
     "osc_config", "osc_send", "osc_listen", "osc_recv", "osc_close",
     "array_push", "array_pop",
+    "array_shuffle",
     "array_cycle", "array_rotate", "array_chunk",
     "array_next", "array_prev", "array_current",
     "array_end", "array_beginning", "array_key",
@@ -403,6 +404,7 @@ pub fn call_builtin(
         "osc_close" => builtin_osc_close(args, osc_protocol),
         "array_push" => builtin_push(args),
         "array_pop" => builtin_pop(args),
+        "array_shuffle" => builtin_array_shuffle(args),
         "array_cycle" | "array_rotate" => builtin_array_cycle(args),
         "array_chunk" => builtin_array_chunk(args),
         "array_next" => builtin_array_next(args),
@@ -784,6 +786,32 @@ fn builtin_pop(args: &[Value]) -> Result<Value> {
         Some((_, v)) => Ok(v),
         None => Ok(Value::Nil),
     }
+}
+
+fn builtin_array_shuffle(args: &[Value]) -> Result<Value> {
+    if args.is_empty() {
+        return Err(AudionError::RuntimeError {
+            msg: "array_shuffle() requires an array argument".to_string(),
+        });
+    }
+    let arr = require_array("array_shuffle", &args[0])?;
+    let guard = arr.lock().unwrap();
+    let keys: Vec<Value> = guard.entries().iter().map(|(k, _)| k.clone()).collect();
+    let mut values: Vec<Value> = guard.entries().iter().map(|(_, v)| v.clone()).collect();
+    drop(guard);
+
+    // Fisher-Yates shuffle using the existing random source
+    let n = values.len();
+    for i in (1..n).rev() {
+        let j = (random_f64() * (i + 1) as f64) as usize;
+        values.swap(i, j);
+    }
+
+    let mut out = AudionArray::new();
+    for (k, v) in keys.into_iter().zip(values) {
+        out.set(k, v);
+    }
+    Ok(Value::Array(Arc::new(Mutex::new(out))))
 }
 
 fn builtin_array_cycle(args: &[Value]) -> Result<Value> {

@@ -1204,6 +1204,38 @@ fn test_array_rand_deterministic_with_seed() {
 }
 
 #[test]
+fn test_array_shuffle_same_length() {
+    // shuffled array has the same number of elements
+    let result = eval("seed(42); let a = [1,2,3,4,5]; let b = array_shuffle(a); count(b);");
+    assert_eq!(result, Value::Number(5.0));
+}
+
+#[test]
+fn test_array_shuffle_same_sum() {
+    // all values are still present (sum is invariant)
+    let result = eval(
+        "seed(7); let a = [10,20,30,40]; let b = array_shuffle(a); \
+         let s = 0; for (x in b) { s += x; } s;"
+    );
+    assert_eq!(result, Value::Number(100.0));
+}
+
+#[test]
+fn test_array_shuffle_deterministic_with_seed() {
+    // same seed → same shuffle order
+    let a = eval("seed(99); let arr = [1,2,3,4,5]; array_shuffle(arr);");
+    let b = eval("seed(99); let arr = [1,2,3,4,5]; array_shuffle(arr);");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn test_array_shuffle_does_not_mutate_original() {
+    // original array is unchanged
+    let result = eval("let a = [1,2,3]; array_shuffle(a); a[0];");
+    assert_eq!(result, Value::Number(1.0));
+}
+
+#[test]
 fn test_seed_different_seeds_differ() {
     let a = eval("seed(1); rand();");
     let b = eval("seed(2); rand();");

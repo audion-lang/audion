@@ -169,7 +169,7 @@ impl Parser {
                 _ => unreachable!(),
             };
             self.advance(); // consume 'in'
-            let iter = self.parse_expr()?;
+            let iter = Box::new(self.parse_expr()?);
             self.expect(TokenKind::RParen)?;
             let body = Box::new(self.parse_block_or_stmt()?);
             return Ok(Stmt::ForIn { var, iter, body });

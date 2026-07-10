@@ -36,48 +36,51 @@ Run this example with `./audion run examples/readme.au`.
 ```c
 bpm(128);
 
+// make a simple instrument
 define tom(freq, amp, gate) {
     let sig = sine(freq) * env(gate, 0.01, 0, 0.45) * amp;
     out(0, sig);
     out(1, sig);
 }
 
-fn main() {
-    thread keys {
-        seed("seed randomness");
-        scale = [60, 64, 67, 71, 72];
-        pauses = array_seq_euclidean(5, 8);
-        loop {
-            note = array_rand(scale);
-            tuned_note = mtof(note);
-            synth("tom", freq: tuned_note);
-            if (array_next(pauses)) {
-                wait(0.5);
-            } else {
-                wait(0.25);
-            }
+// for deterministic randomness in a context like functions or threads:
+// seed("some string");
+
+scale = [60, 64, 67, 71, 72];
+pauses = array_seq_euclidean(5, 8);
+
+thread keys {
+    loop {
+        synth("tom", freq: mtof(array_rand(scale)), amp: 0.1);
+        if (array_next(pauses)) {
+            wait(0.5);
+        } else {
+            wait(0.25);
         }
     }
+}
 
-    thread bass_with_strobe {
-        loop_counter = 0;
-        bassline = [160, 190];
-        bass_freq = bassline[0];
-        loop {
-            osc_send("/light/strobe", rand(0.2, 0.4));
-            synth("tom", freq: bass_freq);
-            wait(1);
-            loop_counter += 1;
-            if (loop_counter % 32 == 0) {
-                osc_send("/light/strobe", rand(0.6, 0.8));
-                bass_freq = array_next(bassline);
-            }
+wait(8);
+
+loop_counter = 0;
+bassline = [160, 190];
+bass_freq = bassline[0];
+
+thread bass_with_light_strobe {
+    loop {
+        osc_send("/light/strobe", rand(0.2, 0.4));
+        synth("tom", freq: bass_freq, amp: 0.6);
+        wait(1);
+        loop_counter += 1;
+        if (loop_counter % 32 == 0) {
+            osc_send("/light/strobe", rand(0.6, 0.8));
+            bass_freq = array_next(bassline);
         }
     }
 }
 ```
 
-Listen to the [result here](assets/readme.mp3)
+Listen to the [result here](https://soundcloud.com/audion-75565851/readme-md)
 
 ---
 

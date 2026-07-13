@@ -103,7 +103,7 @@ Audion is currently in a beta phase, breaking changes are unlikely at this point
 
 ## Programming in the AI-Everything Age.
 
-Audion has a small, consistent syntax with clear naming conventions and no hidden magic. AI tools can learn to write Audion fluently using a tiny help file, `./audion spec` creates the docs/AGENTS.md file. Since the language is concise, you can describe complex audiovisual behavior in a few lines of natural language and get working code back. Use AI as a collaborator: describe the piece you want to build, iterate on the code together, and perform it live.
+Audion has a small, consistent syntax with clear naming conventions and no hidden magic. Point your AI tools at the source code and examples. Use AI as a collaborator: describe the piece you want to build, iterate on the code together, and perform it live.
 
 I recommend you try write it yourself. The language is designed to stay out of your way and be enjoyable to use and hack with.
 

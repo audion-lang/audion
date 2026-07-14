@@ -854,6 +854,12 @@ impl Interpreter {
                             .unwrap_or(8);
                         WidgetKind::Array(n)
                     }
+                    "array_numbers" => {
+                        let n = args.get(1)
+                            .and_then(|v| if let Value::Number(n) = v { Some(*n as usize) } else { None })
+                            .unwrap_or(4);
+                        WidgetKind::ArrayNumbers(n)
+                    }
                     _ => return Err(AudionError::RuntimeError {
                         msg: format!("unknown widget type: ui.widgets.{}", method),
                     }),
@@ -861,7 +867,7 @@ impl Interpreter {
 
                 let mut config = WidgetConfig::new(kind);
 
-                // For dropdown, collect options from remaining args
+                // For dropdown: remaining string args are the option list.
                 if matches!(config.kind, WidgetKind::Dropdown) {
                     config.options = args.iter().skip(1)
                         .filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
@@ -869,6 +875,14 @@ impl Interpreter {
                 }
 
                 let state = ui::get_or_create_widget(handle, &id, config);
+
+                // text_label("id", "initial text") — set the display string on creation.
+                if method == "text_label" {
+                    if let Some(Value::String(s)) = args.get(1) {
+                        state.lock().unwrap().value = crate::ui::WidgetValue::Str(s.clone());
+                    }
+                }
+
                 Ok(Value::WidgetRef(state))
             }
 
@@ -890,6 +904,13 @@ impl Interpreter {
                         let mut arr = crate::value::AudionArray::new();
                         for b in bits {
                             arr.push_auto(Value::Bool(*b));
+                        }
+                        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
+                    }
+                    WidgetValue::ArrayF(nums) => {
+                        let mut arr = crate::value::AudionArray::new();
+                        for n in nums {
+                            arr.push_auto(Value::Number(*n));
                         }
                         Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
                     }

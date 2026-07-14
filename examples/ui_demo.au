@@ -1,24 +1,48 @@
-// Audion UI example
+// Audion UI example — all widget types
 // Run with: audion run --ui examples/ui_demo.au
 
 let ui = ui_desktop();
-ui.window("Control Surface", 400, 300);
+ui.window("Control Surface", 500, 600);
 
 let xui = ui_desktop();
 xui.window("View Surface", 400, 300);
 
+// -- sliders
+let tempo      = ui.widgets.slider("tempo");
+let pitch      = ui.widgets.slider_v("pitch");
+let band       = ui.widgets.slider_range("band");
 
-let tempo   = ui.widgets.slider("tempo");
-let launch  = ui.widgets.button("launch");
-let enabled = ui.widgets.toggle("enabled");
+// -- knob + number
+let reverb     = ui.widgets.knob("reverb");
+let voices     = ui.widgets.number("voices");
 
-tempo.set(128);
+// -- buttons + toggle
+let launch     = ui.widgets.button("launch");
+let enabled    = ui.widgets.toggle("enabled");
 
-let my_tempo = 123;
+// -- dropdown
+let mode       = ui.widgets.dropdown("mode", "Poly", "Mono", "Duo");
+
+// -- text
+let status     = ui.widgets.text_label("status", "ready");
+let search     = ui.widgets.text_input("search");
+
+// -- arrays
+let pattern    = ui.widgets.array("pattern", 8);
+let freqs      = ui.widgets.array_numbers("freqs", 4);
+
+// second window gets its own widgets
+let viz_toggle = xui.widgets.toggle("viz_on");
+let viz_mode   = xui.widgets.dropdown("viz_mode", "Waveform", "Spectrum", "3D");
+
+tempo.set(0.5);
+voices.set(4);
+
+let my_tempo = 128;
 
 thread a {
     loop {
-        print("audion sequencing work being done here, my_tempo: " + my_tempo);
+        print("seq: my_tempo=" + my_tempo);
         wait(1);
     }
 }
@@ -26,14 +50,32 @@ thread a {
 thread b {
     loop {
         if (launch.has_changed()) {
-            print("launched! tempo = " + tempo.value());
-            xui.widgets.button("launch " + tempo.value());
+            status.set("playing");
+            print("launched! tempo=" + tempo.value());
         }
         if (tempo.has_changed()) {
-            my_tempo = tempo.value();
-            print("tempo:" + tempo.value());
+            my_tempo = 60 + tempo.value() * 140;
+            print("tempo: " + my_tempo);
         }
-        wait(0.5);
+        if (band.has_changed()) {
+            print("band: " + band.value());
+        }
+        if (mode.has_changed()) {
+            print("mode index: " + mode.value());
+        }
+        if (pattern.has_changed()) {
+            print("pattern: " + pattern.value());
+        }
+        if (freqs.has_changed()) {
+            print("freqs: " + freqs.value());
+        }
+        if (search.has_changed()) {
+            print("search: " + search.value());
+        }
+        if (viz_mode.has_changed()) {
+            print("viz mode: " + viz_mode.value());
+        }
+        wait(0.05);
     }
 }
 

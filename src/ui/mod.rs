@@ -59,7 +59,10 @@ pub enum WidgetKind {
     Dropdown,
     TextLabel,
     TextInput,
+    /// Toggle array — each element is 0 or 1 (bool). Initial size = usize.
     Array(usize),
+    /// Float/int array — each element is a draggable number. Initial size = usize.
+    ArrayNumbers(usize),
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +75,7 @@ pub enum WidgetValue {
     Bool(bool),
     Str(String),
     Array(Vec<bool>),
+    ArrayF(Vec<f64>),
     Range(f64, f64),
 }
 
@@ -123,6 +127,7 @@ fn default_value_for_kind(config: &WidgetConfig) -> WidgetValue {
         WidgetKind::Toggle | WidgetKind::Button => WidgetValue::Bool(false),
         WidgetKind::TextLabel | WidgetKind::TextInput => WidgetValue::Str(String::new()),
         WidgetKind::Array(n) => WidgetValue::Array(vec![false; *n]),
+        WidgetKind::ArrayNumbers(n) => WidgetValue::ArrayF(vec![0.0; *n]),
         WidgetKind::SliderRange => WidgetValue::Range(config.min, config.max),
         _ => WidgetValue::Float((config.min + config.max) / 2.0),
     }

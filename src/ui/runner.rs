@@ -137,20 +137,12 @@ fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState) {
 
         WidgetKind::SliderRange => {
             if let WidgetValue::Range(lo, hi) = &mut state.value {
-                let min = state.config.min as f32;
-                let max = state.config.max as f32;
-                let mut flo = *lo as f32;
-                let mut fhi = *hi as f32;
+                let min = state.config.min;
+                let max = state.config.max;
                 ui.label(&label);
-                ui.horizontal(|ui| {
-                    let changed_lo = ui.add(egui::Slider::new(&mut flo, min..=fhi)).changed();
-                    let changed_hi = ui.add(egui::Slider::new(&mut fhi, flo..=max)).changed();
-                    if changed_lo || changed_hi {
-                        *lo = flo as f64;
-                        *hi = fhi as f64;
-                        state.dirty = true;
-                    }
-                });
+                if range_slider(ui, lo, hi, min, max, ui.id().with(&state.id)) {
+                    state.dirty = true;
+                }
             }
         }
 
@@ -234,19 +226,192 @@ fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState) {
             }
         }
 
-        WidgetKind::Array(n) => {
+        WidgetKind::Array(_) => {
             if let WidgetValue::Array(bits) = &mut state.value {
                 ui.label(&label);
                 ui.horizontal(|ui| {
-                    for i in 0..n {
-                        if i < bits.len() {
-                            if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
-                                state.dirty = true;
-                            }
+                    // – removes last element (min 1)
+                    if bits.len() > 1 && ui.small_button("–").clicked() {
+                        bits.pop();
+                        state.dirty = true;
+                    }
+                    for i in 0..bits.len() {
+                        if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
+                            state.dirty = true;
                         }
+                    }
+                    // + adds a new false element
+                    if ui.small_button("+").clicked() {
+                        bits.push(false);
+                        state.dirty = true;
+                    }
+                });
+            }
+        }
+
+        WidgetKind::ArrayNumbers(_) => {
+            if let WidgetValue::ArrayF(nums) = &mut state.value {
+                ui.label(&label);
+                ui.horizontal(|ui| {
+                    // – removes last element (min 1)
+                    if nums.len() > 1 && ui.small_button("–").clicked() {
+                        nums.pop();
+                        state.dirty = true;
+                    }
+                    for v in nums.iter_mut() {
+                        if ui.add(egui::DragValue::new(v).speed(0.1)).changed() {
+                            state.dirty = true;
+                        }
+                    }
+                    // + adds a new zero element
+                    if ui.small_button("+").clicked() {
+                        nums.push(0.0);
+                        state.dirty = true;
                     }
                 });
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Custom two-handle range slider
+// One track, two circular handles, minimum pixel gap so they never overlap.
+// Returns true if either value changed this frame.
+// ---------------------------------------------------------------------------
+
+fn range_slider(
+    ui: &mut egui::Ui,
+    lo: &mut f64,
+    hi: &mut f64,
+    min: f64,
+    max: f64,
+    base_id: egui::Id,
+) -> bool {
+    let track_height = 4.0_f32;
+    let handle_r     = 8.0_f32;
+    let min_gap_px   = handle_r * 2.0 + 2.0; // handles can't be closer than this
+    let widget_h     = handle_r * 2.0 + 6.0;
+
+    let width = ui.available_width().max(120.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::Vec2::new(width, widget_h),
+        egui::Sense::hover(),
+    );
+
+    if !ui.is_rect_visible(rect) {
+        return false;
+    }
+
+    // Track runs inside the handle radius margins
+    let track_x0 = rect.left()  + handle_r;
+    let track_x1 = rect.right() - handle_r;
+    let track_w  = (track_x1 - track_x0).max(1.0);
+    let cy       = rect.center().y;
+
+    let val_to_x = |v: f64| -> f32 {
+        let t = ((v - min) / (max - min)).clamp(0.0, 1.0) as f32;
+        track_x0 + t * track_w
+    };
+    let x_to_val = |x: f32| -> f64 {
+        let t = ((x - track_x0) / track_w).clamp(0.0, 1.0) as f64;
+        min + t * (max - min)
+    };
+
+    let lo_x = val_to_x(*lo);
+    let hi_x = val_to_x(*hi);
+
+    // Hit rects — offset vertically so both are fully inside the allocated rect
+    let lo_rect = egui::Rect::from_center_size(
+        egui::pos2(lo_x, cy),
+        egui::Vec2::splat(handle_r * 2.0),
+    );
+    let hi_rect = egui::Rect::from_center_size(
+        egui::pos2(hi_x, cy),
+        egui::Vec2::splat(handle_r * 2.0),
+    );
+
+    let lo_resp = ui.interact(lo_rect, base_id.with("lo"), egui::Sense::drag());
+    let hi_resp = ui.interact(hi_rect, base_id.with("hi"), egui::Sense::drag());
+
+    let mut changed = false;
+
+    if lo_resp.dragged() {
+        let new_x = (lo_x + lo_resp.drag_delta().x)
+            .clamp(track_x0, hi_x - min_gap_px);
+        *lo = x_to_val(new_x);
+        changed = true;
+    }
+    if hi_resp.dragged() {
+        let new_x = (hi_x + hi_resp.drag_delta().x)
+            .clamp(lo_x + min_gap_px, track_x1);
+        *hi = x_to_val(new_x);
+        changed = true;
+    }
+
+    // Recalculate positions after any drag
+    let lo_x = val_to_x(*lo);
+    let hi_x = val_to_x(*hi);
+
+    // --- draw ---
+    let vis = ui.visuals();
+    let painter = ui.painter();
+
+    // Track background
+    let track_rect = egui::Rect::from_min_max(
+        egui::pos2(track_x0, cy - track_height / 2.0),
+        egui::pos2(track_x1, cy + track_height / 2.0),
+    );
+    painter.rect_filled(track_rect, track_height / 2.0, vis.widgets.inactive.bg_fill);
+
+    // Active fill between handles
+    let active_rect = egui::Rect::from_min_max(
+        egui::pos2(lo_x, cy - track_height / 2.0),
+        egui::pos2(hi_x, cy + track_height / 2.0),
+    );
+    painter.rect_filled(active_rect, track_height / 2.0, vis.selection.bg_fill);
+
+    // Lo handle
+    let lo_fill = if lo_resp.dragged() || lo_resp.hovered() {
+        vis.widgets.active.bg_fill
+    } else {
+        vis.widgets.inactive.bg_fill
+    };
+    painter.circle(
+        egui::pos2(lo_x, cy),
+        handle_r,
+        lo_fill,
+        vis.widgets.inactive.fg_stroke,
+    );
+
+    // Hi handle
+    let hi_fill = if hi_resp.dragged() || hi_resp.hovered() {
+        vis.widgets.active.bg_fill
+    } else {
+        vis.widgets.inactive.bg_fill
+    };
+    painter.circle(
+        egui::pos2(hi_x, cy),
+        handle_r,
+        hi_fill,
+        vis.widgets.inactive.fg_stroke,
+    );
+
+    // Value text below handles
+    painter.text(
+        egui::pos2(lo_x, cy + handle_r + 2.0),
+        egui::Align2::CENTER_TOP,
+        format!("{:.2}", lo),
+        egui::FontId::proportional(10.0),
+        vis.text_color(),
+    );
+    painter.text(
+        egui::pos2(hi_x, cy + handle_r + 2.0),
+        egui::Align2::CENTER_TOP,
+        format!("{:.2}", hi),
+        egui::FontId::proportional(10.0),
+        vis.text_color(),
+    );
+
+    changed
 }

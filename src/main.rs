@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::thread;
 
 use clap::{Parser, Subcommand};
 
@@ -47,6 +48,7 @@ mod spec;
 mod sqlite;
 mod synthdef;
 mod token;
+mod ui;
 mod value;
 
 #[derive(clap::Parser)]
@@ -78,6 +80,11 @@ enum Commands {
         #[arg(long)]
         watch: bool,
 
+        /// Enable desktop UI (eframe window). Required when script uses ui_desktop().
+        /// Runs interpreter on a background thread so eframe can own the main thread.
+        #[arg(long)]
+        ui: bool,
+
         /// Show generated SuperCollider code for debugging
         #[arg(long)]
         debug_sclang: bool,
@@ -95,8 +102,8 @@ fn main() {
         Some(Commands::Spec) => {
             print!("{}", spec::generate());
         }
-        Some(Commands::Run { file, server, bpm, watch, debug_sclang, script_args }) => {
-            run_file(&file, &server, bpm, debug_sclang, watch, &script_args);
+        Some(Commands::Run { file, server, bpm, watch, ui, debug_sclang, script_args }) => {
+            run_file(&file, &server, bpm, debug_sclang, watch, ui, &script_args);
         }
         None => {
             repl::run_repl("127.0.0.1:57110", 120.0);
@@ -157,7 +164,7 @@ fn make_interpreter(
     interp
 }
 
-fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: bool, script_args: &[String]) {
+fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: bool, enable_ui: bool, script_args: &[String]) {
     let osc = Arc::new(osc::OscClient::new(server));
     let midi = Arc::new(midi::MidiClient::new());
     let dmx_client = Arc::new(dmx::DmxClient::new());
@@ -192,6 +199,29 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     if !watch {
         let source = read_source(path);
         let stmts = try_compile(&source, "").unwrap_or_else(|| std::process::exit(1));
+
+        if enable_ui {
+            // UI mode: interpreter runs on a background thread; eframe on main thread.
+            let interp_done = Arc::new(AtomicBool::new(false));
+            let interp_done_bg = interp_done.clone();
+            let osc_bg = osc.clone();
+            let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
+            interp.current_file = file_name.clone();
+            let _interp_thread = thread::spawn(move || {
+                if let Err(e) = interp.run(&stmts) {
+                    eprintln!("{}", e);
+                    osc_bg.free_all_nodes();
+                    osc_bg.free_all_buffers();
+                }
+                interp_done_bg.store(true, Ordering::Relaxed);
+            });
+            let options = eframe::NativeOptions::default();
+            let app = ui::runner::AudionUiApp::new(interp_done);
+            eframe::run_native("Audion", options, Box::new(|_cc| Ok(Box::new(app))))
+                .unwrap_or_else(|e| eprintln!("UI error: {}", e));
+            return;
+        }
+
         let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
         interp.current_file = file_name.clone();
         if let Err(e) = interp.run(&stmts) {

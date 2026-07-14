@@ -40,4 +40,5 @@ pub mod spec;
 pub mod sqlite;
 pub mod synthdef;
 pub mod token;
+pub mod ui;
 pub mod value;

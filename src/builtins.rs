@@ -299,6 +299,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "ml_weighted_choice", "ml_softmax", "ml_entropy", "ml_normalize",
     "ml_kalman_filter", "ml_kalman_smooth",
     "ml_kalman_state", "ml_kalman_update", "ml_kalman_predict",
+    "ui_desktop",
 ];
 
 /// Resolve a potentially relative path against the source file's base directory.
@@ -581,6 +582,10 @@ pub fn call_builtin(
         "ml_kalman_state"  => crate::ml::builtin_ml_kalman_state(args),
         "ml_kalman_update" => crate::ml::builtin_ml_kalman_update(args),
         "ml_kalman_predict"=> crate::ml::builtin_ml_kalman_predict(args),
+        "ui_desktop" => {
+            let handle = crate::ui::create_ui_handle();
+            Ok(Value::UiContext(handle))
+        }
         _ => Err(AudionError::RuntimeError {
             msg: format!("unknown builtin '{}'", name),
         }),

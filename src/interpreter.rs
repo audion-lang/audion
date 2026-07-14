@@ -807,6 +807,134 @@ impl Interpreter {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // UI method dispatch
+    // -----------------------------------------------------------------------
+
+    fn call_ui_method(&self, receiver: &Value, method: &str, args: &[Value]) -> Result<Value> {
+        use crate::ui::{self, WidgetConfig, WidgetKind};
+
+        match receiver {
+            // ui.window("title", w, h)
+            Value::UiContext(handle) if method == "window" => {
+                let title = args.first().and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .unwrap_or_else(|| "Audion".to_string());
+                let width = args.get(1).and_then(|v| if let Value::Number(n) = v { Some(*n as f32) } else { None })
+                    .unwrap_or(800.0);
+                let height = args.get(2).and_then(|v| if let Value::Number(n) = v { Some(*n as f32) } else { None })
+                    .unwrap_or(600.0);
+                let mut cfg = handle.config.lock().unwrap();
+                cfg.title = title;
+                cfg.width = width;
+                cfg.height = height;
+                Ok(Value::Nil)
+            }
+
+            // ui.widgets.slider("id")
+            Value::UiNs(handle, ns) if ns == "widgets" => {
+                let id = args.first().and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .ok_or_else(|| AudionError::RuntimeError {
+                        msg: format!("ui.widgets.{}() requires a string id as first argument", method),
+                    })?;
+
+                let kind = match method {
+                    "slider"       => WidgetKind::SliderH,
+                    "slider_v"     => WidgetKind::SliderV,
+                    "slider_range" => WidgetKind::SliderRange,
+                    "button"       => WidgetKind::Button,
+                    "toggle"       => WidgetKind::Toggle,
+                    "knob"         => WidgetKind::Knob,
+                    "number"       => WidgetKind::Number,
+                    "dropdown"     => WidgetKind::Dropdown,
+                    "text_label"   => WidgetKind::TextLabel,
+                    "text_input"   => WidgetKind::TextInput,
+                    "array"        => {
+                        let n = args.get(1)
+                            .and_then(|v| if let Value::Number(n) = v { Some(*n as usize) } else { None })
+                            .unwrap_or(8);
+                        WidgetKind::Array(n)
+                    }
+                    _ => return Err(AudionError::RuntimeError {
+                        msg: format!("unknown widget type: ui.widgets.{}", method),
+                    }),
+                };
+
+                let mut config = WidgetConfig::new(kind);
+
+                // For dropdown, collect options from remaining args
+                if matches!(config.kind, WidgetKind::Dropdown) {
+                    config.options = args.iter().skip(1)
+                        .filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                        .collect();
+                }
+
+                let state = ui::get_or_create_widget(handle, &id, config);
+                Ok(Value::WidgetRef(state))
+            }
+
+            // widget.value()
+            Value::WidgetRef(state_arc) if method == "value" => {
+                use crate::ui::WidgetValue;
+                let state = state_arc.lock().unwrap();
+                let val = match &state.value {
+                    WidgetValue::Float(f) => Value::Number(*f),
+                    WidgetValue::Bool(b)  => Value::Bool(*b),
+                    WidgetValue::Str(s)   => Value::String(s.clone()),
+                    WidgetValue::Range(lo, hi) => {
+                        let mut arr = crate::value::AudionArray::new();
+                        arr.push_auto(Value::Number(*lo));
+                        arr.push_auto(Value::Number(*hi));
+                        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
+                    }
+                    WidgetValue::Array(bits) => {
+                        let mut arr = crate::value::AudionArray::new();
+                        for b in bits {
+                            arr.push_auto(Value::Bool(*b));
+                        }
+                        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
+                    }
+                };
+                Ok(val)
+            }
+
+            // widget.has_changed() — one-shot: clears dirty flag on read
+            Value::WidgetRef(state_arc) if method == "has_changed" => {
+                let mut state = state_arc.lock().unwrap();
+                let was_dirty = state.dirty;
+                state.dirty = false;
+                // Button: also reset value after read so it doesn't stay "true"
+                if was_dirty {
+                    if matches!(state.value, crate::ui::WidgetValue::Bool(true))
+                        && matches!(state.config.kind, WidgetKind::Button)
+                    {
+                        state.value = crate::ui::WidgetValue::Bool(false);
+                    }
+                }
+                Ok(Value::Bool(was_dirty))
+            }
+
+            // widget.set(value) — programmatic value assignment
+            Value::WidgetRef(state_arc) if method == "set" => {
+                use crate::ui::WidgetValue;
+                let v = args.first().ok_or_else(|| AudionError::RuntimeError {
+                    msg: "widget.set() requires a value argument".to_string(),
+                })?;
+                let mut state = state_arc.lock().unwrap();
+                match v {
+                    Value::Number(n) => { state.value = WidgetValue::Float(*n); }
+                    Value::Bool(b)   => { state.value = WidgetValue::Bool(*b); }
+                    Value::String(s) => { state.value = WidgetValue::Str(s.clone()); }
+                    _ => {}
+                }
+                Ok(Value::Nil)
+            }
+
+            _ => Err(AudionError::RuntimeError {
+                msg: format!("unknown ui method '{}'", method),
+            }),
+        }
+    }
+
     // --- Expressions ---
 
     fn eval_expr(&mut self, expr: &Expr) -> Result<Value> {
@@ -882,6 +1010,32 @@ impl Interpreter {
                 }
             }
             Expr::Call { callee, args } => {
+                // --- UI method call interception ---
+                // When callee is a MemberAccess whose receiver is a UI type,
+                // we intercept before resolving to a Value so we preserve context.
+                if let Expr::MemberAccess { object, field } = callee.as_ref() {
+                    let receiver = self.eval_expr(object)?;
+                    let mut ui_eval_args: Vec<(Value, Option<String>)> = Vec::new();
+                    match &receiver {
+                        Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) => {
+                            for arg in args {
+                                match arg {
+                                    Arg::Positional(expr) => {
+                                        ui_eval_args.push((self.eval_expr(expr)?, None));
+                                    }
+                                    Arg::Named { name, value } => {
+                                        ui_eval_args.push((self.eval_expr(value)?, Some(name.clone())));
+                                    }
+                                }
+                            }
+                            let (pos, _named) = builtins::split_args(&ui_eval_args);
+                            return self.call_ui_method(&receiver, field, &pos);
+                        }
+                        _ => {}
+                    }
+                }
+                // --- end UI intercept ---
+
                 let callee_val = self.eval_expr(callee)?;
 
                 // Evaluate all arguments, tracking positional vs named
@@ -1160,6 +1314,17 @@ impl Interpreter {
                             None => Ok(Value::Nil),
                         }
                     }
+                    // UiContext.widgets / UiContext.three → UiNs
+                    Value::UiContext(handle) => match field.as_str() {
+                        "widgets" | "three" => Ok(Value::UiNs(handle.clone(), field.clone())),
+                        _ => Err(AudionError::RuntimeError {
+                            msg: format!("no member '{}' on ui object", field),
+                        }),
+                    },
+                    // UiNs member access used outside call context — just pass through
+                    Value::UiNs(_, _) => Err(AudionError::RuntimeError {
+                        msg: format!("ui.{} must be called as a function", field),
+                    }),
                     _ => Err(AudionError::RuntimeError {
                         msg: format!("cannot access member '{}' on {}", field, obj.type_name()),
                     }),

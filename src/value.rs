@@ -244,6 +244,12 @@ pub enum Value {
     Array(Arc<Mutex<AudionArray>>),
     Object(Arc<Mutex<Environment>>),
     Namespace(Arc<Mutex<Environment>>),
+    /// A ui_desktop() handle — one per OS window.
+    UiContext(Arc<crate::ui::UiHandle>),
+    /// Sub-namespace on a UiContext: "widgets" or "three".
+    UiNs(Arc<crate::ui::UiHandle>, String),
+    /// A widget returned by ui.widgets.*() — wraps shared WidgetState.
+    WidgetRef(Arc<Mutex<crate::ui::WidgetState>>),
 }
 
 impl Value {
@@ -256,6 +262,7 @@ impl Value {
             Value::Bytes(b) => !b.is_empty(),
             Value::Array(arr) => !arr.lock().unwrap().is_empty(),
             Value::Object(env) => !env.lock().unwrap().values().is_empty(),
+            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) => true,
             _ => true,
         }
     }
@@ -272,6 +279,9 @@ impl Value {
             Value::Array(_) => "array",
             Value::Object(_) => "object",
             Value::Namespace(_) => "namespace",
+            Value::UiContext(_) => "ui",
+            Value::UiNs(_, _) => "ui-namespace",
+            Value::WidgetRef(_) => "widget",
         }
     }
 
@@ -340,6 +350,8 @@ impl Value {
                 }
                 Value::Object(new_env)
             }
+            // UI types share the same Arc — interpreter and UI thread co-own the state.
+            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) => self.clone(),
             other => other.clone(),
         }
     }
@@ -399,6 +411,9 @@ impl fmt::Display for Value {
                 let keys: Vec<&String> = e.values().keys().collect();
                 write!(f, "<namespace {{{}}}>", keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "))
             }
+            Value::UiContext(h) => write!(f, "<ui window {}>", h.id),
+            Value::UiNs(h, ns) => write!(f, "<ui.{} window {}>", ns, h.id),
+            Value::WidgetRef(s) => write!(f, "<widget {}>", s.lock().unwrap().id),
         }
     }
 }
@@ -423,6 +438,8 @@ impl PartialEq for Value {
             }
             (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
             (Value::Namespace(a), Value::Namespace(b)) => Arc::ptr_eq(a, b),
+            (Value::UiContext(a), Value::UiContext(b)) => Arc::ptr_eq(a, b),
+            (Value::WidgetRef(a), Value::WidgetRef(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }

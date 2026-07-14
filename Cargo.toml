@@ -27,3 +27,5 @@ dirs = "5"
 rusty_link = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 midly = "0.5"
+eframe = { version = "0.31", features = ["default_fonts"] }
+toml = "0.8"

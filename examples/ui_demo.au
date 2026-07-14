@@ -1,0 +1,42 @@
+// Audion UI example
+// Run with: audion run --ui examples/ui_demo.au
+
+let ui = ui_desktop();
+ui.window("Control Surface", 400, 300);
+
+let xui = ui_desktop();
+xui.window("View Surface", 400, 300);
+
+
+let tempo   = ui.widgets.slider("tempo");
+let launch  = ui.widgets.button("launch");
+let enabled = ui.widgets.toggle("enabled");
+
+tempo.set(128);
+
+let my_tempo = 123;
+
+thread a {
+    loop {
+        print("audion sequencing work being done here, my_tempo: " + my_tempo);
+        wait(1);
+    }
+}
+
+thread b {
+    loop {
+        if (launch.has_changed()) {
+            print("launched! tempo = " + tempo.value());
+            xui.widgets.button("launch " + tempo.value());
+        }
+        if (tempo.has_changed()) {
+            my_tempo = tempo.value();
+            print("tempo:" + tempo.value());
+        }
+        wait(0.5);
+    }
+}
+
+fn main() {
+    wait(1);
+}

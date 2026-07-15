@@ -212,15 +212,38 @@ examples/ui_demo.au
 | 1 | `--ui` flag · interpreter on bg thread · eframe on main · global registry | ✅ done |
 | 2 | Core: `ui_desktop()` · `ui.window()` · multi-OS-window · `.value()` · `.has_changed()` · `.set()` | ✅ done |
 | 3 | Full widget set: all 12 types including array +/– resize · `examples/ui_demo.au` | ✅ done |
-| 4 | `ui.three.*` facade — integrate `three-d` crate for 3D on the canvas | 🔲 next |
-| 5 | `.aui` config — TOML per-widget overrides (min/max/label/style), auto-generate, hot reload | 🔲 planned |
+| 4 | `ui.three.*` facade — GPU 3D canvas via `egui_wgpu` paint callback (WGSL Phong shader, box/plane/sphere/axes, Painter's-algorithm depth sort) | ✅ done |
+| 5 | Custom shaders · OBJ/GLB loading · textures · per-mesh uniforms (`custom0/1`) | ✅ done |
+| 6 | `.aui` config — TOML per-widget overrides (min/max/label/style), auto-generate, hot reload | 🔲 planned |
 | 6 | Accessibility — keyboard nav audit, screen-reader annotations | 🔲 planned |
 
 ---
 
 ## Known Constraints
 
+**Threading / window**
 - `--ui` flag required: eframe must own the main thread (macOS mandate).
-- Knob widget is a `DragValue` placeholder until Phase 4 adds a custom egui painter.
-- `three-d` integration (Phase 4) migrates the render backend from eframe's wgpu
-  to three-d's wgpu context; the egui widget layer stays identical.
+- `--ui` forces the wgpu backend (`eframe::Renderer::Wgpu`). glow/OpenGL fallback is not available when using `ui.three.*`.
+
+**3D rendering**
+- Depth sorting is painter's algorithm at the **mesh level** (not per-triangle). Intersecting meshes render incorrectly; non-intersecting scenes are fine.
+- No depth buffer in the egui paint callback pass — full GPU depth buffering would require a separate off-screen render target (not yet implemented).
+- Viewport positioning is baked into the MVP matrix (no `set_viewport`) to avoid wgpu panics from Retina-display overflow. If you notice sub-pixel position drift at extreme panel offsets, this is why.
+
+**Custom shaders**
+- `scene.shader()` (fragment-only mode) injects the standard `Uniforms` struct + vertex shader as a prelude. Your WGSL must define `@fragment fn fs(in: VOut) -> @location(0) vec4<f32>` — no other entry points.
+- `scene.shader_full()` owns the whole module; it must replicate the 208-byte `Uniforms` struct layout exactly or uniform values will be garbled.
+- Custom shaders compile on the **first frame** they're used — expect a one-frame hitch. Compilation errors go to stderr only (no in-scene feedback yet).
+- Only one custom shader recompile per shader name: if you call `scene.shader()` again with the same name, the GPU pipeline is **not** recompiled. Restart the script to pick up edits.
+
+**Model loading**
+- OBJ: no MTL/material support. Colors and textures must be set via `scene.color()` / `scene.mesh_texture()`. Tangents are not computed.
+- GLTF/GLB: only `Triangles` primitive mode is loaded; strips, fans, and morph targets are ignored. Prefer `.glb` (self-contained binary) over `.gltf` + external `.bin`.
+- Models load synchronously on the interpreter thread — large files will block the audio loop momentarily.
+
+**Textures**
+- Texture format is always `Rgba8UnormSrgb`. Greyscale and HDR images are upconverted by the `image` crate.
+- Textures are uploaded once and cached — calling `scene.texture()` again with the same name does nothing (restart to reload).
+
+**Knob widget**
+- Still a `DragValue` placeholder; a circular painter implementation is a standalone task unrelated to the 3D work.

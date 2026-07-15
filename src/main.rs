@@ -215,9 +215,13 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
                 }
                 interp_done_bg.store(true, Ordering::Relaxed);
             });
-            let options = eframe::NativeOptions::default();
-            let app = ui::runner::AudionUiApp::new(interp_done);
-            eframe::run_native("Audion", options, Box::new(|_cc| Ok(Box::new(app))))
+            let options = eframe::NativeOptions {
+                renderer: eframe::Renderer::Wgpu,
+                ..Default::default()
+            };
+            eframe::run_native("Audion", options, Box::new(|cc| {
+                Ok(Box::new(ui::runner::AudionUiApp::new(cc, interp_done)))
+            }))
                 .unwrap_or_else(|e| eprintln!("UI error: {}", e));
             return;
         }

@@ -914,6 +914,7 @@ impl Interpreter {
                         }
                         Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
                     }
+                    WidgetValue::Three(_) => Value::Nil, // canvas ref; use the ThreeRef directly
                 };
                 Ok(val)
             }
@@ -948,6 +949,302 @@ impl Interpreter {
                     _ => {}
                 }
                 Ok(Value::Nil)
+            }
+
+            // ui.three.canvas("id") / ui.three.canvas("id", w, h)
+            Value::UiNs(handle, ns) if ns == "three" => {
+                use crate::ui;
+                match method {
+                    "canvas" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError {
+                                msg: "ui.three.canvas() requires a string id as first argument".to_string(),
+                            })?;
+                        let width  = args.get(1).and_then(|v| v.as_number()).unwrap_or(640.0) as f32;
+                        let height = args.get(2).and_then(|v| v.as_number()).unwrap_or(480.0) as f32;
+                        let scene_arc = ui::create_canvas(handle, &id, width, height);
+                        Ok(Value::ThreeRef(scene_arc))
+                    }
+                    _ => Err(AudionError::RuntimeError {
+                        msg: format!("unknown method ui.three.{}", method),
+                    }),
+                }
+            }
+
+            // canvas.camera(ex,ey,ez, tx,ty,tz) / canvas.clear(r,g,b) / canvas.mesh(...) etc.
+            Value::ThreeRef(scene_arc) => {
+                use crate::ui::three::MeshKind;
+                use glam::Vec3;
+                let mut scene = scene_arc.lock().unwrap();
+                match method {
+                    "camera" => {
+                        let ex = args.get(0).and_then(|v| v.as_number()).unwrap_or(3.0) as f32;
+                        let ey = args.get(1).and_then(|v| v.as_number()).unwrap_or(3.0) as f32;
+                        let ez = args.get(2).and_then(|v| v.as_number()).unwrap_or(5.0) as f32;
+                        let tx = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let ty = args.get(4).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let tz = args.get(5).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        scene.camera.eye    = Vec3::new(ex, ey, ez);
+                        scene.camera.target = Vec3::new(tx, ty, tz);
+                        Ok(Value::Nil)
+                    }
+                    "fov" => {
+                        scene.camera.fov_deg = args.first().and_then(|v| v.as_number()).unwrap_or(60.0) as f32;
+                        Ok(Value::Nil)
+                    }
+                    "clear" => {
+                        let r = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.05) as f32;
+                        let g = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.05) as f32;
+                        let b = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.1)  as f32;
+                        scene.clear_color = [r, g, b];
+                        Ok(Value::Nil)
+                    }
+                    "mesh" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError {
+                                msg: "canvas.mesh() requires a string id as first argument".to_string(),
+                            })?;
+                        let kind_str = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.as_str().to_string()) } else { None })
+                            .unwrap_or_else(|| "box".to_string());
+                        let kind = match kind_str.as_str() {
+                            "box" | "cube"    => MeshKind::Box,
+                            "plane"           => MeshKind::Plane,
+                            "sphere" | "ball" => MeshKind::Sphere,
+                            "axes" | "axis"   => MeshKind::Axes,
+                            other => return Err(AudionError::RuntimeError {
+                                msg: format!("unknown mesh kind '{}' — use box, plane, sphere, axes", other),
+                            }),
+                        };
+                        scene.get_or_create_mesh(&id, kind);
+                        Ok(Value::Nil)
+                    }
+                    "color" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.color() requires mesh id".to_string() })?;
+                        let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.color = [r, g, b]; }
+                        Ok(Value::Nil)
+                    }
+                    "pos" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.pos() requires mesh id".to_string() })?;
+                        let x = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let z = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.position = Vec3::new(x, y, z); }
+                        Ok(Value::Nil)
+                    }
+                    "rot" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.rot() requires mesh id".to_string() })?;
+                        let rx = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let ry = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let rz = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.rotation = Vec3::new(rx, ry, rz); }
+                        Ok(Value::Nil)
+                    }
+                    "scale" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.scale() requires mesh id".to_string() })?;
+                        let s = args.get(1).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.scale = Vec3::splat(s); }
+                        Ok(Value::Nil)
+                    }
+                    "scale_xyz" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.scale_xyz() requires mesh id".to_string() })?;
+                        let sx = args.get(1).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        let sy = args.get(2).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        let sz = args.get(3).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.scale = Vec3::new(sx, sy, sz); }
+                        Ok(Value::Nil)
+                    }
+                    "show" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.show() requires mesh id".to_string() })?;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.visible = true; }
+                        Ok(Value::Nil)
+                    }
+                    "hide" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.hide() requires mesh id".to_string() })?;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.visible = false; }
+                        Ok(Value::Nil)
+                    }
+                    "remove" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.remove() requires mesh id".to_string() })?;
+                        scene.meshes.retain(|m| m.id != id);
+                        Ok(Value::Nil)
+                    }
+
+                    // ── Custom shaders ────────────────────────────────────
+                    // scene.shader("name", fragment_wgsl)
+                    // User writes only the @fragment fn fs(in: VOut) → vec4<f32> body.
+                    // Standard Uniforms + vertex shader are prepended automatically.
+                    "shader" => {
+                        let name = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.shader() requires (name, wgsl_fragment_source)".to_string() })?;
+                        let src = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.shader() requires wgsl source as second argument".to_string() })?;
+                        scene.shaders.insert(name, crate::ui::three::ShaderEntry::Fragment(src));
+                        Ok(Value::Nil)
+                    }
+                    // scene.shader_full("name", complete_wgsl)
+                    // User writes the complete WGSL module (must define vs + fs, same Uniforms struct).
+                    "shader_full" => {
+                        let name = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.shader_full() requires (name, wgsl_source)".to_string() })?;
+                        let src = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.shader_full() requires wgsl source as second argument".to_string() })?;
+                        scene.shaders.insert(name, crate::ui::three::ShaderEntry::Full(src));
+                        Ok(Value::Nil)
+                    }
+                    // canvas.mesh_shader("mesh_id", "shader_name")
+                    "mesh_shader" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.mesh_shader() requires mesh id".to_string() })?;
+                        let sh = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.shader_id = sh; }
+                        Ok(Value::Nil)
+                    }
+
+                    // ── Textures ──────────────────────────────────────────
+                    // canvas.texture("tex_name", "path/to/image.png")
+                    "texture" => {
+                        let name = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.texture() requires (name, path)".to_string() })?;
+                        let rel = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.texture() requires path as second argument".to_string() })?;
+                        let path = if std::path::Path::new(&rel).is_absolute() {
+                            std::path::PathBuf::from(&rel)
+                        } else {
+                            self.base_path.join(&rel)
+                        };
+                        match crate::ui::three_loader::load_texture(&path) {
+                            Ok((pixels, w, h)) => {
+                                scene.textures.insert(name, crate::ui::three::TextureEntry { pixels, width: w, height: h });
+                            }
+                            Err(e) => { eprintln!("three: texture error: {e}"); }
+                        }
+                        Ok(Value::Nil)
+                    }
+                    // canvas.mesh_texture("mesh_id", "tex_name")  — or "" to clear
+                    "mesh_texture" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.mesh_texture() requires mesh id".to_string() })?;
+                        let tex = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { if s.is_empty() { None } else { Some(s.clone()) } } else { None });
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.texture_id = tex; }
+                        Ok(Value::Nil)
+                    }
+                    // canvas.uv_scale("mesh_id", su, sv)
+                    "uv_scale" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.uv_scale() requires mesh id".to_string() })?;
+                        let su = args.get(1).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        let sv = args.get(2).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) { m.uv_scale = [su, sv]; }
+                        Ok(Value::Nil)
+                    }
+
+                    // ── Model loading ─────────────────────────────────────
+                    // canvas.load("mesh_id", "path/to/model.obj|.glb|.gltf")
+                    "load" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.load() requires (mesh_id, path)".to_string() })?;
+                        let rel = args.get(1)
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.load() requires path as second argument".to_string() })?;
+                        let path = if std::path::Path::new(&rel).is_absolute() {
+                            std::path::PathBuf::from(&rel)
+                        } else {
+                            self.base_path.join(&rel)
+                        };
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let result = match ext.as_str() {
+                            "obj"  => crate::ui::three_loader::load_obj(&path),
+                            "glb" | "gltf" => crate::ui::three_loader::load_gltf(&path),
+                            other  => Err(format!("canvas.load(): unsupported format '.{other}' — use .obj or .glb/.gltf")),
+                        };
+                        match result {
+                            Ok(verts) => {
+                                let arc = std::sync::Arc::new(verts);
+                                scene.get_or_create_mesh(&id, MeshKind::Loaded(arc));
+                            }
+                            Err(e) => { eprintln!("three: load error: {e}"); }
+                        }
+                        Ok(Value::Nil)
+                    }
+
+                    // ── Per-mesh shader uniforms ───────────────────────────
+                    // canvas.set("mesh_id", slot, value)   slot 0-3 → custom0.xyzw
+                    //                                      slot 4-7 → custom1.xyzw
+                    "set" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.set() requires (mesh_id, slot, value)".to_string() })?;
+                        let slot = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                        let val  = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) {
+                            match slot {
+                                0 => m.custom0[0] = val, 1 => m.custom0[1] = val,
+                                2 => m.custom0[2] = val, 3 => m.custom0[3] = val,
+                                4 => m.custom1[0] = val, 5 => m.custom1[1] = val,
+                                6 => m.custom1[2] = val, 7 => m.custom1[3] = val,
+                                _ => {}
+                            }
+                        }
+                        Ok(Value::Nil)
+                    }
+                    // canvas.set4("mesh_id", slot_base, x, y, z, w)  e.g. slot_base=0 → custom0
+                    "set4" => {
+                        let id = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .ok_or_else(|| AudionError::RuntimeError { msg: "canvas.set4() requires (mesh_id, slot_base, x, y, z, w)".to_string() })?;
+                        let base = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                        let x = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let z = args.get(4).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let w = args.get(5).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        if let Some(m) = scene.get_mesh_mut(&id) {
+                            match base {
+                                0 => m.custom0 = [x, y, z, w],
+                                4 => m.custom1 = [x, y, z, w],
+                                _ => {}
+                            }
+                        }
+                        Ok(Value::Nil)
+                    }
+
+                    _ => Err(AudionError::RuntimeError {
+                        msg: format!("unknown canvas method '{}' — available: camera, fov, clear, mesh, color, pos, rot, scale, scale_xyz, show, hide, remove, shader, shader_full, mesh_shader, texture, mesh_texture, uv_scale, load, set, set4", method),
+                    }),
+                }
             }
 
             _ => Err(AudionError::RuntimeError {
@@ -1038,7 +1335,7 @@ impl Interpreter {
                     let receiver = self.eval_expr(object)?;
                     let mut ui_eval_args: Vec<(Value, Option<String>)> = Vec::new();
                     match &receiver {
-                        Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) => {
+                        Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) => {
                             for arg in args {
                                 match arg {
                                     Arg::Positional(expr) => {

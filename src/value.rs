@@ -252,6 +252,8 @@ pub enum Value {
     WidgetRef(Arc<Mutex<crate::ui::WidgetState>>),
     /// A 3D canvas returned by ui.three.canvas() — wraps shared ThreeSceneData.
     ThreeRef(Arc<Mutex<crate::ui::three::ThreeSceneData>>),
+    /// A 2D canvas returned by ui.widgets.canvas() — wraps shared Canvas2dData.
+    Canvas2dRef(Arc<Mutex<crate::ui::Canvas2dData>>),
 }
 
 impl Value {
@@ -264,7 +266,7 @@ impl Value {
             Value::Bytes(b) => !b.is_empty(),
             Value::Array(arr) => !arr.lock().unwrap().is_empty(),
             Value::Object(env) => !env.lock().unwrap().values().is_empty(),
-            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) => true,
+            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) | Value::Canvas2dRef(_) => true,
             _ => true,
         }
     }
@@ -285,6 +287,7 @@ impl Value {
             Value::UiNs(_, _) => "ui-namespace",
             Value::WidgetRef(_) => "widget",
             Value::ThreeRef(_) => "three-canvas",
+            Value::Canvas2dRef(_) => "canvas-2d",
         }
     }
 
@@ -354,7 +357,7 @@ impl Value {
                 Value::Object(new_env)
             }
             // UI types share the same Arc — interpreter and UI thread co-own the state.
-            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) => self.clone(),
+            Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) | Value::Canvas2dRef(_) => self.clone(),
             other => other.clone(),
         }
     }
@@ -418,6 +421,7 @@ impl fmt::Display for Value {
             Value::UiNs(h, ns) => write!(f, "<ui.{} window {}>", ns, h.id),
             Value::WidgetRef(s) => write!(f, "<widget {}>", s.lock().unwrap().id),
             Value::ThreeRef(s) => write!(f, "<three-canvas {}>", s.lock().unwrap().id),
+            Value::Canvas2dRef(_) => write!(f, "<canvas-2d>"),
         }
     }
 }
@@ -445,6 +449,7 @@ impl PartialEq for Value {
             (Value::UiContext(a), Value::UiContext(b)) => Arc::ptr_eq(a, b),
             (Value::WidgetRef(a), Value::WidgetRef(b)) => Arc::ptr_eq(a, b),
             (Value::ThreeRef(a),  Value::ThreeRef(b))  => Arc::ptr_eq(a, b),
+            (Value::Canvas2dRef(a), Value::Canvas2dRef(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }

@@ -837,6 +837,14 @@ impl Interpreter {
                         msg: format!("ui.widgets.{}() requires a string id as first argument", method),
                     })?;
 
+                // canvas is special — returns Canvas2dRef, not WidgetRef
+                if method == "canvas" {
+                    let width  = args.get(1).and_then(|v| v.as_number()).unwrap_or(400.0) as f32;
+                    let height = args.get(2).and_then(|v| v.as_number()).unwrap_or(200.0) as f32;
+                    let data_arc = crate::ui::create_canvas2d(handle, &id, width, height);
+                    return Ok(Value::Canvas2dRef(data_arc));
+                }
+
                 let kind = match method {
                     "slider"       => WidgetKind::SliderH,
                     "slider_v"     => WidgetKind::SliderV,
@@ -872,6 +880,14 @@ impl Interpreter {
                     config.options = args.iter().skip(1)
                         .filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                         .collect();
+                }
+
+                // Merge .aui overrides (if companion file exists next to the script)
+                {
+                    use crate::ui::aui_file;
+                    let au_path = self.base_path.join(&self.current_file);
+                    let aui_path = aui_file::aui_path_for(&au_path);
+                    config = aui_file::load_widget_config(&aui_path, &id, config);
                 }
 
                 let state = ui::get_or_create_widget(handle, &id, config);
@@ -914,7 +930,8 @@ impl Interpreter {
                         }
                         Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
                     }
-                    WidgetValue::Three(_) => Value::Nil, // canvas ref; use the ThreeRef directly
+                    WidgetValue::Three(_) => Value::Nil,
+                    WidgetValue::Canvas2d(_) => Value::Nil,
                 };
                 Ok(val)
             }
@@ -1247,6 +1264,147 @@ impl Interpreter {
                 }
             }
 
+            // widget.min(v) / widget.max(v) / widget.label(str) / widget.style(key, ...)
+            Value::WidgetRef(state_arc) if matches!(method, "min" | "max" | "label" | "style") => {
+                let mut state = state_arc.lock().unwrap();
+                match method {
+                    "min" => {
+                        if let Some(v) = args.first().and_then(|v| v.as_number()) {
+                            state.config.min = v;
+                        }
+                    }
+                    "max" => {
+                        if let Some(v) = args.first().and_then(|v| v.as_number()) {
+                            state.config.max = v;
+                        }
+                    }
+                    "label" => {
+                        if let Some(Value::String(s)) = args.first() {
+                            state.config.label = Some(s.clone());
+                        }
+                    }
+                    "style" => {
+                        let key = args.first()
+                            .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+                            .unwrap_or("");
+                        match key {
+                            "color" => {
+                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                                state.config.style.color = Some([r, g, b]);
+                            }
+                            "bg_color" => {
+                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
+                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
+                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
+                                state.config.style.bg_color = Some([r, g, b]);
+                            }
+                            "width" => {
+                                if let Some(w) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.style.width = Some(w as f32);
+                                }
+                            }
+                            "height" => {
+                                if let Some(h) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.style.height = Some(h as f32);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(Value::Nil)
+            }
+
+            // canvas2d.clear() / .fill(r,g,b) / .rect(...) / .circle(...) / .line(...) / .text(...)
+            Value::Canvas2dRef(data_arc) => {
+                use crate::ui::DrawCmd;
+                let mut data = data_arc.lock().unwrap();
+                match method {
+                    "clear" => {
+                        // Publish the completed pending frame to cmds (UI reads cmds),
+                        // then start a fresh pending. This eliminates flicker: the UI
+                        // always reads a complete previous frame, never a half-drawn one.
+                        data.cmds = std::mem::take(&mut data.pending);
+                    }
+                    "fill" => {
+                        let r = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                        let g = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                        let b = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                        data.pending.push(DrawCmd::Fill([r, g, b]));
+                    }
+                    "rect" => {
+                        let x = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let w = args.get(2).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let h = args.get(3).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let r = args.get(4).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let g = args.get(5).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let b = args.get(6).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        data.pending.push(DrawCmd::Rect { x, y, w, h, color: [r, g, b], filled: true });
+                    }
+                    "rect_outline" => {
+                        let x = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let w = args.get(2).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let h = args.get(3).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let r = args.get(4).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let g = args.get(5).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let b = args.get(6).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        data.pending.push(DrawCmd::Rect { x, y, w, h, color: [r, g, b], filled: false });
+                    }
+                    "circle" => {
+                        let cx = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let cy = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let r  = args.get(2).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let cr = args.get(3).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let cg = args.get(4).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let cb = args.get(5).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        data.pending.push(DrawCmd::Circle { cx, cy, r, color: [cr, cg, cb], filled: true });
+                    }
+                    "circle_outline" => {
+                        let cx = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let cy = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let r  = args.get(2).and_then(|v| v.as_number()).unwrap_or(10.0) as f32;
+                        let cr = args.get(3).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let cg = args.get(4).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let cb = args.get(5).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        data.pending.push(DrawCmd::Circle { cx, cy, r, color: [cr, cg, cb], filled: false });
+                    }
+                    "line" => {
+                        let x1 = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y1 = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let x2 = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y2 = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let r  = args.get(4).and_then(|v| v.as_number()).unwrap_or(200.0) as u8;
+                        let g  = args.get(5).and_then(|v| v.as_number()).unwrap_or(200.0) as u8;
+                        let b  = args.get(6).and_then(|v| v.as_number()).unwrap_or(200.0) as u8;
+                        let lw = args.get(7).and_then(|v| v.as_number()).unwrap_or(1.0) as f32;
+                        data.pending.push(DrawCmd::Line { x1, y1, x2, y2, color: [r, g, b], width: lw });
+                    }
+                    "text" => {
+                        let x    = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let y    = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+                        let s    = args.get(2).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { v.as_number().map(|n| n.to_string()) }).unwrap_or_default();
+                        let size = args.get(3).and_then(|v| v.as_number()).unwrap_or(14.0) as f32;
+                        let r    = args.get(4).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let g    = args.get(5).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        let b    = args.get(6).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                        data.pending.push(DrawCmd::Text { x, y, s, size, color: [r, g, b] });
+                    }
+                    "size" => {
+                        if let Some(w) = args.get(0).and_then(|v| v.as_number()) { data.width = w as f32; }
+                        if let Some(h) = args.get(1).and_then(|v| v.as_number()) { data.height = h as f32; }
+                    }
+                    _ => return Err(AudionError::RuntimeError {
+                        msg: format!("unknown canvas method '{}' — available: clear, fill, rect, rect_outline, circle, circle_outline, line, text, size", method),
+                    }),
+                }
+                Ok(Value::Nil)
+            }
+
             _ => Err(AudionError::RuntimeError {
                 msg: format!("unknown ui method '{}'", method),
             }),
@@ -1335,7 +1493,7 @@ impl Interpreter {
                     let receiver = self.eval_expr(object)?;
                     let mut ui_eval_args: Vec<(Value, Option<String>)> = Vec::new();
                     match &receiver {
-                        Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) => {
+                        Value::UiContext(_) | Value::UiNs(_, _) | Value::WidgetRef(_) | Value::ThreeRef(_) | Value::Canvas2dRef(_) => {
                             for arg in args {
                                 match arg {
                                     Arg::Positional(expr) => {

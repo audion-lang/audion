@@ -565,6 +565,7 @@ dependencies = [
  "rusqlite",
  "rusty_link",
  "rustyline",
+ "serde",
  "serde_json",
  "sha2",
  "sysinfo",

@@ -104,6 +104,47 @@ Override per-widget in the `.aui` config file (Phase 5).
 widget.value()        // → current value (float / bool / string / [float] / [bool])
 widget.has_changed()  // → bool, ONE-SHOT: clears dirty flag on read
 widget.set(v)         // → set value programmatically from code
+
+// Configuration (call right after creation):
+widget.min(60)                      // set minimum
+widget.max(200)                     // set maximum
+widget.label("Tempo (BPM)")         // display label
+widget.style("color", 255, 102, 0)  // accent color r,g,b 0-255
+widget.style("bg_color", 20, 20, 30)
+widget.style("width", 240)          // explicit pixel width
+widget.style("height", 60)          // explicit pixel height
+```
+
+### 2D canvas widget
+
+```au
+let c = ui.widgets.canvas("id", width, height)
+
+// Drawing (typically inside a polling loop):
+c.clear()                               // erase draw list
+c.fill(r, g, b)                         // flood-fill background
+c.rect(x, y, w, h, r, g, b)            // filled rectangle
+c.rect_outline(x, y, w, h, r, g, b)    // outlined rectangle
+c.circle(cx, cy, r, r, g, b)           // filled circle
+c.circle_outline(cx, cy, r, r, g, b)   // outlined circle
+c.line(x1, y1, x2, y2, r, g, b)        // line (default width 1)
+c.line(x1, y1, x2, y2, r, g, b, w)     // line with explicit width
+c.text(x, y, "string", size, r, g, b)  // text at position
+c.size(w, h)                            // resize the canvas
+```
+
+Custom widgets are Audion functions that create and manage a canvas — no Rust needed:
+```au
+fn vu_meter(ui, id, w, h) {
+    return ui.widgets.canvas(id, w, h);
+}
+
+fn vu_draw(canvas, level) {
+    canvas.clear();
+    canvas.fill(12, 12, 15);
+    let bar_h = 90 * level;
+    canvas.rect(10, 90 - bar_h, 20, bar_h, 60, 200, 80);
+}
 ```
 
 ### Example
@@ -146,31 +187,34 @@ Full three-d facade — Rust layer wraps the `three-d` crate.
 
 ---
 
-## `.aui` Config File  _(Phase 5)_
+## `.aui` Config File
 
 For every `my_song.au`, a `my_song.aui` TOML file stores per-widget overrides.
-Auto-generated with defaults on first run if absent.
+Created with defaults for any new widget on first run if absent.
+
+Keys are widget IDs (the first argument to `ui.widgets.*()`). Kind-agnostic — same
+format for sliders, knobs, buttons, etc.
 
 ```toml
-[slider.tempo]
-min     = 60.0
-max     = 200.0
-default = 128.0
-label   = "Tempo (BPM)"
-
-[slider.tempo.style]
-color = "#ff6600"
+[tempo]
+min   = 60.0
+max   = 200.0
+label = "Tempo (BPM)"
+color = [255, 102, 0]   # r g b, 0-255
 width = 240.0
 
-[dropdown.mode]
-label = "Voice Mode"
+[reverb]
+label    = "Reverb Mix"
+color    = [180, 100, 255]
+bg_color = [20, 10, 30]
 
-[array.pattern]
-default = [1,0,1,0,1,0,1,0]
+[mode]
+label = "Voice Mode"
 ```
 
-Widget IDs come from the first argument to each `ui.widgets.*()` call.
-Unknown IDs are appended with type-defaults on next run.
+**Priority**: `.aui` file → inline `.style()` / `.min()` / `.max()` calls override the file values.  
+**Hot reload**: not yet — requires a file watcher (planned Phase 7).  
+Widget IDs not in the file get their defaults appended automatically.
 
 ---
 
@@ -214,8 +258,11 @@ examples/ui_demo.au
 | 3 | Full widget set: all 12 types including array +/– resize · `examples/ui_demo.au` | ✅ done |
 | 4 | `ui.three.*` facade — GPU 3D canvas via `egui_wgpu` paint callback (WGSL Phong shader, box/plane/sphere/axes, Painter's-algorithm depth sort) | ✅ done |
 | 5 | Custom shaders · OBJ/GLB loading · textures · per-mesh uniforms (`custom0/1`) | ✅ done |
-| 6 | `.aui` config — TOML per-widget overrides (min/max/label/style), auto-generate, hot reload | 🔲 planned |
-| 6 | Accessibility — keyboard nav audit, screen-reader annotations | 🔲 planned |
+| 6 | `.aui` config — TOML per-widget overrides (min/max/label/color/width), auto-save on new widgets | ✅ done |
+| 6 | Widget styling API — `.min()` `.max()` `.label()` `.style("color",r,g,b)` `.style("width",n)` | ✅ done |
+| 6 | Real circular knob widget — arc painter, drag-to-rotate, accent color | ✅ done |
+| 6 | 2D canvas widget — `ui.widgets.canvas("id",w,h)` + draw API (`clear/fill/rect/circle/line/text`) | ✅ done |
+| 7 | Accessibility — keyboard nav audit, screen-reader annotations | 🔲 planned |
 
 ---
 

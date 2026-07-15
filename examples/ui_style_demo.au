@@ -1,0 +1,156 @@
+// Audion UI — styling, knobs, and custom 2D canvas widgets
+// Run with: audion run --ui examples/ui_style_demo.au
+//
+// Demonstrates:
+//   - Widget styling: .min() .max() .label() .style("color", r, g, b) .style("width", n)
+//   - Real circular knob widget
+//   - Custom 2D canvas widget with drawing API
+//   - .aui TOML config loading (place ui_style_demo.aui next to this file)
+
+let ui = ui_desktop();
+ui.window("Style + Canvas Demo", 600, 700);
+
+// ── Styled sliders ──────────────────────────────────────────────────────────
+
+let tempo = ui.widgets.slider("tempo");
+tempo.min(60);
+tempo.max(200);
+tempo.label("Tempo (BPM)");
+tempo.style("color", 255, 100, 30);   // orange accent
+tempo.style("width", 360);
+
+let pitch = ui.widgets.slider("pitch");
+pitch.min(-12);
+pitch.max(12);
+pitch.label("Pitch (semitones)");
+pitch.style("color", 80, 180, 255);   // blue accent
+
+// ── Styled knobs ────────────────────────────────────────────────────────────
+
+let reverb = ui.widgets.knob("reverb");
+reverb.label("Reverb");
+reverb.style("color", 180, 100, 255); // purple
+reverb.style("width", 60);
+
+let delay = ui.widgets.knob("delay");
+delay.label("Delay");
+delay.style("color", 60, 220, 140);   // green
+delay.style("width", 60);
+
+let drive = ui.widgets.knob("drive");
+drive.label("Drive");
+drive.style("color", 255, 60, 80);    // red
+drive.style("width", 60);
+
+// ── Styled button & toggle ──────────────────────────────────────────────────
+
+let launch = ui.widgets.button("launch");
+launch.label("▶  Launch");
+launch.style("color", 60, 200, 80);
+launch.style("width", 120);
+
+let enabled = ui.widgets.toggle("enabled");
+enabled.label("Active");
+enabled.style("color", 255, 180, 0);
+
+// ── 2D canvas: VU meter custom widget ───────────────────────────────────────
+
+let vu = ui.widgets.canvas("vu_meter", 300, 120);
+
+// ── 2D canvas: step sequencer display ───────────────────────────────────────
+
+let seq_canvas = ui.widgets.canvas("seq_display", 560, 60);
+
+let pattern = ui.widgets.array("pattern", 16);
+
+// ── Status label ────────────────────────────────────────────────────────────
+
+let status = ui.widgets.text_label("status", "ready");
+
+// ── Initial values ──────────────────────────────────────────────────────────
+
+tempo.set(0.5);   // maps to 60 + 0.5*140 = 130 BPM internally
+reverb.set(0.3);
+delay.set(0.2);
+drive.set(0.6);
+
+// ── UI thread: reacts to controls and draws canvas widgets ──────────────────
+
+let current_tempo = 130;
+let level = 0.0;  // simulated audio level for VU
+
+thread ui_thread {
+    loop {
+        if (tempo.has_changed()) {
+            current_tempo = 60 + tempo.value() * 140;
+        }
+        if (launch.has_changed()) {
+            status.set("playing at " + current_tempo + " BPM");
+        }
+        if (enabled.has_changed()) {
+            if (enabled.value()) {
+                status.set("enabled");
+            } else {
+                status.set("disabled");
+            }
+        }
+
+        // Animate the VU meter level
+        level = level * 0.85 + (reverb.value() * drive.value()) * 0.15;
+        if (launch.has_changed()) { level = 0.9; }
+
+        // Draw VU meter on the 2D canvas
+        vu.clear();
+        vu.fill(12, 12, 15);
+
+        let bar_count = 20;
+        let bar_w = 10;
+        let bar_gap = 5;
+        let bar_max_h = 90;
+        let i = 0;
+        loop {
+            if (i >= bar_count) { break; }
+            let bar_h = bar_max_h * level * (1 - i / bar_count * 0.4);
+            let x = 10 + i * (bar_w + bar_gap);
+            let y = 105 - bar_h;
+            // Color: green → yellow → red based on position
+            let t = i / bar_count;
+            let r = 30 + t * 220;
+            let g = 200 - t * 170;
+            let b = 30;
+            vu.rect(x, y, bar_w, bar_h, r, g, b);
+            i = i + 1;
+        }
+
+        vu.text(10, 4, "VU Meter", 11, 150, 150, 160);
+        vu.text(250, 4, current_tempo + " BPM", 11, 255, 160, 60);
+
+        // Draw step sequencer display
+        seq_canvas.clear();
+        seq_canvas.fill(10, 10, 14);
+        let steps = pattern.value();
+        let step_count = 16;
+        let sw = 32;
+        let sg = 3;
+        let j = 0;
+        loop {
+            if (j >= step_count) { break; }
+            let sx = 6 + j * (sw + sg);
+            let active = steps[j];
+            if (active) {
+                seq_canvas.rect(sx, 8, sw, 44, 255, 140, 30);
+                seq_canvas.rect(sx + 2, 10, sw - 4, 40, 255, 200, 80);
+            } else {
+                seq_canvas.rect(sx, 8, sw, 44, 35, 35, 45);
+                seq_canvas.rect_outline(sx, 8, sw, 44, 60, 60, 75);
+            }
+            j = j + 1;
+        }
+
+        wait(0.05);
+    }
+}
+
+fn main() {
+    wait(1);
+}

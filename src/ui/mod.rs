@@ -15,10 +15,14 @@
 
 pub mod aui_file;
 pub mod runner;
+pub mod three;
+pub mod three_loader;
+pub(crate) mod three_gpu;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -63,6 +67,8 @@ pub enum WidgetKind {
     Array(usize),
     /// Float/int array — each element is a draggable number. Initial size = usize.
     ArrayNumbers(usize),
+    /// Hardware-rendered 3D canvas via egui_wgpu paint callback.
+    ThreeCanvas,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +83,7 @@ pub enum WidgetValue {
     Array(Vec<bool>),
     ArrayF(Vec<f64>),
     Range(f64, f64),
+    Three(Arc<Mutex<three::ThreeSceneData>>),
 }
 
 impl Default for WidgetValue {
@@ -129,8 +136,54 @@ fn default_value_for_kind(config: &WidgetConfig) -> WidgetValue {
         WidgetKind::Array(n) => WidgetValue::Array(vec![false; *n]),
         WidgetKind::ArrayNumbers(n) => WidgetValue::ArrayF(vec![0.0; *n]),
         WidgetKind::SliderRange => WidgetValue::Range(config.min, config.max),
+        WidgetKind::ThreeCanvas => WidgetValue::Three(
+            Arc::new(Mutex::new(three::ThreeSceneData::default()))
+        ),
         _ => WidgetValue::Float((config.min + config.max) / 2.0),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Three canvas registration
+// ---------------------------------------------------------------------------
+
+/// Register a 3D canvas in the UiHandle. Returns the shared scene Arc so the
+/// interpreter can hold a ThreeRef to it.
+pub fn create_canvas(
+    handle: &Arc<UiHandle>,
+    id: &str,
+    width: f32,
+    height: f32,
+) -> Arc<Mutex<three::ThreeSceneData>> {
+    let mut widgets = handle.widgets.lock().unwrap();
+    if let Some(existing) = widgets.get(id) {
+        // Already created — return the existing scene arc
+        let st = existing.lock().unwrap();
+        if let WidgetValue::Three(scene_arc) = &st.value {
+            return scene_arc.clone();
+        }
+    }
+
+    let scene = three::ThreeSceneData {
+        id: id.to_string(),
+        width,
+        height,
+        ..Default::default()
+    };
+    let scene_arc = Arc::new(Mutex::new(scene));
+
+    let config = WidgetConfig::new(WidgetKind::ThreeCanvas);
+    let state = WidgetState {
+        id: id.to_string(),
+        value: WidgetValue::Three(scene_arc.clone()),
+        dirty: false,
+        config,
+    };
+    let state_arc = Arc::new(Mutex::new(state));
+    widgets.insert(id.to_string(), state_arc);
+    drop(widgets);
+    handle.widget_order.lock().unwrap().push(id.to_string());
+    scene_arc
 }
 
 // ---------------------------------------------------------------------------

@@ -27,5 +27,9 @@ dirs = "5"
 rusty_link = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 midly = "0.5"
-eframe = { version = "0.31", features = ["default_fonts"] }
+eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }
 toml = "0.8"
+glam = "0.33"
+bytemuck = { version = "1", features = ["derive"] }
+gltf = "1"
+image = "0.25"

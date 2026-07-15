@@ -22,11 +22,24 @@ use super::{ui_registry, UiHandle, WidgetKind, WidgetValue};
 
 pub struct AudionUiApp {
     interpreter_done: Arc<AtomicBool>,
+    /// False when wgpu is unavailable (headless / CI); ThreeCanvas degrades to placeholder.
+    three_supported: bool,
 }
 
 impl AudionUiApp {
-    pub fn new(interpreter_done: Arc<AtomicBool>) -> Self {
-        Self { interpreter_done }
+    pub fn new(cc: &eframe::CreationContext, interpreter_done: Arc<AtomicBool>) -> Self {
+        let three_supported = if let Some(rs) = &cc.wgpu_render_state {
+            super::three_gpu::init(
+                &rs.device,
+                &rs.queue,
+                rs.target_format,
+                &mut rs.renderer.write().callback_resources,
+            );
+            true
+        } else {
+            false
+        };
+        Self { interpreter_done, three_supported }
     }
 }
 
@@ -57,20 +70,21 @@ impl eframe::App for AudionUiApp {
                 egui::Vec2::new(cfg.width, cfg.height),
             ));
         }
+        let ts = self.three_supported;
         egui::CentralPanel::default().show(ctx, |ui| {
-            render_widgets(ui, first);
+            render_widgets(ui, first, ts);
         });
 
         // Every additional handle gets its own OS window via an immediate viewport.
         for handle in registry.iter().skip(1) {
-            render_as_viewport(ctx, handle);
+            render_as_viewport(ctx, handle, ts);
         }
 
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
 
-fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>) {
+fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_supported: bool) {
     let (title, width, height) = {
         let cfg = handle.config.lock().unwrap();
         (cfg.title.clone(), cfg.width, cfg.height)
@@ -84,7 +98,7 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>) {
     let handle_clone = handle.clone();
     ctx.show_viewport_immediate(viewport_id, builder, move |ctx, _class| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            render_widgets(ui, &handle_clone);
+            render_widgets(ui, &handle_clone, three_supported);
         });
     });
 }
@@ -93,20 +107,20 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>) {
 // Widget rendering
 // ---------------------------------------------------------------------------
 
-fn render_widgets(ui: &mut egui::Ui, handle: &UiHandle) {
+fn render_widgets(ui: &mut egui::Ui, handle: &UiHandle, three_supported: bool) {
     let order: Vec<String> = handle.widget_order.lock().unwrap().clone();
     let widgets = handle.widgets.lock().unwrap();
 
     for id in &order {
         if let Some(state_arc) = widgets.get(id) {
             let mut state = state_arc.lock().unwrap();
-            render_widget(ui, &mut state);
+            render_widget(ui, &mut state, three_supported);
             ui.add_space(4.0);
         }
     }
 }
 
-fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState) {
+fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState, three_supported: bool) {
     let label = state.config.label.clone().unwrap_or_else(|| state.id.clone());
 
     match state.config.kind.clone() {
@@ -246,6 +260,39 @@ fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState) {
                         state.dirty = true;
                     }
                 });
+            }
+        }
+
+        WidgetKind::ThreeCanvas => {
+            if let WidgetValue::Three(scene_arc) = &state.value {
+                if three_supported {
+                    let (w, h) = {
+                        let s = scene_arc.lock().unwrap();
+                        (s.width, s.height)
+                    };
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(w, h),
+                        egui::Sense::hover(),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            super::three_gpu::ThreeCallback {
+                                canvas_id: state.id.clone(),
+                                scene: scene_arc.clone(),
+                                viewport_size: [w, h],
+                                egui_rect: rect,
+                            },
+                        ));
+                    }
+                } else {
+                    let s = scene_arc.lock().unwrap();
+                    let (w, h) = (s.width, s.height);
+                    drop(s);
+                    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(20, 20, 30));
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "3D (no wgpu)", egui::FontId::proportional(14.0), egui::Color32::GRAY);
+                }
             }
         }
 

@@ -1,0 +1,83 @@
+// Audion Phase 4 demo — hardware 3D via ui.three.*
+// Run with: audion run --ui examples/three_demo.au
+
+let ui  = ui_desktop();
+let viz = ui_desktop();
+
+ui.window("Controls", 320, 280);
+viz.window("3D Scene", 800, 600);
+
+// Controls
+let cam_x   = ui.widgets.slider("cam_x");
+let cam_y   = ui.widgets.slider("cam_y");
+let cam_z   = ui.widgets.slider("cam_z");
+let spin    = ui.widgets.toggle("auto_spin");
+let reset   = ui.widgets.button("reset");
+let col_r   = ui.widgets.knob("red");
+let col_g   = ui.widgets.knob("green");
+
+cam_x.set(0.5);
+cam_y.set(0.6);
+cam_z.set(0.8);
+
+// 3D canvas occupies the full viz window
+let scene = viz.three.canvas("main", 800, 600);
+
+// Background and camera
+scene.clear(0.04, 0.04, 0.09);
+scene.camera(3.0, 3.0, 5.0,  0.0, 0.0, 0.0);
+scene.fov(55.0);
+
+// Initial scene setup
+scene.mesh("floor",  "plane");
+scene.color("floor", 0.25, 0.25, 0.3);
+scene.scale("floor", 6.0);
+scene.pos("floor", 0.0, -1.0, 0.0);
+
+scene.mesh("cube", "box");
+scene.color("cube", 0.9, 0.4, 0.1);
+
+scene.mesh("ball", "sphere");
+scene.color("ball", 0.2, 0.7, 0.9);
+scene.pos("ball", 2.0, 0.0, 0.0);
+
+scene.mesh("axes", "axes");
+scene.pos("axes", -2.5, -0.95, -2.5);
+
+let angle = 0.0;
+
+thread poll {
+    loop {
+        // Camera driven by sliders (range 0-1 → mapped range)
+        let cx = (cam_x.value() - 0.5) * 10.0;
+        let cy = cam_y.value() * 6.0 + 0.5;
+        let cz = (cam_z.value() - 0.5) * 10.0 + 4.0;
+        scene.camera(cx, cy, cz,  0.0, 0.0, 0.0);
+
+        // Auto-spin
+        if (spin.value()) {
+            angle = angle + 0.8;
+        }
+
+        // Color from knobs
+        let r = col_r.value();
+        let g = col_g.value();
+        scene.color("cube", r * 0.9 + 0.05, g * 0.6 + 0.1, 0.1);
+
+        // Rotate cube
+        scene.rot("cube", 0.0, angle, 0.0);
+
+        // Ball bobs
+        let bob = math_sin(angle * 0.05) * 0.6;
+        scene.pos("ball", 2.0, bob, 0.0);
+
+        if (reset.has_changed()) {
+            angle = 0.0;
+            scene.rot("cube", 0.0, 0.0, 0.0);
+        }
+
+        wait(0.016);
+    }
+}
+
+fn main() { wait(1); }

@@ -1,0 +1,179 @@
+// Audion Phase 5 demo — custom shaders · textures · model loading
+// Run with: audion run --ui examples/three_shaders_demo.au
+
+let ui    = ui_desktop();
+let viz   = ui_desktop();
+
+ui.window("Shader Controls", 320, 380);
+viz.window("3D Scene", 900, 650);
+
+// ── Controls ─────────────────────────────────────────────────────────────────
+let speed_sl  = ui.widgets.slider("speed");
+let freq_sl   = ui.widgets.slider("freq");
+let mix_sl    = ui.widgets.slider("mix");
+let mode_dd   = ui.widgets.dropdown("mode", "plasma", "wave", "heat", "normal");
+let reset_btn = ui.widgets.button("reset");
+let tex_tog   = ui.widgets.toggle("use_texture");
+
+speed_sl.set(0.5);
+freq_sl.set(0.4);
+mix_sl.set(0.5);
+
+// ── 3D canvas ────────────────────────────────────────────────────────────────
+let scene = viz.three.canvas("main", 900, 650);
+scene.clear(0.03, 0.03, 0.07);
+scene.camera(0.0, 2.5, 6.0,  0.0, 0.0, 0.0);
+scene.fov(50.0);
+
+// ── Static scene geometry ────────────────────────────────────────────────────
+scene.mesh("floor",  "plane");
+scene.color("floor", 0.18, 0.18, 0.22);
+scene.scale("floor", 8.0);
+scene.pos("floor", 0.0, -1.5, 0.0);
+scene.uv_scale("floor", 4.0, 4.0);
+
+scene.mesh("axes", "axes");
+scene.pos("axes", -3.8, -1.45, -3.8);
+
+// ── Custom shader definitions ─────────────────────────────────────────────────
+//
+// Each calls scene.shader("name", wgsl_fragment_source).
+// The prelude (Uniforms struct, VOut, sampler) is injected automatically.
+// Available inputs:  in.wnorm  in.uv  u.time  u.color  u.custom0  u.custom1
+//
+
+// Plasma — animated sine interference pattern
+scene.shader("plasma", "
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let t  = u.time * u.custom0.x;
+    let f  = u.custom0.y * 12.0;
+    let uv = in.uv * f;
+    let v  = sin(uv.x + t)
+           + sin(uv.y + t * 0.7)
+           + sin((uv.x + uv.y) * 0.5 + t * 1.3)
+           + sin(length(uv - vec2<f32>(f*0.5)) - t * 2.0);
+    let norm = v * 0.25 + 0.5;
+    return vec4<f32>(norm, norm * 0.3, 1.0 - norm, 1.0) * u.color;
+}
+");
+
+// Wave — surface normal displaced by sin
+scene.shader("wave", "
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let t      = u.time * u.custom0.x;
+    let f      = u.custom0.y * 8.0;
+    let ripple = sin(in.uv.x * f + t) * sin(in.uv.y * f + t * 0.8);
+    let diff   = max(dot(in.wnorm, normalize(u.light_dir.xyz)), 0.0);
+    let bright = 0.1 + 0.9 * diff + ripple * 0.15;
+    return vec4<f32>(u.color.rgb * bright, 1.0);
+}
+");
+
+// Heat — warm colour ramp driven by vertical normal
+scene.shader("heat", "
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let t    = u.time * u.custom0.x * 0.5;
+    let heat = clamp(in.wnorm.y * 0.5 + 0.5 + sin(in.uv.x * 6.0 + t) * 0.15, 0.0, 1.0);
+    let col  = mix(vec3<f32>(0.05, 0.0, 0.2), vec3<f32>(1.0, 0.5, 0.0), heat);
+    return vec4<f32>(col * u.color.rgb, 1.0);
+}
+");
+
+// Normal-map debug — shows world-space normal as RGB
+scene.shader("normal", "
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.wnorm * 0.5 + vec3<f32>(0.5), 1.0);
+}
+");
+
+// Textured + Phong (built-in 'textured' pipeline, no shader call needed)
+// — enabled when tex_tog is on (see poll thread below)
+
+// ── Meshes that use the shaders ───────────────────────────────────────────────
+scene.mesh("sphere_l", "sphere");
+scene.pos("sphere_l", -2.0, 0.0, 0.0);
+
+scene.mesh("cube_c",   "box");
+scene.pos("cube_c",    0.0, 0.0, 0.0);
+
+scene.mesh("sphere_r", "sphere");
+scene.pos("sphere_r",  2.0, 0.0, 0.0);
+
+// Initial assignments (overridden each frame by mode)
+scene.mesh_shader("sphere_l", "plasma");
+scene.mesh_shader("cube_c",   "wave");
+scene.mesh_shader("sphere_r", "heat");
+
+// ── Load a model if you have one — uncomment and point to your file ───────────
+// scene.load("car", "models/car.obj");
+// scene.pos("car", 0.0, -1.0, 0.0);
+// scene.scale("car", 0.5);
+// scene.mesh_shader("car", "wave");
+
+// ── Load a texture if you have one — uncomment to activate ───────────────────
+// scene.texture("bricks", "textures/bricks.png");
+// scene.mesh_texture("floor", "bricks");
+
+// ── Poll thread ───────────────────────────────────────────────────────────────
+let mode    = "plasma";
+let t       = 0.0;
+
+thread poll {
+    loop {
+        let speed = speed_sl.value() * 3.0 + 0.1;
+        let freq  = freq_sl.value()  * 2.0 + 0.1;
+        let mix_v = mix_sl.value();
+        t = t + 0.016 * speed;
+
+        // custom0.x = speed multiplier, custom0.y = frequency multiplier
+        scene.set("sphere_l", 0, speed);
+        scene.set("sphere_l", 1, freq);
+        scene.set("cube_c",   0, speed);
+        scene.set("cube_c",   1, freq);
+        scene.set("sphere_r", 0, speed);
+        scene.set("sphere_r", 1, freq);
+
+        // Colour shifts over time
+        let r = math_sin(t * 0.3) * 0.4 + 0.6;
+        let g = math_sin(t * 0.5 + 2.0) * 0.4 + 0.6;
+        let b = math_sin(t * 0.7 + 4.0) * 0.4 + 0.6;
+        scene.color("sphere_l", r, g * 0.4, b);
+        scene.color("cube_c",   r * 0.4, g, b * 0.6);
+        scene.color("sphere_r", r * 0.8, g * 0.3, b * 0.9);
+
+        // Slow rotation
+        scene.rot("sphere_l", 0.0, t * 20.0, 0.0);
+        scene.rot("cube_c",   t * 15.0, t * 25.0, 0.0);
+        scene.rot("sphere_r", 0.0, t * -18.0, t * 8.0);
+
+        // Mode dropdown switches shaders
+        if (mode_dd.has_changed()) {
+            let idx = mode_dd.value();
+            if (idx == 0) { mode = "plasma"; }
+            if (idx == 1) { mode = "wave";   }
+            if (idx == 2) { mode = "heat";   }
+            if (idx == 3) { mode = "normal"; }
+        }
+        scene.mesh_shader("sphere_l", mode);
+        scene.mesh_shader("cube_c",   mode);
+        scene.mesh_shader("sphere_r", mode);
+
+        // Texture toggle — uses the built-in textured pipeline on the floor
+        if (tex_tog.has_changed()) {
+            if (tex_tog.value()) {
+                // scene.mesh_texture("floor", "bricks");   // un-comment once you load one
+                print("texture toggle: on (load a texture first)");
+            } else {
+                scene.mesh_texture("floor", "");
+            }
+        }
+
+        if (reset_btn.has_changed()) {
+            t = 0.0;
+        }
+
+        wait(0.016);
+    }
+}
+
+fn main() { wait(1); }

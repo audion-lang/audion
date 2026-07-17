@@ -31,6 +31,10 @@ let search     = ui.widgets.text_input("search");
 let pattern    = ui.widgets.array("pattern", 8);
 let freqs      = ui.widgets.array_numbers("freqs", 4);
 
+// -- file / folder pickers
+let sample     = ui.widgets.file_picker("sample", "wav", "aiff", "mp3");
+let output_dir = ui.widgets.folder_picker("output_dir");
+
 // second window gets its own widgets
 let viz_toggle = xui.widgets.toggle("viz_on");
 let viz_mode   = xui.widgets.dropdown("viz_mode", "Waveform", "Spectrum", "3D");
@@ -71,6 +75,12 @@ thread b {
         }
         if (search.has_changed()) {
             print("search: " + search.value());
+        }
+        if (sample.has_changed()) {
+            print("sample: " + sample.value());
+        }
+        if (output_dir.has_changed()) {
+            print("output dir: " + output_dir.value());
         }
         if (viz_mode.has_changed()) {
             print("viz mode: " + viz_mode.value());

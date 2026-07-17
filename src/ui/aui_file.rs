@@ -23,32 +23,44 @@
 //   label = "Tempo (BPM)"
 //   color = [255, 102, 0]   # r g b 0-255
 //   width = 240.0
-//
-//   [reverb]
-//   label = "Reverb Mix"
-//   bg_color = [20, 20, 30]
+//   x     = 120.0           # absolute position (set by drag-to-arrange edit mode)
+//   y     = 40.0
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 use super::{WidgetConfig, WidgetStyle};
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 struct AuiEntry {
-    min: Option<f64>,
-    max: Option<f64>,
-    default: Option<f64>,
-    label: Option<String>,
-    color: Option<[u8; 3]>,
-    bg_color: Option<[u8; 3]>,
-    width: Option<f32>,
-    height: Option<f32>,
+    min:             Option<f64>,
+    max:             Option<f64>,
+    default:         Option<f64>,
+    label:           Option<String>,
+    color:           Option<[u8; 3]>,
+    /// bg_color accepts [r,g,b] or [r,g,b,a] — stored as Vec so both parse.
+    bg_color:        Option<Vec<u8>>,
+    width:           Option<f32>,
+    height:          Option<f32>,
+    x:               Option<f32>,
+    y:               Option<f32>,
+    /// Window-only background image fields (used in [__window] section).
+    bg_image:        Option<String>,
+    bg_image_mode:   Option<String>,
+    bg_image_alpha:  Option<u8>,
+}
+
+fn parse_bg_color_rgba(v: &[u8]) -> Option<[u8; 4]> {
+    match v {
+        [r, g, b]    => Some([*r, *g, *b, 255]),
+        [r, g, b, a] => Some([*r, *g, *b, *a]),
+        _            => None,
+    }
 }
 
 type AuiFile = HashMap<String, AuiEntry>;
 
-/// Load widget config overrides from the companion `.aui` file (if present),
-/// applying them on top of `default`. Missing file → `default` unchanged.
+/// Load widget config overrides from the companion `.aui` file (if present).
 pub fn load_widget_config(path: &Path, id: &str, mut default: WidgetConfig) -> WidgetConfig {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -60,16 +72,19 @@ pub fn load_widget_config(path: &Path, id: &str, mut default: WidgetConfig) -> W
     };
     let Some(entry) = file.get(id) else { return default; };
 
-    if let Some(v) = entry.min     { default.min = v; }
-    if let Some(v) = entry.max     { default.max = v; }
-    if let Some(s) = &entry.label  { default.label = Some(s.clone()); }
+    if let Some(v) = entry.min    { default.min = v; }
+    if let Some(v) = entry.max    { default.max = v; }
+    if let Some(s) = &entry.label { default.label = Some(s.clone()); }
+    if let Some(v) = entry.x      { default.x = Some(v); }
+    if let Some(v) = entry.y      { default.y = Some(v); }
 
-    // default value is handled by the caller via WidgetState::new after config merge
-    let _ = entry.default; // reserved for future: set initial WidgetValue
-
+    let widget_bg = entry.bg_color.as_deref().and_then(|v| match v {
+        [r, g, b] | [r, g, b, _] => Some([*r, *g, *b]),
+        _ => None,
+    });
     default.style = WidgetStyle {
         color:    entry.color,
-        bg_color: entry.bg_color,
+        bg_color: widget_bg,
         width:    entry.width,
         height:   entry.height,
     };
@@ -77,45 +92,143 @@ pub fn load_widget_config(path: &Path, id: &str, mut default: WidgetConfig) -> W
     default
 }
 
-/// Write widget defaults back to the `.aui` file (auto-generate if absent).
-/// Existing entries are preserved; only missing widget ids are appended.
+/// Write widget defaults back to the `.aui` file for any widget not yet present.
 pub fn save_widget_defaults(path: &Path, id: &str, config: &WidgetConfig) {
-    // Read existing or start empty
     let existing_str = std::fs::read_to_string(path).unwrap_or_default();
     let mut file: AuiFile = toml::from_str(&existing_str).unwrap_or_default();
 
-    // Only write if the id is not yet present (don't overwrite user edits)
     if file.contains_key(id) {
         return;
     }
 
     file.insert(id.to_string(), AuiEntry {
-        min:      Some(config.min),
-        max:      Some(config.max),
-        default:  None,
-        label:    config.label.clone(),
-        color:    config.style.color,
-        bg_color: config.style.bg_color,
-        width:    config.style.width,
-        height:   config.style.height,
+        min: Some(config.min), max: Some(config.max),
+        label: config.label.clone(),
+        color: config.style.color,
+        bg_color: config.style.bg_color.map(|[r, g, b]| vec![r, g, b]),
+        width: config.style.width, height: config.style.height,
+        x: config.x, y: config.y,
+        default: None,
+        bg_image: None, bg_image_mode: None, bg_image_alpha: None,
     });
 
-    // Serialise manually — toml crate can't serialise our struct without Serialize derive.
-    // Build a minimal hand-rolled TOML string and append to the file.
     let mut out = existing_str;
     if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
     out.push('\n');
     out.push_str(&format!("[{}]\n", id));
-    out.push_str(&format!("min = {}\n", config.min));
-    out.push_str(&format!("max = {}\n", config.max));
+    out.push_str(&format!("min = {}\nmax = {}\n", config.min, config.max));
     if let Some(label) = &config.label {
         out.push_str(&format!("label = \"{}\"\n", label.replace('"', "\\\"")));
     }
 
-    let _ = std::fs::write(path, out); // best-effort
+    let _ = std::fs::write(path, out);
 }
 
-/// Derive the `.aui` path from a `.au` source path: `my_song.au` → `my_song.aui`.
+/// Layout info collected per widget during edit mode exit.
+pub struct WidgetLayout {
+    pub x: f32,
+    pub y: f32,
+    pub width:  Option<f32>,
+    pub height: Option<f32>,
+}
+
+/// Save all current widget positions + sizes and optional window dimensions to the `.aui` file.
+pub fn save_layout(
+    path: &Path,
+    layouts: &HashMap<String, WidgetLayout>,
+    window_size: Option<(f32, f32)>,
+) {
+    let existing_str = std::fs::read_to_string(path).unwrap_or_default();
+    let mut file: AuiFile = toml::from_str(&existing_str).unwrap_or_default();
+
+    for (id, layout) in layouts {
+        let entry = file.entry(id.clone()).or_default();
+        entry.x = Some(layout.x);
+        entry.y = Some(layout.y);
+        if layout.width.is_some()  { entry.width  = layout.width; }
+        if layout.height.is_some() { entry.height = layout.height; }
+    }
+
+    // __window reserved entry for window dimensions
+    if let Some((w, h)) = window_size {
+        let win = file.entry("__window".to_string()).or_default();
+        win.width  = Some(w);
+        win.height = Some(h);
+    }
+
+    // Hand-roll TOML output (no Serialize derive)
+    let mut out = String::new();
+    // Write __window first if present
+    if let Some(win) = file.get("__window") {
+        out.push_str("[__window]\n");
+        if let Some(v) = win.width  { out.push_str(&format!("width = {}\n", v)); }
+        if let Some(v) = win.height { out.push_str(&format!("height = {}\n", v)); }
+        if let Some(c) = &win.bg_color {
+            let arr: Vec<String> = c.iter().map(|v| v.to_string()).collect();
+            out.push_str(&format!("bg_color = [{}]\n", arr.join(", ")));
+        }
+        if let Some(img) = &win.bg_image {
+            out.push_str(&format!("bg_image = \"{}\"\n", img.replace('"', "\\\"")));
+        }
+        if let Some(m) = &win.bg_image_mode  { out.push_str(&format!("bg_image_mode = \"{}\"\n", m)); }
+        if let Some(a) = win.bg_image_alpha   { out.push_str(&format!("bg_image_alpha = {}\n", a)); }
+        out.push('\n');
+    }
+    for (id, entry) in &file {
+        if id == "__window" { continue; }
+        out.push_str(&format!("[{}]\n", id));
+        if let Some(v) = entry.min      { out.push_str(&format!("min = {}\n", v)); }
+        if let Some(v) = entry.max      { out.push_str(&format!("max = {}\n", v)); }
+        if let Some(s) = &entry.label   { out.push_str(&format!("label = \"{}\"\n", s.replace('"', "\\\""))); }
+        if let Some([r,g,b]) = entry.color    { out.push_str(&format!("color = [{}, {}, {}]\n", r, g, b)); }
+        if let Some(c) = &entry.bg_color {
+            let s: Vec<String> = c.iter().map(|v| v.to_string()).collect();
+            out.push_str(&format!("bg_color = [{}]\n", s.join(", ")));
+        }
+        if let Some(v) = entry.width    { out.push_str(&format!("width = {}\n", v)); }
+        if let Some(v) = entry.height   { out.push_str(&format!("height = {}\n", v)); }
+        if let Some(v) = entry.x        { out.push_str(&format!("x = {}\n", v)); }
+        if let Some(v) = entry.y        { out.push_str(&format!("y = {}\n", v)); }
+        out.push('\n');
+    }
+
+    let _ = std::fs::write(path, out);
+}
+
+/// Read window size saved by a previous edit session. Returns None if absent.
+pub fn load_window_size(path: &Path) -> Option<(f32, f32)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let file: AuiFile = toml::from_str(&content).ok()?;
+    let win = file.get("__window")?;
+    Some((win.width?, win.height?))
+}
+
+/// All window-level background settings from the `[__window]` section.
+pub struct WindowBackground {
+    pub color:       Option<[u8; 4]>,
+    pub image:       Option<String>,
+    pub image_mode:  super::BgImageMode,
+    pub image_alpha: u8,
+}
+
+/// Load background settings from the `[__window]` section of the .aui file.
+pub fn load_window_background(path: &Path) -> Option<WindowBackground> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let file: AuiFile = toml::from_str(&content).ok()?;
+    let win = file.get("__window")?;
+
+    let has_something = win.bg_color.is_some() || win.bg_image.is_some();
+    if !has_something { return None; }
+
+    Some(WindowBackground {
+        color:       win.bg_color.as_deref().and_then(parse_bg_color_rgba),
+        image:       win.bg_image.clone(),
+        image_mode:  super::BgImageMode::from_str(win.bg_image_mode.as_deref().unwrap_or("fill")),
+        image_alpha: win.bg_image_alpha.unwrap_or(255),
+    })
+}
+
+/// Derive the `.aui` path from a `.au` source path.
 pub fn aui_path_for(au_path: &Path) -> std::path::PathBuf {
     au_path.with_extension("aui")
 }

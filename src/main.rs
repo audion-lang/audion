@@ -215,8 +215,12 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
                 }
                 interp_done_bg.store(true, Ordering::Relaxed);
             });
+            let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/logo.png")).ok();
             let options = eframe::NativeOptions {
                 renderer: eframe::Renderer::Wgpu,
+                viewport: eframe::egui::ViewportBuilder::default().with_icon(
+                    icon.unwrap_or_default()
+                ),
                 ..Default::default()
             };
             eframe::run_native("Audion", options, Box::new(|cc| {

@@ -22,8 +22,12 @@ use super::{ui_registry, UiHandle, WidgetKind, WidgetValue};
 
 pub struct AudionUiApp {
     interpreter_done: Arc<AtomicBool>,
-    /// False when wgpu is unavailable (headless / CI); ThreeCanvas degrades to placeholder.
     three_supported: bool,
+    edit_mode: bool,
+    /// Widget IDs whose Area was hovered last frame — used to highlight frames.
+    edit_hovered: std::collections::HashSet<String>,
+    /// Cached background textures: handle_id → (image_path, mode, TextureHandle)
+    bg_textures: std::collections::HashMap<u64, (String, super::BgImageMode, egui::TextureHandle)>,
 }
 
 impl AudionUiApp {
@@ -39,11 +43,28 @@ impl AudionUiApp {
         } else {
             false
         };
-        Self { interpreter_done, three_supported }
+        Self { interpreter_done, three_supported, edit_mode: false, edit_hovered: Default::default(), bg_textures: Default::default() }
     }
 }
 
 impl eframe::App for AudionUiApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        // When a custom background is configured, clear to transparent black so alpha
+        // in bg_color blends with black rather than egui's opaque panel fill.
+        let has_bg = ui_registry().lock().unwrap().first()
+            .map(|h| {
+                let cfg = h.config.lock().unwrap();
+                cfg.bg_color.is_some() || cfg.bg_image.is_some()
+            })
+            .unwrap_or(false);
+        if has_bg {
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            let c = visuals.panel_fill;
+            [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let registry: Vec<Arc<UiHandle>> = ui_registry().lock().unwrap().clone();
 
@@ -54,37 +75,186 @@ impl eframe::App for AudionUiApp {
             return;
         }
 
-        // Brief startup gap before interpreter registers its first handle.
         if registry.is_empty() {
             egui::CentralPanel::default().show(ctx, |_ui| {});
             ctx.request_repaint_after(Duration::from_millis(16));
             return;
         }
 
-        // First handle owns the root OS window (set its title/size, render there).
+        // Toggle edit mode with Ctrl+E
+        let toggle = ctx.input(|i| i.key_pressed(egui::Key::E) && i.modifiers.ctrl);
+        if toggle {
+            if self.edit_mode { self.exit_edit_mode(&registry, ctx); }
+            else              { self.enter_edit_mode(&registry); }
+        }
+
         let first = &registry[0];
         {
-            let cfg = first.config.lock().unwrap();
+            let mut cfg = first.config.lock().unwrap();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(cfg.title.clone()));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                egui::Vec2::new(cfg.width, cfg.height),
-            ));
+            // Only resize window when the script explicitly calls ui.window(), not every frame.
+            // This lets the OS / user freely resize the window otherwise.
+            if cfg.size_dirty {
+                if let Some(ref aui_path) = cfg.aui_path.clone() {
+                    // Override window size with saved value if present
+                    if let Some((w, h)) = crate::ui::aui_file::load_window_size(aui_path) {
+                        cfg.width  = w;
+                        cfg.height = h;
+                    }
+                    // Load background settings (only if the script hasn't set them already)
+                    if cfg.bg_color.is_none() && cfg.bg_image.is_none() {
+                        if let Some(bg) = crate::ui::aui_file::load_window_background(aui_path) {
+                            cfg.bg_color       = bg.color;
+                            cfg.bg_image       = bg.image;
+                            cfg.bg_image_mode  = bg.image_mode;
+                            cfg.bg_image_alpha = bg.image_alpha;
+                        }
+                    }
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(cfg.width, cfg.height)));
+                cfg.size_dirty = false;
+            }
         }
+
         let ts = self.three_supported;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            render_widgets(ui, first, ts);
+        let edit = self.edit_mode;
+        let mut exit_edit = false;
+
+        // Paint window background (color / image) on the background layer behind all panels
+        paint_window_background(ctx, first, &mut self.bg_textures);
+
+        let has_bg = {
+            let cfg = first.config.lock().unwrap();
+            cfg.bg_color.is_some() || cfg.bg_image.is_some()
+        };
+
+        let hovered = &mut self.edit_hovered;
+        let panel = egui::CentralPanel::default();
+        let panel = if has_bg { panel.frame(egui::Frame::none()) } else { panel };
+        panel.show(ctx, |ui| {
+            exit_edit = render_edit_toolbar(ui, edit);
+            render_widgets(ctx, ui, first, ts, edit, hovered);
         });
 
-        // Every additional handle gets its own OS window via an immediate viewport.
         for handle in registry.iter().skip(1) {
-            render_as_viewport(ctx, handle, ts);
+            render_as_viewport(ctx, handle, ts, edit, hovered);
+        }
+
+        if exit_edit {
+            self.exit_edit_mode(&registry, ctx);
         }
 
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
 
-fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_supported: bool) {
+impl AudionUiApp {
+    fn enter_edit_mode(&mut self, registry: &[Arc<UiHandle>]) {
+        for handle in registry {
+            auto_assign_positions(handle);
+        }
+        self.edit_mode = true;
+    }
+
+    fn exit_edit_mode(&mut self, registry: &[Arc<UiHandle>], ctx: &egui::Context) {
+        let window_size = {
+            let r = ctx.screen_rect();
+            Some((r.width(), r.height()))
+        };
+        for handle in registry {
+            save_layout_to_aui(handle, window_size);
+        }
+        self.edit_mode = false;
+    }
+}
+
+/// Assign default grid positions to widgets that don't have explicit x/y yet.
+fn auto_assign_positions(handle: &Arc<UiHandle>) {
+    let order = handle.widget_order.lock().unwrap().clone();
+    let widgets = handle.widgets.lock().unwrap();
+    let mut x = 16.0_f32;
+    let mut y = 16.0_f32;
+    let col_width = 220.0_f32;
+    let row_height = 60.0_f32;
+    let max_cols = 3usize;
+    let mut col = 0usize;
+
+    for id in &order {
+        if let Some(state_arc) = widgets.get(id) {
+            let mut state = state_arc.lock().unwrap();
+            if state.config.x.is_none() {
+                state.config.x = Some(x);
+                state.config.y = Some(y);
+            }
+            col += 1;
+            if col >= max_cols {
+                col = 0;
+                x = 16.0;
+                y += row_height;
+            } else {
+                x += col_width;
+            }
+        }
+    }
+}
+
+/// Write widget positions + sizes and window dimensions to the companion .aui file.
+fn save_layout_to_aui(handle: &Arc<UiHandle>, window_size: Option<(f32, f32)>) {
+    use super::aui_file::{self, WidgetLayout};
+    use std::collections::HashMap;
+
+    let aui_path = {
+        let cfg = handle.config.lock().unwrap();
+        match cfg.aui_path.clone() {
+            Some(p) => p,
+            None => return,
+        }
+    };
+
+    let order = handle.widget_order.lock().unwrap().clone();
+    let widgets = handle.widgets.lock().unwrap();
+    let mut layouts: HashMap<String, WidgetLayout> = HashMap::new();
+
+    for id in &order {
+        if let Some(state_arc) = widgets.get(id) {
+            let state = state_arc.lock().unwrap();
+            if let (Some(x), Some(y)) = (state.config.x, state.config.y) {
+                layouts.insert(id.clone(), WidgetLayout {
+                    x,
+                    y,
+                    width:  state.config.style.width,
+                    height: state.config.style.height,
+                });
+            }
+        }
+    }
+
+    aui_file::save_layout(&aui_path, &layouts, window_size);
+}
+
+/// Draw the edit-mode toolbar. Returns true if the user clicked "Done".
+fn render_edit_toolbar(ui: &mut egui::Ui, edit_mode: bool) -> bool {
+    if !edit_mode { return false; }
+
+    let mut done = false;
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_premultiplied(40, 20, 0, 220))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("✏  Edit Layout").color(egui::Color32::from_rgb(255, 180, 60)).strong());
+                ui.label(egui::RichText::new("drag widgets · resize with handles · Ctrl+E to finish").weak().small());
+                if ui.button(egui::RichText::new("  ✓ Done  ").color(egui::Color32::from_rgb(100, 220, 100))).clicked() {
+                    done = true;
+                }
+            });
+        });
+    ui.add_space(6.0);
+    done
+}
+
+fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_supported: bool, edit_mode: bool, hovered: &mut std::collections::HashSet<String>) {
     let (title, width, height) = {
         let cfg = handle.config.lock().unwrap();
         (cfg.title.clone(), cfg.width, cfg.height)
@@ -96,10 +266,26 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_support
         .with_inner_size([width, height]);
 
     let handle_clone = handle.clone();
+    let mut vp_hovered = hovered.clone();
+    // Secondary windows share the same egui Context but need their own texture cache key space.
+    // We clone the bg_textures ref by moving a clone — secondary windows are rare.
     ctx.show_viewport_immediate(viewport_id, builder, move |ctx, _class| {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            render_widgets(ui, &handle_clone, three_supported);
+        let mut exit_edit = false;
+        let has_bg = {
+            let cfg = handle_clone.config.lock().unwrap();
+            cfg.bg_color.is_some() || cfg.bg_image.is_some()
+        };
+        let mut vp_textures = std::collections::HashMap::new();
+        paint_window_background(ctx, &handle_clone, &mut vp_textures);
+        let panel = egui::CentralPanel::default();
+        let panel = if has_bg { panel.frame(egui::Frame::none()) } else { panel };
+        panel.show(ctx, |ui| {
+            exit_edit = render_edit_toolbar(ui, edit_mode);
+            render_widgets(ctx, ui, &handle_clone, three_supported, edit_mode, &mut vp_hovered);
         });
+        if exit_edit {
+            save_layout_to_aui(&handle_clone, None);
+        }
     });
 }
 
@@ -107,12 +293,111 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_support
 // Widget rendering
 // ---------------------------------------------------------------------------
 
-fn render_widgets(ui: &mut egui::Ui, handle: &UiHandle, three_supported: bool) {
+fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, three_supported: bool, edit_mode: bool, edit_hovered: &mut std::collections::HashSet<String>) {
     let order: Vec<String> = handle.widget_order.lock().unwrap().clone();
-    let widgets = handle.widgets.lock().unwrap();
+    // Clone the Arc map so we don't hold the widgets mutex during rendering
+    let widget_map: std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<super::WidgetState>>> = {
+        handle.widgets.lock().unwrap().clone()
+    };
 
     for id in &order {
-        if let Some(state_arc) = widgets.get(id) {
+        let Some(state_arc) = widget_map.get(id) else { continue };
+
+        let (has_pos, pos_x, pos_y) = {
+            let s = state_arc.lock().unwrap();
+            (s.config.x.is_some() && s.config.y.is_some(), s.config.x.unwrap_or(0.0), s.config.y.unwrap_or(0.0))
+        };
+
+        if edit_mode || has_pos {
+            let area_id = egui::Id::new(("audion_widget", id.as_str()));
+
+            // KEY: in edit mode use default_pos (not fixed_pos) so egui owns the drag.
+            // fixed_pos would override egui's memory every frame, killing X movement.
+            let area = if edit_mode {
+                egui::Area::new(area_id)
+                    .default_pos(egui::pos2(pos_x, pos_y))
+                    .movable(true)
+                    .order(egui::Order::Middle)
+            } else {
+                egui::Area::new(area_id)
+                    .fixed_pos(egui::pos2(pos_x, pos_y))
+                    .movable(false)
+                    .order(egui::Order::Middle)
+            };
+
+            // Highlight state from last frame (one-frame lag, imperceptible at 60fps)
+            let is_hovered = edit_mode && edit_hovered.contains(id);
+            let (stroke_color, stroke_w, handle_color, handle_bg) = if is_hovered {
+                (
+                    egui::Color32::from_rgb(255, 230, 120),  // bright gold border
+                    2.0_f32,
+                    egui::Color32::WHITE,
+                    egui::Color32::from_rgba_premultiplied(255, 200, 60, 40),
+                )
+            } else {
+                (
+                    egui::Color32::from_rgb(255, 160, 40),   // normal orange border
+                    1.5_f32,
+                    egui::Color32::from_rgb(200, 130, 30),
+                    egui::Color32::TRANSPARENT,
+                )
+            };
+
+            let resp = area.show(ctx, |ui| {
+                let cap_w = {
+                    let s = state_arc.lock().unwrap();
+                    s.config.style.width.unwrap_or(240.0)
+                };
+                ui.set_max_width(cap_w);
+
+                if edit_mode {
+                    egui::Frame::new()
+                        .stroke(egui::Stroke::new(stroke_w, stroke_color))
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::same(6))
+                        .show(ui, |ui| {
+                            // Drag handle strip — detects hover for cursor change
+                            let avail_w = ui.available_width().max(60.0);
+                            let (handle_rect, handle_resp) = ui.allocate_exact_size(
+                                egui::vec2(avail_w, 16.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(handle_rect, 2.0, handle_bg);
+                            ui.painter().text(
+                                handle_rect.left_center() + egui::vec2(4.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                "⠿  drag",
+                                egui::FontId::proportional(11.0),
+                                handle_color,
+                            );
+                            if handle_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            let mut state = state_arc.lock().unwrap();
+                            render_widget(ui, &mut state, three_supported);
+                            render_resize_handle(ui, &mut state);
+                        });
+                } else {
+                    let mut state = state_arc.lock().unwrap();
+                    render_widget(ui, &mut state, three_supported);
+                }
+            });
+
+            if edit_mode {
+                // Update hover set for next frame
+                if resp.response.hovered() {
+                    edit_hovered.insert(id.clone());
+                } else {
+                    edit_hovered.remove(id.as_str());
+                }
+                // Read back position
+                let new_pos = resp.response.rect.min;
+                let mut state = state_arc.lock().unwrap();
+                state.config.x = Some(new_pos.x);
+                state.config.y = Some(new_pos.y);
+            }
+        } else {
+            // Flow layout (no position set)
             let mut state = state_arc.lock().unwrap();
             render_widget(ui, &mut state, three_supported);
             ui.add_space(4.0);
@@ -173,7 +458,9 @@ fn render_widget_inner(
                 let min = state.config.min as f32;
                 let max = state.config.max as f32;
                 let mut fv = *v as f32;
-                if ui.add(egui::Slider::new(&mut fv, min..=max).vertical()).changed() {
+                let w = style.width.unwrap_or(20.0);
+                let h = style.height.unwrap_or(120.0);
+                if ui.add_sized([w, h], egui::Slider::new(&mut fv, min..=max).vertical()).changed() {
                     *v = fv as f64;
                     state.dirty = true;
                 }
@@ -347,12 +634,218 @@ fn render_widget_inner(
             }
         }
 
+        WidgetKind::FilePicker { filters } => {
+            let path = if let WidgetValue::Str(s) = &state.value { s.clone() } else { String::new() };
+            ui.horizontal(|ui| {
+                let btn_label = if path.is_empty() { format!("📂  {}", label) } else { "📂  …".to_string() };
+                if ui.button(&btn_label).clicked() {
+                    let mut dialog = rfd::FileDialog::new();
+                    for ext in &filters {
+                        dialog = dialog.add_filter(ext, &[ext.as_str()]);
+                    }
+                    if let Some(p) = dialog.pick_file() {
+                        state.value = WidgetValue::Str(p.to_string_lossy().into_owned());
+                        state.dirty = true;
+                    }
+                }
+                if !path.is_empty() {
+                    let display = std::path::Path::new(&path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or(path.clone());
+                    ui.label(&display).on_hover_text(&path);
+                }
+            });
+        }
+
+        WidgetKind::FolderPicker => {
+            let path = if let WidgetValue::Str(s) = &state.value { s.clone() } else { String::new() };
+            ui.horizontal(|ui| {
+                let btn_label = if path.is_empty() { format!("📁  {}", label) } else { "📁  …".to_string() };
+                if ui.button(&btn_label).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        state.value = WidgetValue::Str(p.to_string_lossy().into_owned());
+                        state.dirty = true;
+                    }
+                }
+                if !path.is_empty() {
+                    let display = std::path::Path::new(&path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or(path.clone());
+                    ui.label(&display).on_hover_text(&path);
+                }
+            });
+        }
+
         WidgetKind::Canvas2d => {
             if let WidgetValue::Canvas2d(data_arc) = &state.value {
-                render_canvas2d(ui, data_arc);
+                render_canvas2d(ui, data_arc, style.width, style.height);
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Window background — color + image (fill/fit/center/stretch/tile)
+// ---------------------------------------------------------------------------
+
+fn paint_window_background(
+    ctx: &egui::Context,
+    handle: &std::sync::Arc<super::UiHandle>,
+    textures: &mut std::collections::HashMap<u64, (String, super::BgImageMode, egui::TextureHandle)>,
+) {
+    let (bg_color, bg_image, bg_mode, bg_alpha) = {
+        let cfg = handle.config.lock().unwrap();
+        (cfg.bg_color, cfg.bg_image.clone(), cfg.bg_image_mode.clone(), cfg.bg_image_alpha)
+    };
+
+    if bg_color.is_none() && bg_image.is_none() { return; }
+
+    let screen = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::background());
+
+    if let Some([r, g, b, a]) = bg_color {
+        painter.rect_filled(screen, 0.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a));
+    }
+
+    if let Some(ref path) = bg_image {
+        let needs_load = textures.get(&handle.id)
+            .map(|(p, m, _)| p != path || m != &bg_mode)
+            .unwrap_or(true);
+
+        if needs_load {
+            if let Some(tex) = load_bg_texture(ctx, path, &bg_mode) {
+                textures.insert(handle.id, (path.clone(), bg_mode.clone(), tex));
+            }
+        }
+
+        if let Some((_, _, tex)) = textures.get(&handle.id) {
+            let tint = egui::Color32::from_rgba_unmultiplied(255, 255, 255, bg_alpha);
+            paint_bg_image(&painter, screen, tex, &bg_mode, tint);
+        }
+    }
+}
+
+fn load_bg_texture(ctx: &egui::Context, path: &str, mode: &super::BgImageMode) -> Option<egui::TextureHandle> {
+    let img = image::open(path).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    let pixels = img.into_raw();
+
+    let wrap = if *mode == super::BgImageMode::Tile {
+        egui::TextureWrapMode::Repeat
+    } else {
+        egui::TextureWrapMode::ClampToEdge
+    };
+
+    Some(ctx.load_texture(
+        format!("audion_bg:{}", path),
+        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels),
+        egui::TextureOptions {
+            magnification: egui::TextureFilter::Linear,
+            minification:  egui::TextureFilter::Linear,
+            wrap_mode: wrap,
+            ..Default::default()
+        },
+    ))
+}
+
+fn paint_bg_image(
+    painter: &egui::Painter,
+    screen: egui::Rect,
+    tex: &egui::TextureHandle,
+    mode: &super::BgImageMode,
+    tint: egui::Color32,
+) {
+    let ts = tex.size_vec2();
+    let sw = screen.width();
+    let sh = screen.height();
+    let img_aspect    = ts.x / ts.y;
+    let screen_aspect = sw / sh;
+
+    let (draw_rect, uv) = match mode {
+        super::BgImageMode::Fill => {
+            // Cover: fill screen, maintain aspect, crop excess
+            let uv = if img_aspect > screen_aspect {
+                // Image wider → fit height, crop left/right
+                let uv_w = screen_aspect / img_aspect;
+                let pad  = (1.0 - uv_w) / 2.0;
+                egui::Rect::from_min_max(egui::pos2(pad, 0.0), egui::pos2(1.0 - pad, 1.0))
+            } else {
+                // Image taller → fit width, crop top/bottom
+                let uv_h = img_aspect / screen_aspect;
+                let pad  = (1.0 - uv_h) / 2.0;
+                egui::Rect::from_min_max(egui::pos2(0.0, pad), egui::pos2(1.0, 1.0 - pad))
+            };
+            (screen, uv)
+        }
+        super::BgImageMode::Fit => {
+            // Letterbox: show whole image, add bars
+            let (dw, dh) = if img_aspect > screen_aspect {
+                (sw, sw / img_aspect)
+            } else {
+                (sh * img_aspect, sh)
+            };
+            let rect = egui::Rect::from_center_size(screen.center(), egui::vec2(dw, dh));
+            (rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)))
+        }
+        super::BgImageMode::Center => {
+            // Native size centered, no scaling
+            let rect = egui::Rect::from_center_size(screen.center(), ts);
+            (rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)))
+        }
+        super::BgImageMode::Stretch => {
+            // Stretch to fill exactly
+            (screen, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)))
+        }
+        super::BgImageMode::Tile => {
+            // Tile: UVs > 1.0 with TextureWrapMode::Repeat
+            let uv_max = egui::pos2(sw / ts.x, sh / ts.y);
+            (screen, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), uv_max))
+        }
+    };
+
+    painter.image(tex.id(), draw_rect, uv, tint);
+}
+
+// ---------------------------------------------------------------------------
+// Edit-mode resize handle — drag corner to set style.width / style.height
+// ---------------------------------------------------------------------------
+
+fn render_resize_handle(ui: &mut egui::Ui, state: &mut super::WidgetState) {
+    let handle_size = 10.0_f32;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::Vec2::new(ui.available_width().max(handle_size), handle_size),
+        egui::Sense::drag(),
+    );
+    let corner = egui::pos2(rect.right(), rect.bottom());
+    let handle_rect = egui::Rect::from_center_size(corner, egui::Vec2::splat(handle_size));
+    let handle_resp = ui.interact(handle_rect, resp.id.with("resize"), egui::Sense::drag());
+
+    let painter = ui.painter();
+    let color = if handle_resp.hovered() || handle_resp.dragged() {
+        egui::Color32::from_rgb(255, 160, 40)
+    } else {
+        egui::Color32::from_rgba_premultiplied(255, 160, 40, 100)
+    };
+    // Draw a small resize grip (3 diagonal lines)
+    for i in 0..3 {
+        let offset = (i as f32 + 1.0) * 3.0;
+        painter.line_segment(
+            [egui::pos2(corner.x - offset, corner.y), egui::pos2(corner.x, corner.y - offset)],
+            egui::Stroke::new(1.0, color),
+        );
+    }
+
+    if handle_resp.dragged() {
+        let delta = handle_resp.drag_delta();
+        let current_w = state.config.style.width.unwrap_or(rect.width());
+        let current_h = state.config.style.height.unwrap_or(20.0);
+        state.config.style.width  = Some((current_w + delta.x).max(40.0));
+        state.config.style.height = Some((current_h + delta.y).max(20.0));
+    }
+
+    let _ = rect;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,12 +1089,12 @@ fn draw_arc(painter: &egui::Painter, center: egui::Pos2, r: f32, a0: f32, a1: f3
 // 2D canvas — replay DrawCmd list via egui Painter
 // ---------------------------------------------------------------------------
 
-fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex<super::Canvas2dData>>) {
+fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex<super::Canvas2dData>>, override_w: Option<f32>, override_h: Option<f32>) {
     use super::DrawCmd;
 
     let (cmds, w, h) = {
         let d = data_arc.lock().unwrap();
-        (d.cmds.clone(), d.width, d.height)
+        (d.cmds.clone(), override_w.unwrap_or(d.width), override_h.unwrap_or(d.height))
     };
 
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::hover());

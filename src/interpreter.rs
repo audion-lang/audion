@@ -827,6 +827,49 @@ impl Interpreter {
                 cfg.title = title;
                 cfg.width = width;
                 cfg.height = height;
+                cfg.size_dirty = true;
+                Ok(Value::Nil)
+            }
+
+            // ui.background(r, g, b) / ui.background(r, g, b, a)
+            Value::UiContext(handle) if method == "background" => {
+                let r = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                let g = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                let b = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0) as u8;
+                let a = args.get(3).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                handle.config.lock().unwrap().bg_color = Some([r, g, b, a]);
+                Ok(Value::Nil)
+            }
+
+            // ui.background_image(path) / ui.background_image(path, mode) / ui.background_image(path, mode, alpha)
+            Value::UiContext(handle) if method == "background_image" => {
+                let path_raw = args.first()
+                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .ok_or_else(|| AudionError::RuntimeError {
+                        msg: "ui.background_image() requires a path string as first argument".to_string(),
+                    })?;
+                // Resolve relative paths against the script's directory
+                let resolved = if std::path::Path::new(&path_raw).is_absolute() {
+                    path_raw
+                } else {
+                    self.base_path.join(&path_raw).to_string_lossy().into_owned()
+                };
+                let mode_str = args.get(1)
+                    .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+                    .unwrap_or("fill");
+                let alpha = args.get(2).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                let mut cfg = handle.config.lock().unwrap();
+                cfg.bg_image       = Some(resolved);
+                cfg.bg_image_mode  = crate::ui::BgImageMode::from_str(mode_str);
+                cfg.bg_image_alpha = alpha;
+                Ok(Value::Nil)
+            }
+
+            // ui.background_clear()
+            Value::UiContext(handle) if method == "background_clear" => {
+                let mut cfg = handle.config.lock().unwrap();
+                cfg.bg_color = None;
+                cfg.bg_image = None;
                 Ok(Value::Nil)
             }
 
@@ -868,6 +911,13 @@ impl Interpreter {
                             .unwrap_or(4);
                         WidgetKind::ArrayNumbers(n)
                     }
+                    "file_picker" => {
+                        let filters = args.iter().skip(1)
+                            .filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .collect();
+                        WidgetKind::FilePicker { filters }
+                    }
+                    "folder_picker" => WidgetKind::FolderPicker,
                     _ => return Err(AudionError::RuntimeError {
                         msg: format!("unknown widget type: ui.widgets.{}", method),
                     }),
@@ -882,12 +932,16 @@ impl Interpreter {
                         .collect();
                 }
 
-                // Merge .aui overrides (if companion file exists next to the script)
+                // Merge .aui overrides and record the aui_path on the handle for edit-mode saves
                 {
                     use crate::ui::aui_file;
                     let au_path = self.base_path.join(&self.current_file);
                     let aui_path = aui_file::aui_path_for(&au_path);
                     config = aui_file::load_widget_config(&aui_path, &id, config);
+                    let mut cfg = handle.config.lock().unwrap();
+                    if cfg.aui_path.is_none() {
+                        cfg.aui_path = Some(aui_path);
+                    }
                 }
 
                 let state = ui::get_or_create_widget(handle, &id, config);
@@ -1265,7 +1319,7 @@ impl Interpreter {
             }
 
             // widget.min(v) / widget.max(v) / widget.label(str) / widget.style(key, ...)
-            Value::WidgetRef(state_arc) if matches!(method, "min" | "max" | "label" | "style") => {
+            Value::WidgetRef(state_arc) if matches!(method, "min" | "max" | "label" | "style" | "width" | "height") => {
                 let mut state = state_arc.lock().unwrap();
                 match method {
                     "min" => {
@@ -1281,6 +1335,16 @@ impl Interpreter {
                     "label" => {
                         if let Some(Value::String(s)) = args.first() {
                             state.config.label = Some(s.clone());
+                        }
+                    }
+                    "width" => {
+                        if let Some(w) = args.first().and_then(|v| v.as_number()) {
+                            state.config.style.width = Some(w as f32);
+                        }
+                    }
+                    "height" => {
+                        if let Some(h) = args.first().and_then(|v| v.as_number()) {
+                            state.config.style.height = Some(h as f32);
                         }
                     }
                     "style" => {

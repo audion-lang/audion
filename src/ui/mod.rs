@@ -87,15 +87,58 @@ pub fn ui_registry() -> &'static Mutex<Vec<Arc<UiHandle>>> {
 // Window config
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum BgImageMode {
+    #[default]
+    Fill,    // cover: fill screen, maintain aspect ratio, crop edges
+    Fit,     // letterbox: show whole image, may have bars
+    Center,  // native size, centered
+    Stretch, // stretch to fill exactly (ignores aspect ratio)
+    Tile,    // repeat/tile (uses TextureWrapMode::Repeat — UVs > 1.0)
+}
+
+impl BgImageMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "fit"     => Self::Fit,
+            "center"  => Self::Center,
+            "stretch" => Self::Stretch,
+            "tile"    => Self::Tile,
+            _         => Self::Fill,
+        }
+    }
+}
+
 pub struct WindowConfig {
     pub title: String,
     pub width: f32,
     pub height: f32,
+    /// Path to the companion .aui file — set by the interpreter when widgets are created.
+    pub aui_path: Option<std::path::PathBuf>,
+    /// True when ui.window() was just called and InnerSize hasn't been sent yet.
+    pub size_dirty: bool,
+    /// Solid background color (RGBA 0-255). Painted first, image on top if both set.
+    pub bg_color: Option<[u8; 4]>,
+    /// Absolute path to a background image.
+    pub bg_image: Option<String>,
+    pub bg_image_mode: BgImageMode,
+    /// Alpha tint for the background image (0-255, default 255 = opaque).
+    pub bg_image_alpha: u8,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { title: "Audion".to_string(), width: 800.0, height: 600.0 }
+        Self {
+            title: "Audion".to_string(),
+            width: 800.0,
+            height: 600.0,
+            aui_path: None,
+            size_dirty: false,
+            bg_color: None,
+            bg_image: None,
+            bg_image_mode: BgImageMode::default(),
+            bg_image_alpha: 255,
+        }
     }
 }
 
@@ -123,6 +166,10 @@ pub enum WidgetKind {
     ThreeCanvas,
     /// Software-painted 2D canvas — draw commands issued from Audion each frame.
     Canvas2d,
+    /// Native OS file-picker button. `filters` is a list of allowed extensions.
+    FilePicker { filters: Vec<String> },
+    /// Native OS folder-picker button.
+    FolderPicker,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,11 +206,14 @@ pub struct WidgetConfig {
     pub label: Option<String>,
     pub options: Vec<String>, // dropdown choices
     pub style: WidgetStyle,
+    /// Absolute position in the window (set by drag-to-arrange edit mode / .aui file).
+    pub x: Option<f32>,
+    pub y: Option<f32>,
 }
 
 impl WidgetConfig {
     pub fn new(kind: WidgetKind) -> Self {
-        Self { kind, min: 0.0, max: 1.0, label: None, options: Vec::new(), style: WidgetStyle::default() }
+        Self { kind, min: 0.0, max: 1.0, label: None, options: Vec::new(), style: WidgetStyle::default(), x: None, y: None }
     }
 }
 
@@ -198,6 +248,7 @@ fn default_value_for_kind(config: &WidgetConfig) -> WidgetValue {
         WidgetKind::Canvas2d => WidgetValue::Canvas2d(
             Arc::new(Mutex::new(Canvas2dData::default()))
         ),
+        WidgetKind::FilePicker { .. } | WidgetKind::FolderPicker => WidgetValue::Str(String::new()),
         _ => WidgetValue::Float((config.min + config.max) / 2.0),
     }
 }

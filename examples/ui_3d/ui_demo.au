@@ -1,74 +1,151 @@
-// Audion UI example — all widget types
-// Run with: audion run --ui examples/ui_demo.au
+// Audion UI demo — all widget types including piano and array highlight
+// Run with: audion run --ui examples/ui_3d/ui_demo.au
 
 let ui = ui_desktop();
-ui.window("Control Surface", 500, 600);
+ui.window("Control Surface", 620, 780);
 
 let xui = ui_desktop();
-xui.window("View Surface", 400, 300);
+xui.window("View Surface", 420, 320);
 
-// -- sliders
-let tempo      = ui.widgets.slider("tempo");
-let pitch      = ui.widgets.slider_v("pitch");
-let band       = ui.widgets.slider_range("band");
+// ── Window background ───────────────────────────────────────────────────────
+// Uncomment to try different backgrounds:
+// ui.background(18, 14, 30);
+// ui.background_image("./bg.jpg", "tile", 180);
 
-// -- knob + number
-let reverb     = ui.widgets.knob("reverb");
-let voices     = ui.widgets.number("voices");
+// ── Styled sliders ──────────────────────────────────────────────────────────
 
-// -- buttons + toggle
-let launch     = ui.widgets.button("launch");
-let enabled    = ui.widgets.toggle("enabled");
+let tempo = ui.widgets.slider("tempo");
+tempo.min(60);
+tempo.max(200);
+tempo.label("Tempo (BPM)");
+tempo.style("color", 255, 120, 30);
+tempo.style("width", 380);
 
-// -- dropdown
-let mode       = ui.widgets.dropdown("mode", "Poly", "Mono", "Duo");
+let pitch = ui.widgets.slider_v("pitch");
+pitch.min(-12);
+pitch.max(12);
+pitch.label("Pitch");
+pitch.style("color", 80, 180, 255);
+pitch.style("height", 100);
 
-// -- text
-let status     = ui.widgets.text_label("status", "ready");
-let search     = ui.widgets.text_input("search");
+let band = ui.widgets.slider_range("band");
+band.label("Band");
+band.style("color", 120, 220, 120);
+band.style("width", 380);
 
-// -- arrays
-let pattern    = ui.widgets.array("pattern", 8);
-let freqs      = ui.widgets.array_numbers("freqs", 4);
+// ── Knob + number ───────────────────────────────────────────────────────────
 
-// -- file / folder pickers
+let reverb = ui.widgets.knob("reverb");
+reverb.label("Reverb");
+reverb.style("color", 180, 80, 255);
+reverb.style("width", 60);
+
+let delay = ui.widgets.knob("delay");
+delay.label("Delay");
+delay.style("color", 60, 200, 160);
+delay.style("width", 60);
+
+let voices = ui.widgets.number("voices");
+voices.label("Voices");
+voices.min(1);
+voices.max(8);
+
+// ── Buttons + toggle ────────────────────────────────────────────────────────
+
+let launch  = ui.widgets.button("launch");
+launch.label("▶  Play");
+launch.style("color", 60, 200, 80);
+
+let enabled = ui.widgets.toggle("enabled");
+enabled.label("Active");
+enabled.style("color", 255, 180, 0);
+
+let mode = ui.widgets.dropdown("mode", "Poly", "Mono", "Duo");
+mode.label("Voice Mode");
+
+// ── Text widgets ────────────────────────────────────────────────────────────
+
+let status = ui.widgets.text_label("status", "ready");
+let search = ui.widgets.text_input("search");
+search.label("Search");
+
+// ── Step sequencer array with highlight ─────────────────────────────────────
+
+let pattern = ui.widgets.array("pattern", 16);
+pattern.label("Pattern");
+// Active cell color (user-toggled on):
+pattern.style("color", 255, 100, 30);
+// Playback-head highlight color — distinct from active:
+pattern.style("highlight_color", 60, 220, 255);
+
+let freqs = ui.widgets.array_numbers("freqs", 4);
+freqs.label("Freqs");
+freqs.style("color", 100, 180, 255);
+
+// ── Piano keyboard ───────────────────────────────────────────────────────────
+
+let piano = ui.widgets.piano("piano", 2, 60);   // 2 octaves, C4
+piano.style("width", 560);
+piano.style("height", 90);
+// Pressed key color:
+piano.style("color", 255, 80, 120);
+// Unpressed white key color (black keys derive from this automatically):
+piano.style("bg_color", 230, 230, 240);
+piano.hold(false);       // momentary by default
+piano.keyboard(true);    // A S D F G H J / W E T Y U = C..B on qwerty
+
+// ── File / folder pickers ───────────────────────────────────────────────────
+
 let sample     = ui.widgets.file_picker("sample", "wav", "aiff", "mp3");
 let output_dir = ui.widgets.folder_picker("output_dir");
 
-// second window gets its own widgets
+// ── Second window ───────────────────────────────────────────────────────────
+
 let viz_toggle = xui.widgets.toggle("viz_on");
-let viz_mode   = xui.widgets.dropdown("viz_mode", "Waveform", "Spectrum", "3D");
+viz_toggle.label("Viz On");
+viz_toggle.style("color", 100, 200, 255);
+
+let viz_mode = xui.widgets.dropdown("viz_mode", "Waveform", "Spectrum", "3D");
+viz_mode.label("Viz Mode");
+
+// ── Initial values ──────────────────────────────────────────────────────────
 
 tempo.set(0.5);
 voices.set(4);
 
 let my_tempo = 128;
+let seq_step = 0;
 
-thread a {
+// ── Sequencer thread — drives the pattern highlight ─────────────────────────
+
+thread seq {
     loop {
-        print("seq: my_tempo=" + my_tempo);
-        wait(1);
+        pattern.highlight(seq_step);
+        seq_step = (seq_step + 1) % 16;
+        wait(60 / my_tempo / 4);    // 16th notes
     }
 }
+
+// ── UI polling thread ───────────────────────────────────────────────────────
 
 thread b {
     loop {
         if (launch.has_changed()) {
             status.set("playing");
-            print("launched! tempo=" + tempo.value());
+            print("launched! tempo=" + my_tempo);
         }
         if (tempo.has_changed()) {
-            my_tempo = 60 + tempo.value() * 140;
-            print("tempo: " + my_tempo);
+            my_tempo = tempo.value();
         }
         if (band.has_changed()) {
             print("band: " + band.value());
         }
         if (mode.has_changed()) {
-            print("mode index: " + mode.value());
+            print("mode: " + mode.value());
         }
         if (pattern.has_changed()) {
-            print("pattern: " + pattern.value());
+            print("pattern: ");
+            print(pattern.value());
         }
         if (freqs.has_changed()) {
             print("freqs: " + freqs.value());
@@ -82,10 +159,14 @@ thread b {
         if (output_dir.has_changed()) {
             print("output dir: " + output_dir.value());
         }
+        if (piano.has_changed()) {
+            print("notes: ");
+            print(piano.value());
+        }
         if (viz_mode.has_changed()) {
             print("viz mode: " + viz_mode.value());
         }
-        wait(0.05);
+        wait(0.02);
     }
 }
 

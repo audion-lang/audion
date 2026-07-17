@@ -433,6 +433,7 @@ fn render_widget_inner(
     style: &super::WidgetStyle,
 ) {
     let label = state.config.label.clone().unwrap_or_else(|| state.id.clone());
+    let highlighted = state.highlighted.clone();
 
     match state.config.kind.clone() {
         WidgetKind::SliderH => {
@@ -567,8 +568,23 @@ fn render_widget_inner(
                         bits.pop();
                         state.dirty = true;
                     }
+                    let hl_color = style.highlight_color
+                        .map(|[r,g,b]| egui::Color32::from_rgb(r,g,b))
+                        .unwrap_or(egui::Color32::from_rgb(255, 230, 60));
+
                     for i in 0..bits.len() {
-                        if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
+                        let is_lit = highlighted.contains(&i);
+                        if is_lit {
+                            ui.scope(|ui| {
+                                ui.visuals_mut().selection.bg_fill        = hl_color;
+                                ui.visuals_mut().widgets.inactive.bg_fill = hl_color.gamma_multiply(0.5);
+                                ui.visuals_mut().widgets.active.bg_fill   = hl_color;
+                                ui.visuals_mut().widgets.hovered.bg_fill  = hl_color.gamma_multiply(0.9);
+                                if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
+                                    state.dirty = true;
+                                }
+                            });
+                        } else if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
                             state.dirty = true;
                         }
                     }
@@ -676,6 +692,16 @@ fn render_widget_inner(
                     ui.label(&display).on_hover_text(&path);
                 }
             });
+        }
+
+        WidgetKind::Piano => {
+            if let WidgetValue::Piano(piano_arc) = &mut state.value {
+                let id = ui.id().with(&state.id);
+                let mut piano = piano_arc.lock().unwrap();
+                if render_piano(ui, &mut piano, id, style) {
+                    state.dirty = true;
+                }
+            }
         }
 
         WidgetKind::Canvas2d => {
@@ -1083,6 +1109,175 @@ fn draw_arc(painter: &egui::Painter, center: egui::Pos2, r: f32, a0: f32, a1: f3
     for w in pts.windows(2) {
         painter.line_segment([w[0], w[1]], stroke);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Piano keyboard widget
+// ---------------------------------------------------------------------------
+
+/// Semitone → is black key?
+const IS_BLACK: [bool; 12] = [false, true, false, true, false, false, true, false, true, false, true, false];
+
+/// X centre of black keys within one octave, in units of white-key-widths from octave left edge.
+const BLACK_X: [f32; 12] = [
+    0.0, 0.72, 0.0, 1.72, 0.0, 0.0, 3.70, 0.0, 4.72, 0.0, 5.72, 0.0,
+];
+
+/// qwerty → semitone offset from start_note
+const KB_MAP: &[(egui::Key, u8)] = &[
+    (egui::Key::A, 0),  (egui::Key::W, 1),  (egui::Key::S, 2),  (egui::Key::E, 3),
+    (egui::Key::D, 4),  (egui::Key::F, 5),  (egui::Key::T, 6),  (egui::Key::G, 7),
+    (egui::Key::Y, 8),  (egui::Key::H, 9),  (egui::Key::U, 10), (egui::Key::J, 11),
+    (egui::Key::K, 12), (egui::Key::O, 13), (egui::Key::L, 14), (egui::Key::P, 15),
+    (egui::Key::Semicolon, 16),
+];
+
+fn render_piano(
+    ui: &mut egui::Ui,
+    piano: &mut super::PianoData,
+    base_id: egui::Id,
+    style: &super::WidgetStyle,
+) -> bool {
+    let octaves    = piano.octaves.max(1) as usize;
+    let start_note = piano.start_note;
+    let num_white  = octaves * 7;
+
+    let wkw = style.width .map(|w| w / num_white as f32).unwrap_or(24.0);
+    let wkh = style.height.unwrap_or(80.0);
+    let bkw = wkw * 0.62;
+    let bkh = wkh * 0.62;
+
+    let total_w = wkw * num_white as f32;
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(total_w, wkh), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) { return false; }
+
+    let painter = ui.painter_at(rect);
+    let ox = rect.min.x;
+    let oy = rect.min.y;
+
+    // Build key rects
+    let mut white_keys: Vec<(u8, egui::Rect)> = Vec::new();
+    let mut black_keys: Vec<(u8, egui::Rect)> = Vec::new();
+    let mut white_idx = 0usize;
+
+    for oct in 0..octaves {
+        for semi in 0..12usize {
+            let note = (start_note as usize + oct * 12 + semi) as u8;
+            if note > 127 { break; }
+            if IS_BLACK[semi] {
+                let cx = ox + (oct * 7) as f32 * wkw + BLACK_X[semi] * wkw;
+                black_keys.push((note, egui::Rect::from_min_size(
+                    egui::pos2(cx - bkw / 2.0, oy),
+                    egui::vec2(bkw, bkh),
+                )));
+            } else {
+                let x = ox + white_idx as f32 * wkw;
+                white_keys.push((note, egui::Rect::from_min_size(
+                    egui::pos2(x, oy),
+                    egui::vec2(wkw - 1.0, wkh),
+                )));
+                white_idx += 1;
+            }
+        }
+    }
+
+    // --- Mouse interaction ---
+    let ptr     = ui.input(|i| i.pointer.interact_pos());
+    let pressed = ui.input(|i| i.pointer.primary_pressed());
+    let released= ui.input(|i| i.pointer.primary_released());
+    let mut changed = false;
+
+    if pressed {
+        if let Some(pos) = ptr {
+            if rect.contains(pos) {
+                let hit = black_keys.iter().find(|(_, r)| r.contains(pos))
+                    .or_else(|| white_keys.iter().find(|(_, r)| r.contains(pos)));
+                if let Some((note, _)) = hit {
+                    if piano.hold_mode {
+                        if piano.active_notes.contains(note) { piano.active_notes.remove(note); }
+                        else                                 { piano.active_notes.insert(*note); }
+                    } else {
+                        piano.active_notes.clear();
+                        piano.active_notes.insert(*note);
+                    }
+                    changed = true;
+                }
+            }
+        }
+    }
+    if released && !piano.hold_mode && !piano.active_notes.is_empty() {
+        // Only release if the pointer was inside the piano (dragged off = keep)
+        if ptr.map(|p| !rect.contains(p)).unwrap_or(true) {
+            piano.active_notes.clear();
+            changed = true;
+        }
+    }
+
+    // --- Keyboard input ---
+    if piano.keyboard_mode {
+        for (key, offset) in KB_MAP {
+            let note = start_note.saturating_add(*offset);
+            if note > 127 { continue; }
+            let kp = ui.ctx().input(|i| i.key_pressed(*key));
+            let kr = ui.ctx().input(|i| i.key_released(*key));
+            if kp {
+                if piano.hold_mode {
+                    if piano.active_notes.contains(&note) { piano.active_notes.remove(&note); }
+                    else                                   { piano.active_notes.insert(note); }
+                } else {
+                    piano.active_notes.insert(note);
+                }
+                changed = true;
+            }
+            if kr && !piano.hold_mode {
+                if piano.active_notes.remove(&note) { changed = true; }
+            }
+        }
+    }
+
+    // --- Resolve style colors ---
+    let pressed_color = style.color
+        .map(|[r,g,b]| egui::Color32::from_rgb(r,g,b))
+        .unwrap_or(egui::Color32::from_rgb(80, 160, 255));
+    let white_key_color = style.bg_color
+        .map(|[r,g,b]| egui::Color32::from_rgb(r,g,b))
+        .unwrap_or(egui::Color32::from_rgb(238, 238, 238));
+    // Black key default: a darkened version of white_key_color, or near-black
+    let black_key_color = style.bg_color
+        .map(|[r,g,b]| egui::Color32::from_rgb(r/5, g/5, b/5))
+        .unwrap_or(egui::Color32::from_gray(18));
+    let pressed_black = pressed_color.gamma_multiply(0.75);
+    let border_color  = white_key_color.gamma_multiply(0.35);
+
+    // --- Draw white keys ---
+    for (note, kr) in &white_keys {
+        let active = piano.active_notes.contains(note);
+        let fill = if active { pressed_color } else { white_key_color };
+        painter.rect_filled(*kr, 2.0, fill);
+        painter.rect_stroke(*kr, 2.0, egui::Stroke::new(1.0, border_color), egui::StrokeKind::Middle);
+        // Dot on every C for orientation
+        let semitone = (note.wrapping_sub(start_note)) % 12;
+        if semitone == 0 {
+            painter.circle_filled(
+                egui::pos2(kr.center().x, kr.max.y - 6.0),
+                2.5,
+                if active { egui::Color32::WHITE } else { border_color },
+            );
+        }
+    }
+
+    // --- Draw black keys (on top) ---
+    for (note, kr) in &black_keys {
+        let active = piano.active_notes.contains(note);
+        let fill = if active { pressed_black } else { black_key_color };
+        painter.rect_filled(*kr, 2.0, fill);
+        if active {
+            painter.rect_stroke(*kr, 2.0, egui::Stroke::new(1.5, pressed_color), egui::StrokeKind::Middle);
+        }
+    }
+
+    let _ = base_id;
+    changed
 }
 
 // ---------------------------------------------------------------------------

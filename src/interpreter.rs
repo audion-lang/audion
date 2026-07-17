@@ -918,6 +918,7 @@ impl Interpreter {
                         WidgetKind::FilePicker { filters }
                     }
                     "folder_picker" => WidgetKind::FolderPicker,
+                    "piano" => WidgetKind::Piano,
                     _ => return Err(AudionError::RuntimeError {
                         msg: format!("unknown widget type: ui.widgets.{}", method),
                     }),
@@ -945,6 +946,18 @@ impl Interpreter {
                 }
 
                 let state = ui::get_or_create_widget(handle, &id, config);
+
+                // piano("id", octaves, start_note) — set piano dimensions
+                if method == "piano" {
+                    let octaves    = args.get(1).and_then(|v| v.as_number()).unwrap_or(2.0) as u8;
+                    let start_note = args.get(2).and_then(|v| v.as_number()).unwrap_or(60.0) as u8;
+                    let st = state.lock().unwrap();
+                    if let crate::ui::WidgetValue::Piano(piano_arc) = &st.value {
+                        let mut piano = piano_arc.lock().unwrap();
+                        piano.octaves    = octaves;
+                        piano.start_note = start_note;
+                    }
+                }
 
                 // text_label("id", "initial text") — set the display string on creation.
                 if method == "text_label" {
@@ -986,6 +999,14 @@ impl Interpreter {
                     }
                     WidgetValue::Three(_) => Value::Nil,
                     WidgetValue::Canvas2d(_) => Value::Nil,
+                    WidgetValue::Piano(piano_arc) => {
+                        let piano = piano_arc.lock().unwrap();
+                        let mut arr = crate::value::AudionArray::new();
+                        let mut notes: Vec<u8> = piano.active_notes.iter().copied().collect();
+                        notes.sort_unstable();
+                        for n in notes { arr.push_auto(Value::Number(n as f64)); }
+                        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
+                    }
                 };
                 Ok(val)
             }
@@ -1319,6 +1340,38 @@ impl Interpreter {
             }
 
             // widget.min(v) / widget.max(v) / widget.label(str) / widget.style(key, ...)
+            // widget.highlight(n) / widget.highlight([n, ...]) — set playback-head cells
+            Value::WidgetRef(state_arc) if method == "highlight" => {
+                let mut state = state_arc.lock().unwrap();
+                state.highlighted.clear();
+                match args.first() {
+                    Some(Value::Number(n)) => state.highlighted.push(*n as usize),
+                    Some(Value::Array(arr)) => {
+                        let arr = arr.lock().unwrap();
+                        for (_, v) in arr.entries() {
+                            if let Value::Number(n) = v { state.highlighted.push(*n as usize); }
+                        }
+                    }
+                    _ => {} // no args = clear
+                }
+                Ok(Value::Nil)
+            }
+
+            // piano.hold(bool) / piano.keyboard(bool)
+            Value::WidgetRef(state_arc) if matches!(method, "hold" | "keyboard") => {
+                let state = state_arc.lock().unwrap();
+                if let crate::ui::WidgetValue::Piano(piano_arc) = &state.value {
+                    let mut piano = piano_arc.lock().unwrap();
+                    let on = args.first().map(|v| v.is_truthy()).unwrap_or(true);
+                    match method {
+                        "hold"     => piano.hold_mode = on,
+                        "keyboard" => piano.keyboard_mode = on,
+                        _ => {}
+                    }
+                }
+                Ok(Value::Nil)
+            }
+
             Value::WidgetRef(state_arc) if matches!(method, "min" | "max" | "label" | "style" | "width" | "height") => {
                 let mut state = state_arc.lock().unwrap();
                 match method {
@@ -1363,6 +1416,12 @@ impl Interpreter {
                                 let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
                                 let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
                                 state.config.style.bg_color = Some([r, g, b]);
+                            }
+                            "highlight_color" => {
+                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
+                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(230.0) as u8;
+                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(60.0) as u8;
+                                state.config.style.highlight_color = Some([r, g, b]);
                             }
                             "width" => {
                                 if let Some(w) = args.get(1).and_then(|v| v.as_number()) {

@@ -29,14 +29,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Debug, Default)]
 pub struct WidgetStyle {
-    /// Accent / fill color in sRGB 0-255. Applied to slider fill, button color, etc.
+    /// Accent / fill color in sRGB 0-255. Applied to slider fill, button color, pressed keys, etc.
     pub color: Option<[u8; 3]>,
-    /// Background color override.
+    /// Background color override (white key fill for piano, bg for other widgets).
     pub bg_color: Option<[u8; 3]>,
     /// Explicit widget width in pixels (overrides available-width).
     pub width: Option<f32>,
     /// Explicit widget height in pixels.
     pub height: Option<f32>,
+    /// Color for highlighted array cells (playback head). Default: yellow.
+    pub highlight_color: Option<[u8; 3]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +172,8 @@ pub enum WidgetKind {
     FilePicker { filters: Vec<String> },
     /// Native OS folder-picker button.
     FolderPicker,
+    /// Piano keyboard widget — mouse + optional qwerty keyboard input.
+    Piano,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +190,7 @@ pub enum WidgetValue {
     Range(f64, f64),
     Three(Arc<Mutex<three::ThreeSceneData>>),
     Canvas2d(Arc<Mutex<Canvas2dData>>),
+    Piano(Arc<Mutex<PianoData>>),
 }
 
 impl Default for WidgetValue {
@@ -226,12 +231,39 @@ pub struct WidgetState {
     pub value: WidgetValue,
     pub dirty: bool,
     pub config: WidgetConfig,
+    /// Cells to illuminate (playback head, etc.) — set by interpreter, rendered distinctly.
+    pub highlighted: Vec<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// Piano widget data
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct PianoData {
+    pub active_notes:  std::collections::HashSet<u8>,
+    pub hold_mode:     bool,
+    pub keyboard_mode: bool,
+    pub octaves:       u8,
+    pub start_note:    u8,
+}
+
+impl Default for PianoData {
+    fn default() -> Self {
+        Self {
+            active_notes:  Default::default(),
+            hold_mode:     false,
+            keyboard_mode: false,
+            octaves:       2,
+            start_note:    60,  // C4
+        }
+    }
 }
 
 impl WidgetState {
     pub fn new(id: String, config: WidgetConfig) -> Self {
         let value = default_value_for_kind(&config);
-        Self { id, value, dirty: false, config }
+        Self { id, value, dirty: false, config, highlighted: Vec::new() }
     }
 }
 
@@ -249,6 +281,7 @@ fn default_value_for_kind(config: &WidgetConfig) -> WidgetValue {
             Arc::new(Mutex::new(Canvas2dData::default()))
         ),
         WidgetKind::FilePicker { .. } | WidgetKind::FolderPicker => WidgetValue::Str(String::new()),
+        WidgetKind::Piano => WidgetValue::Piano(Arc::new(Mutex::new(PianoData::default()))),
         _ => WidgetValue::Float((config.min + config.max) / 2.0),
     }
 }
@@ -288,6 +321,7 @@ pub fn create_canvas(
         value: WidgetValue::Three(scene_arc.clone()),
         dirty: false,
         config,
+        highlighted: Vec::new(),
     };
     let state_arc = Arc::new(Mutex::new(state));
     widgets.insert(id.to_string(), state_arc);
@@ -383,6 +417,7 @@ pub fn create_canvas2d(
         value: WidgetValue::Canvas2d(data_arc.clone()),
         dirty: false,
         config,
+        highlighted: Vec::new(),
     };
     let state_arc = Arc::new(Mutex::new(state));
     widgets.insert(id.to_string(), state_arc);

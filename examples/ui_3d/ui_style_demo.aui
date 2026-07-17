@@ -7,6 +7,7 @@
 # width    = pixels       explicit widget width
 # height   = pixels       explicit widget height
 
+
 [tempo]
 min   = 60.0
 max   = 200.0

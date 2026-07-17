@@ -29,6 +29,7 @@ rusty_link = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 midly = "0.5"
 eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }
+rfd = "0.15"
 toml = "0.8"
 glam = "0.33"
 bytemuck = { version = "1", features = ["derive"] }

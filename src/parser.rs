@@ -245,7 +245,7 @@ impl Parser {
             self.advance(); // consume 'let'
             let var_name = self.expect_ident()?;
             self.expect(TokenKind::Eq)?;
-            let value = self.parse_ugen_expr()?;
+            let value = self.parse_ugen_cmp()?;
             self.expect(TokenKind::Semicolon)?;
             lets.push((var_name, Box::new(value)));
         }
@@ -253,7 +253,7 @@ impl Parser {
         // Parse one or more result expressions (e.g., multiple out() calls)
         let mut results: Vec<Box<UGenExpr>> = Vec::new();
         while self.peek_kind() != TokenKind::RBrace {
-            let expr = self.parse_ugen_expr()?;
+            let expr = self.parse_ugen_cmp()?;
             self.expect(TokenKind::Semicolon)?;
             results.push(Box::new(expr));
         }
@@ -304,6 +304,23 @@ impl Parser {
         }
         self.expect(TokenKind::Semicolon)?;
         Ok(Stmt::Using { path })
+    }
+
+    fn parse_ugen_cmp(&mut self) -> Result<UGenExpr> {
+        let mut left = self.parse_ugen_expr()?;
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::GtEq => BinOp::GtEq,
+                TokenKind::LtEq => BinOp::LtEq,
+                TokenKind::Gt   => BinOp::Gt,
+                TokenKind::Lt   => BinOp::Lt,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_ugen_expr()?;
+            left = UGenExpr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+        }
+        Ok(left)
     }
 
     fn parse_ugen_expr(&mut self) -> Result<UGenExpr> {
@@ -406,7 +423,7 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let expr = self.parse_ugen_expr()?;
+                let expr = self.parse_ugen_cmp()?;
                 self.expect(TokenKind::RParen)?;
                 Ok(expr)
             }
@@ -448,12 +465,12 @@ impl Parser {
             if self.peek_kind_at(1) == TokenKind::Colon {
                 self.advance(); // consume the identifier/keyword
                 self.advance(); // consume ':'
-                let value = self.parse_ugen_expr()?;
+                let value = self.parse_ugen_cmp()?;
                 named_args.push((name, value));
                 return Ok(());
             }
         }
-        args.push(self.parse_ugen_expr()?);
+        args.push(self.parse_ugen_cmp()?);
         Ok(())
     }
 

@@ -215,6 +215,12 @@ fn emit_ugen(expr: &UGenExpr, buffers: &[BufferInfo], sample_idx: &mut usize, pa
                 BinOp::Mul => "*",
                 BinOp::Div => "/",
                 BinOp::Mod => "%",
+                BinOp::Gt   => ">",
+                BinOp::Lt   => "<",
+                BinOp::GtEq => ">=",
+                BinOp::LtEq => "<=",
+                BinOp::Eq   => "==",
+                BinOp::NotEq => "!=",
                 _ => "+",
             };
             format!("({} {} {})", l, op_str, r)

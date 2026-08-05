@@ -708,6 +708,26 @@ fn test_roundtrip_oct() {
 }
 
 #[test]
+fn test_in_array_found() {
+    assert_eq!(eval(r#"in_array("b", ["a", "b", "c"]);"#), Value::Bool(true));
+}
+
+#[test]
+fn test_in_array_not_found() {
+    assert_eq!(eval(r#"in_array("z", ["a", "b", "c"]);"#), Value::Bool(false));
+}
+
+#[test]
+fn test_in_array_number() {
+    assert_eq!(eval("in_array(2, [1, 2, 3]);"), Value::Bool(true));
+}
+
+#[test]
+fn test_in_array_empty() {
+    assert_eq!(eval(r#"in_array("a", []);"#), Value::Bool(false));
+}
+
+#[test]
 fn test_bpm_through_link() {
     let val = eval(r#"
         link_enable();

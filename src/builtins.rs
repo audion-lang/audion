@@ -218,6 +218,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "midi_listen", "midi_bpm_sync",
     "midi_read", "midi_write",
     "osc_config", "osc_send", "osc_listen", "osc_recv", "osc_close",
+    "in_array",
     "array_push", "array_pop",
     "array_shuffle",
     "array_cycle", "array_rotate", "array_chunk",
@@ -403,6 +404,7 @@ pub fn call_builtin(
         "osc_listen" => builtin_osc_listen(args, osc_protocol),
         "osc_recv" => builtin_osc_recv(osc_protocol),
         "osc_close" => builtin_osc_close(args, osc_protocol),
+        "in_array" => builtin_in_array(args),
         "array_push" => builtin_push(args),
         "array_pop" => builtin_pop(args),
         "array_shuffle" => builtin_array_shuffle(args),
@@ -764,6 +766,24 @@ fn builtin_count(args: &[Value]) -> Result<Value> {
             msg: format!("count() expected array or string, got {}", other.type_name()),
         }),
     }
+}
+
+fn builtin_in_array(args: &[Value]) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "in_array() requires 2 arguments: in_array(needle, haystack)".to_string(),
+        });
+    }
+    let needle = &args[0];
+    let haystack = match &args[1] {
+        Value::Array(a) => a,
+        _ => return Err(AudionError::RuntimeError {
+            msg: "in_array() second argument must be an array".to_string(),
+        }),
+    };
+    let guard = haystack.lock().unwrap();
+    let found = guard.entries().iter().any(|(_, v)| v == needle);
+    Ok(Value::Bool(found))
 }
 
 fn builtin_push(args: &[Value]) -> Result<Value> {

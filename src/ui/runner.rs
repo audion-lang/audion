@@ -26,6 +26,24 @@ pub struct AudionUiApp {
     edit_mode: bool,
     /// Widget IDs whose Area was hovered last frame — used to highlight frames.
     edit_hovered: std::collections::HashSet<String>,
+    /// Widget IDs currently multi-selected in edit mode (shared across windows; ids are
+    /// globally unique so a selection made in one window simply has no effect in another).
+    /// Wrapped in Arc<Mutex<>> so it can be cloned into secondary windows' 'static
+    /// show_viewport_immediate closures and still mutate the same underlying set.
+    selected: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Active rubber-band marquee (start, current), keyed by window/handle id. Same
+    /// Arc<Mutex<>> rationale as `selected`.
+    rubber_band: Arc<std::sync::Mutex<std::collections::HashMap<u64, (egui::Pos2, egui::Pos2)>>>,
+    /// Active manual widget drag per window: handle_id → (widget_id, last pointer pos,
+    /// moved-beyond-click-threshold). egui's own Area position memory is private to the
+    /// egui crate (no public API to reposition an already-shown movable Area from outside),
+    /// so group-dragging a multi-selection is implemented entirely by hand: positions live
+    /// in WidgetConfig.x/y and this struct just tracks the in-progress gesture.
+    drag_state: Arc<std::sync::Mutex<std::collections::HashMap<u64, (String, egui::Pos2, bool)>>>,
+    /// Each widget's (full frame rect, drag-handle-strip rect) from the previous frame —
+    /// used to hit-test a fresh press before this frame's rects exist yet. One-frame lag,
+    /// same trick already used for `edit_hovered`.
+    last_rects: Arc<std::sync::Mutex<std::collections::HashMap<String, (egui::Rect, egui::Rect)>>>,
     /// Cached background textures: handle_id → (image_path, mode, TextureHandle)
     bg_textures: std::collections::HashMap<u64, (String, super::BgImageMode, egui::TextureHandle)>,
 }
@@ -43,7 +61,17 @@ impl AudionUiApp {
         } else {
             false
         };
-        Self { interpreter_done, three_supported, edit_mode: false, edit_hovered: Default::default(), bg_textures: Default::default() }
+        Self {
+            interpreter_done,
+            three_supported,
+            edit_mode: false,
+            edit_hovered: Default::default(),
+            selected: Default::default(),
+            rubber_band: Default::default(),
+            drag_state: Default::default(),
+            last_rects: Default::default(),
+            bg_textures: Default::default(),
+        }
     }
 }
 
@@ -129,15 +157,19 @@ impl eframe::App for AudionUiApp {
         };
 
         let hovered = &mut self.edit_hovered;
+        let selected = self.selected.clone();
+        let rubber_band = self.rubber_band.clone();
+        let drag_state = self.drag_state.clone();
+        let last_rects = self.last_rects.clone();
         let panel = egui::CentralPanel::default();
         let panel = if has_bg { panel.frame(egui::Frame::none()) } else { panel };
         panel.show(ctx, |ui| {
             exit_edit = render_edit_toolbar(ui, edit);
-            render_widgets(ctx, ui, first, ts, edit, hovered);
+            render_widgets(ctx, ui, first, ts, edit, hovered, &selected, &rubber_band, &drag_state, &last_rects);
         });
 
         for handle in registry.iter().skip(1) {
-            render_as_viewport(ctx, handle, ts, edit, hovered);
+            render_as_viewport(ctx, handle, ts, edit, hovered, selected.clone(), rubber_band.clone(), drag_state.clone(), last_rects.clone());
         }
 
         if exit_edit {
@@ -165,6 +197,10 @@ impl AudionUiApp {
             save_layout_to_aui(handle, window_size);
         }
         self.edit_mode = false;
+        self.selected.lock().unwrap().clear();
+        self.rubber_band.lock().unwrap().clear();
+        self.drag_state.lock().unwrap().clear();
+        self.last_rects.lock().unwrap().clear();
     }
 }
 
@@ -254,7 +290,17 @@ fn render_edit_toolbar(ui: &mut egui::Ui, edit_mode: bool) -> bool {
     done
 }
 
-fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_supported: bool, edit_mode: bool, hovered: &mut std::collections::HashSet<String>) {
+fn render_as_viewport(
+    ctx: &egui::Context,
+    handle: &Arc<UiHandle>,
+    three_supported: bool,
+    edit_mode: bool,
+    hovered: &mut std::collections::HashSet<String>,
+    selected: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    rubber_band: Arc<std::sync::Mutex<std::collections::HashMap<u64, (egui::Pos2, egui::Pos2)>>>,
+    drag_state: Arc<std::sync::Mutex<std::collections::HashMap<u64, (String, egui::Pos2, bool)>>>,
+    last_rects: Arc<std::sync::Mutex<std::collections::HashMap<String, (egui::Rect, egui::Rect)>>>,
+) {
     let (title, width, height) = {
         let cfg = handle.config.lock().unwrap();
         (cfg.title.clone(), cfg.width, cfg.height)
@@ -269,6 +315,8 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_support
     let mut vp_hovered = hovered.clone();
     // Secondary windows share the same egui Context but need their own texture cache key space.
     // We clone the bg_textures ref by moving a clone — secondary windows are rare.
+    // `selected`/`rubber_band` are Arc<Mutex<>> clones: unlike `vp_hovered` above, mutations
+    // made inside this 'static closure go through the same shared lock and are visible outside.
     ctx.show_viewport_immediate(viewport_id, builder, move |ctx, _class| {
         let mut exit_edit = false;
         let has_bg = {
@@ -281,7 +329,7 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_support
         let panel = if has_bg { panel.frame(egui::Frame::none()) } else { panel };
         panel.show(ctx, |ui| {
             exit_edit = render_edit_toolbar(ui, edit_mode);
-            render_widgets(ctx, ui, &handle_clone, three_supported, edit_mode, &mut vp_hovered);
+            render_widgets(ctx, ui, &handle_clone, three_supported, edit_mode, &mut vp_hovered, &selected, &rubber_band, &drag_state, &last_rects);
         });
         if exit_edit {
             save_layout_to_aui(&handle_clone, None);
@@ -293,12 +341,109 @@ fn render_as_viewport(ctx: &egui::Context, handle: &Arc<UiHandle>, three_support
 // Widget rendering
 // ---------------------------------------------------------------------------
 
-fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, three_supported: bool, edit_mode: bool, edit_hovered: &mut std::collections::HashSet<String>) {
+fn render_widgets(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    handle: &UiHandle,
+    three_supported: bool,
+    edit_mode: bool,
+    edit_hovered: &mut std::collections::HashSet<String>,
+    selected: &Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    rubber_band: &Arc<std::sync::Mutex<std::collections::HashMap<u64, (egui::Pos2, egui::Pos2)>>>,
+    drag_state: &Arc<std::sync::Mutex<std::collections::HashMap<u64, (String, egui::Pos2, bool)>>>,
+    last_rects: &Arc<std::sync::Mutex<std::collections::HashMap<String, (egui::Rect, egui::Rect)>>>,
+) {
     let order: Vec<String> = handle.widget_order.lock().unwrap().clone();
     // Clone the Arc map so we don't hold the widgets mutex during rendering
     let widget_map: std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<super::WidgetState>>> = {
         handle.widgets.lock().unwrap().clone()
     };
+
+    let (shift, pointer_down, pointer_pos, primary_pressed, primary_released) = ctx.input(|i| (
+        i.modifiers.shift,
+        i.pointer.primary_down(),
+        i.pointer.interact_pos(),
+        i.pointer.primary_pressed(),
+        i.pointer.primary_released(),
+    ));
+
+    // ── Advance any in-progress manual widget drag for this window BEFORE rendering,
+    // so every widget (including group-drag siblings) reads its final position for
+    // this frame. egui gives no public way to reposition an already-shown movable
+    // Area from outside, so dragging is done entirely by hand via WidgetConfig.x/y.
+    let mut just_clicked_id: Option<String> = None;
+    if edit_mode {
+        let mut ds_map = drag_state.lock().unwrap();
+
+        // Fresh press: start a drag if it landed on some widget's handle strip
+        // (using last frame's cached rects — this frame's rects don't exist yet).
+        if primary_pressed && !ds_map.contains_key(&handle.id) {
+            if let Some(pos) = pointer_pos {
+                let cache = last_rects.lock().unwrap();
+                let hit = cache.iter()
+                    .find(|(_, (_, strip))| strip.contains(pos))
+                    .map(|(id, _)| id.clone());
+                drop(cache);
+                if let Some(id) = hit {
+                    ds_map.insert(handle.id, (id, pos, false));
+                }
+            }
+        }
+
+        if let Some((drag_id, last_pos, moved)) = ds_map.get_mut(&handle.id) {
+            if pointer_down {
+                if let Some(cur) = pointer_pos {
+                    let delta = cur - *last_pos;
+                    if delta.length() > 1.0 { *moved = true; }
+                    if *moved {
+                        let mut sel = selected.lock().unwrap();
+                        let targets: Vec<String> = if sel.contains(drag_id.as_str()) && sel.len() > 1 {
+                            sel.iter().cloned().collect()
+                        } else {
+                            sel.clear();
+                            sel.insert(drag_id.clone());
+                            vec![drag_id.clone()]
+                        };
+                        drop(sel);
+                        for tid in &targets {
+                            if let Some(arc) = widget_map.get(tid) {
+                                let mut st = arc.lock().unwrap();
+                                let x = st.config.x.unwrap_or(0.0) + delta.x;
+                                let y = st.config.y.unwrap_or(0.0) + delta.y;
+                                st.config.x = Some(x);
+                                st.config.y = Some(y);
+                            }
+                        }
+                    }
+                    *last_pos = cur;
+                }
+            }
+        }
+
+        if primary_released {
+            if let Some((drag_id, _, moved)) = ds_map.remove(&handle.id) {
+                if !moved {
+                    just_clicked_id = Some(drag_id);
+                }
+            }
+        }
+    }
+    if let Some(id) = just_clicked_id {
+        let mut sel = selected.lock().unwrap();
+        if shift {
+            if !sel.insert(id.clone()) {
+                sel.remove(&id);
+            }
+        } else {
+            sel.clear();
+            sel.insert(id);
+        }
+    }
+
+    // Rects of every positioned widget this frame — used for the rubber-band marquee,
+    // and cached (full rect + handle-strip rect) for next frame's press hit-testing.
+    let mut widget_rects: Vec<(String, egui::Rect)> = Vec::new();
+    let mut new_last_rects: std::collections::HashMap<String, (egui::Rect, egui::Rect)> = std::collections::HashMap::new();
 
     for id in &order {
         let Some(state_arc) = widget_map.get(id) else { continue };
@@ -311,23 +456,26 @@ fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, thr
         if edit_mode || has_pos {
             let area_id = egui::Id::new(("audion_widget", id.as_str()));
 
-            // KEY: in edit mode use default_pos (not fixed_pos) so egui owns the drag.
-            // fixed_pos would override egui's memory every frame, killing X movement.
-            let area = if edit_mode {
-                egui::Area::new(area_id)
-                    .default_pos(egui::pos2(pos_x, pos_y))
-                    .movable(true)
-                    .order(egui::Order::Middle)
-            } else {
-                egui::Area::new(area_id)
-                    .fixed_pos(egui::pos2(pos_x, pos_y))
-                    .movable(false)
-                    .order(egui::Order::Middle)
-            };
+            // Positioning is always fully manual now (fixed_pos, not movable) — see the
+            // drag-tracking block above. `movable(true)` was removed because egui only
+            // lets the literally-dragged Area's own position sync from outside; a
+            // multi-selected sibling's Area would silently ignore any x/y we set on it.
+            let area = egui::Area::new(area_id)
+                .fixed_pos(egui::pos2(pos_x, pos_y))
+                .movable(false)
+                .order(egui::Order::Middle);
 
             // Highlight state from last frame (one-frame lag, imperceptible at 60fps)
+            let is_selected = edit_mode && selected.lock().unwrap().contains(id);
             let is_hovered = edit_mode && edit_hovered.contains(id);
-            let (stroke_color, stroke_w, handle_color, handle_bg) = if is_hovered {
+            let (stroke_color, stroke_w, handle_color, handle_bg) = if is_selected {
+                (
+                    egui::Color32::from_rgb(90, 170, 255),   // blue = selected
+                    2.0_f32,
+                    egui::Color32::WHITE,
+                    egui::Color32::from_rgba_premultiplied(90, 170, 255, 45),
+                )
+            } else if is_hovered {
                 (
                     egui::Color32::from_rgb(255, 230, 120),  // bright gold border
                     2.0_f32,
@@ -343,6 +491,8 @@ fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, thr
                 )
             };
 
+            let mut strip_rect: Option<egui::Rect> = None;
+
             let resp = area.show(ctx, |ui| {
                 let cap_w = {
                     let s = state_arc.lock().unwrap();
@@ -356,12 +506,14 @@ fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, thr
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::same(6))
                         .show(ui, |ui| {
-                            // Drag handle strip — detects hover for cursor change
+                            // Drag handle strip — the only zone that starts a manual drag
+                            // or a select-click (see the block above the widget loop).
                             let avail_w = ui.available_width().max(60.0);
                             let (handle_rect, handle_resp) = ui.allocate_exact_size(
                                 egui::vec2(avail_w, 16.0),
                                 egui::Sense::hover(),
                             );
+                            strip_rect = Some(handle_rect);
                             ui.painter().rect_filled(handle_rect, 2.0, handle_bg);
                             ui.painter().text(
                                 handle_rect.left_center() + egui::vec2(4.0, 0.0),
@@ -390,17 +542,72 @@ fn render_widgets(ctx: &egui::Context, ui: &mut egui::Ui, handle: &UiHandle, thr
                 } else {
                     edit_hovered.remove(id.as_str());
                 }
-                // Read back position
-                let new_pos = resp.response.rect.min;
-                let mut state = state_arc.lock().unwrap();
-                state.config.x = Some(new_pos.x);
-                state.config.y = Some(new_pos.y);
+
+                let full_rect = resp.response.rect;
+                widget_rects.push((id.clone(), full_rect));
+                new_last_rects.insert(id.clone(), (full_rect, strip_rect.unwrap_or(full_rect)));
             }
         } else {
             // Flow layout (no position set)
             let mut state = state_arc.lock().unwrap();
             render_widget(ui, &mut state, three_supported);
             ui.add_space(4.0);
+        }
+    }
+
+    if edit_mode {
+        last_rects.lock().unwrap().extend(new_last_rects);
+    }
+
+    // ── Rubber-band marquee select — drag starting on empty canvas (not over any widget) ──
+    // NOTE: `i.pointer.press_origin()` is cleared back to None by egui on the very same
+    // input step that makes `primary_released()` true — so the origin can only be read
+    // reliably on frames *before* release. Once a band is started it's carried forward in
+    // `rubber_band` using its own stored origin; release-handling never re-reads press_origin.
+    if edit_mode {
+        let mut rb_map = rubber_band.lock().unwrap();
+        let mut band = rb_map.get(&handle.id).copied();
+
+        if primary_released {
+            if let Some((a, b)) = band.take() {
+                let far_enough = (b - a).length() > 3.0;
+                if far_enough {
+                    let rect = egui::Rect::from_two_pos(a, b);
+                    let mut sel = selected.lock().unwrap();
+                    if !shift { sel.clear(); }
+                    for (wid, wr) in &widget_rects {
+                        if rect.intersects(*wr) { sel.insert(wid.clone()); }
+                    }
+                } else if !shift {
+                    selected.lock().unwrap().clear();
+                }
+            }
+        } else if pointer_down {
+            if band.is_none() {
+                // First frame of a fresh gesture — press_origin is still valid here.
+                if let Some(origin) = ctx.input(|i| i.pointer.press_origin()) {
+                    let started_on_widget = widget_rects.iter().any(|(_, r)| r.contains(origin));
+                    if !started_on_widget {
+                        let cur = pointer_pos.unwrap_or(origin);
+                        band = Some((origin, cur));
+                    }
+                }
+            } else if let Some(cur) = pointer_pos {
+                band = band.map(|(origin, _)| (origin, cur));
+            }
+
+            if let Some((a, b)) = band {
+                let rect = egui::Rect::from_two_pos(a, b);
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(90, 170, 255, 30));
+                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 170, 255)), egui::StrokeKind::Middle);
+            }
+        } else {
+            band = None;
+        }
+
+        match band {
+            Some(v) => { rb_map.insert(handle.id, v); }
+            None => { rb_map.remove(&handle.id); }
         }
     }
 }

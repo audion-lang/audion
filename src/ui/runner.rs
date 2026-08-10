@@ -448,10 +448,19 @@ fn render_widgets(
     for id in &order {
         let Some(state_arc) = widget_map.get(id) else { continue };
 
-        let (has_pos, pos_x, pos_y) = {
+        let (has_pos, pos_x, pos_y, is_visible) = {
             let s = state_arc.lock().unwrap();
-            (s.config.x.is_some() && s.config.y.is_some(), s.config.x.unwrap_or(0.0), s.config.y.unwrap_or(0.0))
+            (
+                s.config.x.is_some() && s.config.y.is_some(),
+                s.config.x.unwrap_or(0.0),
+                s.config.y.unwrap_or(0.0),
+                s.config.style.visible != Some(false),
+            )
         };
+
+        if !is_visible {
+            continue;
+        }
 
         if edit_mode || has_pos {
             let area_id = egui::Id::new(("audion_widget", id.as_str()));
@@ -810,10 +819,18 @@ fn render_widget_inner(
                         let s = scene_arc.lock().unwrap();
                         (s.width, s.height)
                     };
-                    let (rect, _) = ui.allocate_exact_size(
+                    let (rect, response) = ui.allocate_exact_size(
                         egui::Vec2::new(w, h),
-                        egui::Sense::hover(),
+                        egui::Sense::click_and_drag(),
                     );
+                    {
+                        let mut s = scene_arc.lock().unwrap();
+                        s.mouse_down = response.is_pointer_button_down_on();
+                        if let Some(pos) = response.interact_pointer_pos().or_else(|| response.hover_pos()) {
+                            s.mouse_x = ((pos.x - rect.min.x) / rect.width())  * 2.0 - 1.0;
+                            s.mouse_y = ((pos.y - rect.min.y) / rect.height()) * 2.0 - 1.0;
+                        }
+                    }
                     if ui.is_rect_visible(rect) {
                         ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                             rect,

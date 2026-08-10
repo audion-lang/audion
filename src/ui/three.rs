@@ -28,6 +28,12 @@ pub struct ThreeSceneData {
     pub shaders:     HashMap<String, ShaderEntry>,
     /// name → decoded RGBA8 pixels ready to be uploaded to GPU.
     pub textures:    HashMap<String, TextureEntry>,
+    /// Pointer position over this canvas, normalized to [-1, 1] (x right, y down).
+    /// Updated by the UI thread each frame; read by scripts via canvas.mouse_x()/mouse_y().
+    pub mouse_x:     f32,
+    pub mouse_y:     f32,
+    /// True while the primary button is held and was originally pressed on this canvas.
+    pub mouse_down:  bool,
 }
 
 impl Default for ThreeSceneData {
@@ -41,6 +47,9 @@ impl Default for ThreeSceneData {
             meshes:      Vec::new(),
             shaders:     HashMap::new(),
             textures:    HashMap::new(),
+            mouse_x:     0.0,
+            mouse_y:     0.0,
+            mouse_down:  false,
         }
     }
 }

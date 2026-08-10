@@ -88,6 +88,7 @@ pub fn load_widget_config(path: &Path, id: &str, mut default: WidgetConfig) -> W
         width:    entry.width,
         height:   entry.height,
         highlight_color: None,
+        visible:  None,
     };
 
     default

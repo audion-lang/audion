@@ -1333,8 +1333,17 @@ impl Interpreter {
                         Ok(Value::Nil)
                     }
 
+                    // ── Mouse input ────────────────────────────────────────
+                    // canvas.mouse_x() / canvas.mouse_y() → normalized [-1, 1] pointer
+                    // position over this canvas (x right, y down). canvas.mouse_down()
+                    // → true while the primary button is held, having been pressed on
+                    // this canvas.
+                    "mouse_x" => Ok(Value::Number(scene.mouse_x as f64)),
+                    "mouse_y" => Ok(Value::Number(scene.mouse_y as f64)),
+                    "mouse_down" => Ok(Value::Bool(scene.mouse_down)),
+
                     _ => Err(AudionError::RuntimeError {
-                        msg: format!("unknown canvas method '{}' — available: camera, fov, clear, mesh, color, pos, rot, scale, scale_xyz, show, hide, remove, shader, shader_full, mesh_shader, texture, mesh_texture, uv_scale, load, set, set4", method),
+                        msg: format!("unknown canvas method '{}' — available: camera, fov, clear, mesh, color, pos, rot, scale, scale_xyz, show, hide, remove, shader, shader_full, mesh_shader, texture, mesh_texture, uv_scale, load, set, set4, mouse_x, mouse_y, mouse_down", method),
                     }),
                 }
             }
@@ -1431,6 +1440,11 @@ impl Interpreter {
                             "height" => {
                                 if let Some(h) = args.get(1).and_then(|v| v.as_number()) {
                                     state.config.style.height = Some(h as f32);
+                                }
+                            }
+                            "visible" => {
+                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.style.visible = Some(v != 0.0);
                                 }
                             }
                             _ => {}

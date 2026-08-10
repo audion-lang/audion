@@ -39,6 +39,9 @@ pub struct WidgetStyle {
     pub height: Option<f32>,
     /// Color for highlighted array cells (playback head). Default: yellow.
     pub highlight_color: Option<[u8; 3]>,
+    /// Tab/page visibility — `Some(false)` skips rendering entirely. Default (`None`): visible.
+    /// Driven by `.style("visible", 0|1)` for building tabbed UIs in Audion scripts.
+    pub visible: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,11 @@ pub struct WidgetStyle {
     /// Tab/page visibility — `Some(false)` skips rendering entirely. Default (`None`): visible.
     /// Driven by `.style("visible", 0|1)` for building tabbed UIs in Audion scripts.
     pub visible: Option<bool>,
+    /// Knob response curve: 1.0 (default/None) = linear. >1 = exponential — most of
+    /// the drag travel covers the low end of min..max, with a fast sweep up to max
+    /// near the top — useful for wide-range params (e.g. delay time from a few ms
+    /// to 60s). <1 = logarithmic (inverse skew). Driven by `.style("curve", n)`.
+    pub curve: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

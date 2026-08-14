@@ -1447,6 +1447,11 @@ impl Interpreter {
                                     state.config.style.visible = Some(v != 0.0);
                                 }
                             }
+                            "curve" => {
+                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.style.curve = Some(v);
+                                }
+                            }
                             _ => {}
                         }
                     }

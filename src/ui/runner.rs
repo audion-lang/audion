@@ -1259,16 +1259,25 @@ fn knob(
     let r_inner = r_outer * 0.55;
     let r_dot   = r_outer * 0.12;
 
+    // curve: 1.0 = linear (default). >1 = exponential (most travel at the low
+    // end, fast sweep to max) — good for wide-range params like delay time
+    // from a few ms to 60s. <1 = logarithmic (inverse skew).
+    let curve = style.curve.unwrap_or(1.0).max(0.01);
+    let range = (max - min).abs().max(1e-10);
+    let to_t = |v: f64| -> f64 { (((v - min) / range).clamp(0.0, 1.0)).powf(1.0 / curve) };
+    let from_t = |t: f64| -> f64 { min + range * t.clamp(0.0, 1.0).powf(curve) };
+
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::drag());
     if !ui.is_rect_visible(rect) { return false; }
 
     let mut changed = false;
     if resp.dragged() {
         let delta = resp.drag_delta();
-        let range = (max - min).abs().max(1e-10);
-        // 270° sweep → drag full height equals full range
-        let sensitivity = range / (size as f64 * 3.0);
-        *value = (*value - delta.y as f64 * sensitivity).clamp(min, max);
+        // Work in normalized [0,1] position space so a fixed drag distance
+        // always covers the same fraction of travel, regardless of curve or range.
+        let sensitivity = 1.0 / (size as f64 * 3.0);
+        let new_t = to_t(*value) - delta.y as f64 * sensitivity;
+        *value = from_t(new_t);
         changed = true;
     }
 
@@ -1277,7 +1286,7 @@ fn knob(
     let vis = ui.visuals();
 
     // Map value to angle: -225° at min, +45° at max (i.e., -5π/4 .. π/4)
-    let t = if (max - min).abs() < 1e-10 { 0.0 } else { ((*value - min) / (max - min)).clamp(0.0, 1.0) as f32 };
+    let t = to_t(*value) as f32;
     let start_angle = std::f32::consts::PI * 1.25; // 225°
     let sweep       = std::f32::consts::PI * 1.5;  // 270°
     let val_angle   = start_angle + t * sweep;

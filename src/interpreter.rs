@@ -590,7 +590,17 @@ impl Interpreter {
             &mut self.base_path,
             canonical.parent().unwrap_or(&PathBuf::from(".")).to_path_buf(),
         );
-        let old_file = std::mem::replace(&mut self.current_file, path.to_string());
+        // current_file must be *relative to the new base_path* (its own directory,
+        // set just above), not the raw include string — that string is relative to
+        // the *including* file's base_path, not this one. Using it as-is here made
+        // `base_path.join(current_file)` (used to derive the .adc cache path, see
+        // define_cache.rs) double up any subdirectory in the include path, e.g.
+        // base_path=".../src", current_file="./src/kit_00.au" -> ".../src/./src/kit_00.au".
+        let file_basename = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        let old_file = std::mem::replace(&mut self.current_file, file_basename);
 
         // Execute all statements (but don't auto-call main)
         for stmt in &stmts {

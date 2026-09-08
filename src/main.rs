@@ -96,6 +96,15 @@ enum Commands {
 }
 
 fn main() {
+    // Scripts don't have to spawn `thread{}` blocks to do timing-critical work —
+    // `main()` itself can loop on wait() directly, and that runs right here, on
+    // this thread. exec_thread (interpreter.rs) elevates every *spawned* thread,
+    // but this — the process's own main thread — is the one entry point that
+    // isn't a spawned thread, so it needs the same treatment applied explicitly.
+    if let Err(e) = thread_priority::ThreadPriority::Max.set_for_current() {
+        eprintln!("warning: could not raise priority for main thread: {:?}", e);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -208,6 +217,12 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
             interp.current_file = file_name.clone();
             let _interp_thread = thread::spawn(move || {
+                // This thread (not the process main thread, which eframe owns in
+                // --ui mode) is the one actually running the script's sequencer
+                // logic, so it needs the same priority bump `fn main()` gets above.
+                if let Err(e) = thread_priority::ThreadPriority::Max.set_for_current() {
+                    eprintln!("warning: could not raise priority for UI interpreter thread: {:?}", e);
+                }
                 if let Err(e) = interp.run(&stmts) {
                     eprintln!("{}", e);
                     osc_bg.free_all_nodes();

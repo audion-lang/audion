@@ -795,6 +795,23 @@ impl Interpreter {
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
+                // Every `thread{}` block is a sequencer/timing thread (see clock.rs's
+                // wait()/wait_beats — that's what they're for), so bump scheduling
+                // priority above the default before running any of its statements.
+                // This uses ThreadPriority::Max, which raises priority within the
+                // OS's normal (non-realtime) scheduling class rather than requesting
+                // SCHED_FIFO/a Mach time-constraint policy — no elevated privileges
+                // needed, and none of the "whole system can freeze if misused" risk
+                // that comes with true realtime policies. Best-effort: failure (e.g.
+                // sandboxed environments that deny priority changes) is not fatal,
+                // the thread just runs at default priority.
+                if let Err(e) = thread_priority::ThreadPriority::Max.set_for_current() {
+                    eprintln!(
+                        "warning: could not raise priority for thread '{}': {:?}",
+                        thread_name, e
+                    );
+                }
+
                 let mut interp =
                     Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, define_cache, base_path);
                 interp.current_file = current_file;

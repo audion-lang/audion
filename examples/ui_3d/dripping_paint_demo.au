@@ -1,0 +1,157 @@
+// Dripping paint demo — drag a box of procedural drips around the canvas.
+// Every stamp during a drag freezes a copy in the background, building a
+// trail of past frames; once 60 stamps exist, the oldest is deleted so the
+// screen never fills up. Black background, cheap additive "bloom" glow.
+//
+// Run with: audion run --ui examples/ui_3d/dripping_paint_demo.au
+
+let viz = ui_desktop();
+viz.window("Dripping Paint", 960, 720);
+
+let scene = viz.three.canvas("main", 960, 720);
+scene.clear(0.0, 0.0, 0.0);
+scene.camera(0.0, 0.0, 8.0,  0.0, 0.0, 0.0);
+scene.fov(45.0);
+
+// ── Drip shader ────────────────────────────────────────────────────────────
+// u.custom0.x = time seed   u.custom0.y = per-instance hue offset
+// u.custom0.z = 1.0 for the live head, 0.0 for a frozen trail stamp (dims it)
+scene.shader("drip", "
+fn hash(p: f32) -> f32 {
+    return fract(sin(p * 1.1) * 1.2);
+}
+
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let t     = u.custom0.x;
+    let hue   = u.custom0.y;
+    let live  = u.custom0.z;
+
+    let cols  = 114.0;
+    let ci    = floor(in.uv.x * cols);
+    let cx    = fract(in.uv.x * cols);
+    let rnd   = hash(ci + hue * 37.0);
+    let rnd2  = hash(ci * 3.17 + hue * 11.0 + 4.0);
+
+    let speed   = mix(0.08, 0.35, rnd2);
+    let headY   = fract(t * speed + rnd);
+    let tailLen = mix(0.15, 10.55, rnd);
+
+    // distance below the drip head, wrapped
+    var d = in.uv.y - headY;
+    d = d - floor(d / 1.3) * 1.3;
+
+    // Horizontal offset within the column, in the same units as uv.y so
+    // radial distance below reads as a true circle rather than a
+    // separable box (two independent smoothsteps multiplied together
+    // makes a square blob — this uses one radial falloff instead).
+    let colW = 1.0 / cols;
+    let dx   = (cx - 0.5) * colW;
+
+    let streak_r = mix(0.006, 0.014, hash(ci + 9.0));
+    let streak    = (1.0 - smoothstep(0.0, streak_r, abs(dx))) * (1.0 - smoothstep(0.0, tailLen, d));
+
+    let drop_r = mix(0.028, 0.055, hash(ci - 9.0));
+    let r      = sqrt(dx * dx + d * d);
+    let headGlow = 1.0 - smoothstep(0.0, drop_r, r);
+
+    var alpha = clamp(streak * 0.55 + headGlow, 0.0, 1.0);
+    alpha = alpha * smoothstep(0.0, 0.06, cx) * smoothstep(1.0, 0.94, cx);
+
+    // Base wash across the whole panel so it doesn't look empty between drips
+    let wash = 0.10 + 0.05 * sin(in.uv.x * 20.0 + hue * 6.0);
+    alpha = clamp(alpha + wash * (1.0 - live) * 0.4, 0.0, 1.0);
+
+    let baseCol = u.color.rgb;
+    var col = mix(baseCol * 0.25, baseCol * 1.4, clamp(streak + headGlow, 0.0, 1.0));
+    col = col * mix(0.55, 1.0, live);
+
+    return vec4<f32>(col, alpha);
+}
+");
+
+// Soft radial glow — bigger, faint, sits just behind the live box in Z to
+// fake a bloom halo without a real post-process pass.
+scene.shader("glow", "
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let d = length(in.uv - vec2<f32>(0.5, 0.5)) * 2.0;
+    let a = clamp(1.0 - d, 0.0, 1.0);
+    let falloff = a * a * 0.5;
+    return vec4<f32>(u.color.rgb * 1.6, falloff);
+}
+");
+
+// ── Live paint box + glow halo ──────────────────────────────────────────────
+scene.mesh("paint_box", "box");
+scene.color("paint_box", 0.95, 0.25, 0.55);
+scene.scale("paint_box", 1.4);
+scene.mesh_shader("paint_box", "drip");
+
+scene.mesh("paint_glow", "plane");
+scene.color("paint_glow", 0.95, 0.25, 0.55);
+scene.scale("paint_glow", 3.2);
+scene.mesh_shader("paint_glow", "glow");
+scene.pos("paint_glow", 0.0, 0.0, -0.05);
+
+// ── State ────────────────────────────────────────────────────────────────
+let t           = 0.0;
+let box_x       = 0.0;
+let box_y       = 0.0;
+let hue_seed    = 0.0;
+let stamp_n     = 0;
+let since_stamp = 0.0;
+let max_trail   = 60;
+
+// World-space half extents visible at z = 0 for camera dist 8, fov 45.
+let half_w = 4.6;
+let half_h = 3.3;
+
+thread poll {
+    loop {
+        t = t + 0.016;
+
+        let mdown = scene.mouse_down();
+
+        if (mdown) {
+            let mx = scene.mouse_x();
+            let my = scene.mouse_y();
+            box_x = math_clamp(mx * half_w,  0.0 - half_w, half_w);
+            box_y = math_clamp(0.0 - my * half_h, 0.0 - half_h, half_h);
+        }
+
+        scene.pos("paint_box",  box_x, box_y, 0.0);
+        scene.pos("paint_glow", box_x, box_y, -0.05);
+        scene.set4("paint_box",  0, t, hue_seed, 1.0, 0.0);
+        scene.set4("paint_glow", 0, t, hue_seed, 1.0, 0.0);
+
+        // While dragging, stamp a frozen copy into the background every
+        // ~90ms so the box leaves a trail of past frames behind it.
+        if (mdown) {
+            since_stamp = since_stamp + 0.016;
+            if (since_stamp >= 0.09) {
+                since_stamp = 0.0;
+                stamp_n = stamp_n + 1;
+                let id = "trail_" + str(stamp_n);
+
+                scene.mesh(id, "box");
+                scene.pos(id, box_x, box_y, 0.01);
+                scene.scale(id, 1.4);
+                scene.color(id, 0.95, 0.25, 0.55);
+                scene.mesh_shader(id, "drip");
+                scene.set4(id, 0, t, hue_seed, 0.0, 0.0);
+
+                // ids are sequential, so the id to evict is just N - max_trail
+                if (stamp_n > max_trail) {
+                    let old_id = "trail_" + str(stamp_n - max_trail);
+                    scene.remove(old_id);
+                }
+            }
+            hue_seed = hue_seed + 0.003;
+        } else {
+            since_stamp = 0.0;
+        }
+
+        wait(0.016);
+    }
+}
+
+fn main() { wait(1); }

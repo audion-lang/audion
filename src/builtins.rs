@@ -198,7 +198,7 @@ fn remove_file_handle(id: u64) {
 /// Single source of truth for all builtin function names.
 /// Used by Interpreter::new() for registration and available for introspection.
 pub const BUILTIN_NAMES: &[&str] = &[
-    "print", "bpm", "wait", "wait_ms",
+    "print", "bpm", "wait", "wait_ms", "latency", "sleep_ms",
     "synth", "free", "set",
     "rand", "seed", "array_rand", "time",
     "count", "push", "pop", "keys", "has_key", "remove",
@@ -332,6 +332,8 @@ pub fn call_builtin(
         "bpm" => builtin_bpm(args, clock),
         "wait" => builtin_wait(args, clock),
         "wait_ms" => builtin_wait_ms(args, clock),
+        "latency" => builtin_latency(args, clock),
+        "sleep_ms" => builtin_sleep_ms(args),
         "synth" => builtin_synth(args, named_args, osc),
         "free" => builtin_free(args, osc),
         "set" => builtin_set(args, named_args, osc),
@@ -614,6 +616,29 @@ fn builtin_bpm(args: &[Value], clock: &Arc<Clock>) -> Result<Value> {
 fn builtin_wait(args: &[Value], clock: &Arc<Clock>) -> Result<Value> {
     let beats = require_number("wait", args.first().unwrap_or(&Value::Number(1.0)))?;
     clock.wait_beats(beats);
+    Ok(Value::Nil)
+}
+
+/// latency() -> current lookahead in ms; latency(ms) sets it.
+/// The lookahead is how far ahead of the audio clock sequencer threads run so
+/// the scheduler can place every event on time. Only active in `audion run`.
+fn builtin_latency(args: &[Value], clock: &Arc<Clock>) -> Result<Value> {
+    if args.is_empty() {
+        return Ok(Value::Number(clock.latency_secs() * 1000.0));
+    }
+    let ms = require_number("latency", &args[0])?;
+    clock.set_latency_secs(ms / 1000.0);
+    Ok(Value::Nil)
+}
+
+/// sleep_ms(ms) — always blocks for real wall-clock time, ignoring the lookahead
+/// model. Use in reactive loops (polling MIDI/OSC input, waiting on I/O) where
+/// `wait`/`wait_ms` would return early because they only track logical beats.
+fn builtin_sleep_ms(args: &[Value]) -> Result<Value> {
+    let ms = require_number("sleep_ms", args.first().unwrap_or(&Value::Number(0.0)))?;
+    if ms > 0.0 {
+        std::thread::sleep(std::time::Duration::from_secs_f64(ms / 1000.0));
+    }
     Ok(Value::Nil)
 }
 

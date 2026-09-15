@@ -43,6 +43,7 @@ mod osc_protocol;
 mod parser;
 mod repl;
 mod sampler;
+mod scheduler;
 mod sclang;
 mod spec;
 mod sqlite;
@@ -183,13 +184,24 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(define_cache::DefineCache::new()));
 
+    // Lookahead scheduler: sequencer threads run `latency()` seconds ahead and
+    // this dispatches their events (timestamped OSC bundles to scsynth, exact
+    // wall-clock MIDI/OSC) so timing survives interpreter jitter.
+    let scheduler =
+        scheduler::Scheduler::new_and_start(server, clock_inst.clone(), midi.clone(), osc_proto.clone());
+    osc.set_scheduler(scheduler.clone());
+    midi.set_scheduler(scheduler.clone());
+    osc_proto.set_scheduler(scheduler.clone());
+
     // Set up Ctrl+C handler
     let osc_cleanup = osc.clone();
     let midi_cleanup = midi.clone();
+    let sched_cleanup = scheduler.clone();
     let shutdown_flag = shutdown.clone();
     ctrlc::set_handler(move || {
         eprintln!("\nshutting down...");
         shutdown_flag.store(true, Ordering::Relaxed);
+        sched_cleanup.clear();
         midi_cleanup.panic();
         osc_cleanup.free_all_nodes();
         osc_cleanup.free_all_buffers();
@@ -253,6 +265,8 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             osc.free_all_buffers();
             std::process::exit(1);
         }
+        // Let any scheduled MIDI/OSC tail drain before the process exits.
+        scheduler.wait_until_empty(Duration::from_secs(5));
         if builtins::print_assert_stats() {
             std::process::exit(1);
         }
@@ -299,6 +313,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
         if let Some(ref mut old_interp) = interp {
             shutdown.store(true, Ordering::Relaxed);
             old_interp.join_threads();
+            scheduler.clear();
             osc.free_all_nodes();
             osc.free_all_buffers();
             shutdown.store(false, Ordering::Relaxed);

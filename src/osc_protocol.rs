@@ -16,11 +16,12 @@
 //
 
 use std::net::UdpSocket;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rosc::encoder;
 use rosc::{OscMessage, OscPacket, OscType};
 
+use crate::scheduler::Scheduler;
 use crate::value::Value;
 
 /// User-facing OSC client for sending/receiving arbitrary OSC messages.
@@ -29,6 +30,9 @@ pub struct OscProtocolClient {
     target: Mutex<Option<String>>,
     socket: Mutex<Option<UdpSocket>>,
     listener: Mutex<Option<UdpSocket>>,
+    /// When set, `send` queues the encoded packet on the lookahead scheduler to
+    /// go out at the caller's logical beat.
+    scheduler: OnceLock<Arc<Scheduler>>,
 }
 
 impl OscProtocolClient {
@@ -37,7 +41,24 @@ impl OscProtocolClient {
             target: Mutex::new(None),
             socket: Mutex::new(None),
             listener: Mutex::new(None),
+            scheduler: OnceLock::new(),
         }
+    }
+
+    /// Attach the lookahead scheduler.
+    pub fn set_scheduler(&self, sched: Arc<Scheduler>) {
+        let _ = self.scheduler.set(sched);
+    }
+
+    /// Send already-encoded OSC bytes to the configured target immediately.
+    /// Used by the scheduler's dispatch thread.
+    pub fn send_encoded(&self, bytes: &[u8]) -> bool {
+        let target = self.target.lock().unwrap().clone();
+        let sock = self.socket.lock().unwrap();
+        if let (Some(target), Some(sock)) = (target, sock.as_ref()) {
+            return sock.send_to(bytes, &target).is_ok();
+        }
+        false
     }
 
     /// Set target address for sending (e.g. "127.0.0.1:9000").
@@ -58,19 +79,26 @@ impl OscProtocolClient {
         self.target.lock().unwrap().clone()
     }
 
-    /// Send an OSC message to the configured target.
+    /// Send an OSC message to the configured target. Routed through the lookahead
+    /// scheduler when one is attached (so it lands on its logical beat),
+    /// otherwise sent immediately.
     pub fn send(&self, address: &str, args: Vec<OscType>) -> bool {
+        let packet = OscPacket::Message(OscMessage {
+            addr: address.to_string(),
+            args,
+        });
+        let bytes = match encoder::encode(&packet) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        if let Some(sched) = self.scheduler.get() {
+            sched.submit_raw(bytes);
+            return true;
+        }
         let target = self.target.lock().unwrap().clone();
         let sock = self.socket.lock().unwrap();
         if let (Some(target), Some(sock)) = (target, sock.as_ref()) {
-            let msg = OscMessage {
-                addr: address.to_string(),
-                args,
-            };
-            let packet = OscPacket::Message(msg);
-            if let Ok(bytes) = encoder::encode(&packet) {
-                return sock.send_to(&bytes, &target).is_ok();
-            }
+            return sock.send_to(&bytes, &target).is_ok();
         }
         false
     }

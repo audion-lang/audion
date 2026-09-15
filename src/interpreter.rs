@@ -787,6 +787,11 @@ impl Interpreter {
         let shutdown = self.shutdown.clone();
         let debug_sclang = self.debug_sclang;
         let thread_name = name.to_string();
+        // Inherit the parent's position in the sequence so a thread spawned
+        // mid-performance (e.g. a drum roll) stays aligned with the groove
+        // instead of re-anchoring to the real clock, which trails the parent's
+        // logical cursor by `latency`.
+        let parent_beat = clock.logical_beat();
 
         let synthdef_cache = self.synthdef_cache.clone();
         let define_cache = self.define_cache.clone();
@@ -812,6 +817,7 @@ impl Interpreter {
                     );
                 }
 
+                clock.seed_logical_beat(parent_beat);
                 let mut interp =
                     Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, define_cache, base_path);
                 interp.current_file = current_file;
@@ -1477,6 +1483,24 @@ impl Interpreter {
                             "curve" => {
                                 if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
                                     state.config.style.curve = Some(v);
+                                }
+                            }
+                            // Absolute placement from script — same x/y field the
+                            // drag-to-arrange edit mode (Ctrl+E) and .aui file already use,
+                            // just settable up front so a script can lay out a grid instead
+                            // of the default vertical flow. Runs after the .aui file is
+                            // loaded for this widget, so it overrides any saved position —
+                            // a script-positioned widget can still be dragged in edit mode,
+                            // but that new position won't stick past the next run unless
+                            // the script's own x/y call is removed or updated to match.
+                            "x" => {
+                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.x = Some(v as f32);
+                                }
+                            }
+                            "y" => {
+                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                                    state.config.y = Some(v as f32);
                                 }
                             }
                             _ => {}

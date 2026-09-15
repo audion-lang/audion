@@ -17,10 +17,12 @@
 
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use rosc::encoder;
 use rosc::{OscMessage, OscPacket, OscType};
 
+use crate::scheduler::Scheduler;
 use crate::value::Value;
 
 pub struct OscClient {
@@ -34,11 +36,38 @@ pub struct OscClient {
     recording_node_id: std::sync::Mutex<Option<i32>>,
     recording_buf_id: std::sync::Mutex<Option<i32>>,
     recording_synthdef_bytes: std::sync::Mutex<Vec<u8>>,
+    /// When set, node-lifecycle messages (`/s_new`, `/n_set`, `/n_free`) are
+    /// routed through the lookahead scheduler as timestamped bundles instead of
+    /// being sent immediately.
+    scheduler: OnceLock<Arc<Scheduler>>,
 }
 
 impl OscClient {
     pub fn new(target: &str) -> Self {
         let socket = UdpSocket::bind("0.0.0.0:0").expect("failed to bind UDP socket");
+
+        // macOS's default SO_SNDBUF for a fresh UDP socket is small enough that
+        // a single large /d_recv (a compiled SynthDef, easily 10-15KB once a
+        // define has many params/UGens) fails outright with EMSGSIZE ("Message
+        // too long") — silently, since the caller only sees the discarded
+        // Result. Raise it to comfortably clear the 64KB UDP datagram ceiling
+        // so /d_recv never hits this regardless of how large a SynthDef gets.
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            let bufsize: libc::c_int = 1 << 20; // 1MB
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &bufsize as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+        }
+
         let client = OscClient {
             socket,
             target: target.to_string(),
@@ -50,8 +79,28 @@ impl OscClient {
             recording_node_id: std::sync::Mutex::new(None),
             recording_buf_id: std::sync::Mutex::new(None),
             recording_synthdef_bytes: std::sync::Mutex::new(Vec::new()),
+            scheduler: OnceLock::new(),
         };
         client
+    }
+
+    /// Attach the lookahead scheduler. After this, `/s_new`, `/n_set` and
+    /// `/n_free` go out as timestamped bundles at their logical beat.
+    pub fn set_scheduler(&self, sched: Arc<Scheduler>) {
+        let _ = self.scheduler.set(sched);
+    }
+
+    /// Send one scsynth message: via the scheduler when attached (timestamped to
+    /// the caller's logical beat), otherwise immediately.
+    fn dispatch(&self, addr: &str, args: Vec<OscType>) {
+        if let Some(sched) = self.scheduler.get() {
+            sched.submit_sc(vec![OscMessage {
+                addr: addr.to_string(),
+                args,
+            }]);
+        } else {
+            self.send(addr, args);
+        }
     }
 
     pub fn synth_new(&self, def_name: &str, controls: &[(String, Value)]) -> i32 {
@@ -72,14 +121,14 @@ impl OscClient {
             }
         }
 
-        self.send("/s_new", args);
+        self.dispatch("/s_new", args);
 
         self.allocated_nodes.lock().unwrap().push(node_id);
         node_id
     }
 
     pub fn node_free(&self, node_id: i32) {
-        self.send("/n_free", vec![OscType::Int(node_id)]);
+        self.dispatch("/n_free", vec![OscType::Int(node_id)]);
         let mut nodes = self.allocated_nodes.lock().unwrap();
         nodes.retain(|&id| id != node_id);
     }
@@ -93,7 +142,7 @@ impl OscClient {
                 _ => args.push(OscType::Float(0.0)),
             }
         }
-        self.send("/n_set", args);
+        self.dispatch("/n_set", args);
     }
 
     pub fn load_synthdef(&self, synthdef_bytes: &[u8]) {
@@ -336,7 +385,7 @@ impl OscClient {
                 _ => args.push(OscType::Float(0.0)),
             }
         }
-        self.send("/s_new", args);
+        self.dispatch("/s_new", args);
         self.allocated_nodes.lock().unwrap().push(node_id);
         node_id
     }
@@ -411,7 +460,9 @@ impl OscClient {
         };
         let packet = OscPacket::Message(msg);
         if let Ok(bytes) = encoder::encode(&packet) {
-            let _ = self.socket.send_to(&bytes, &self.target);
+            if let Err(e) = self.socket.send_to(&bytes, &self.target) {
+                eprintln!("warning: failed to send {} ({} bytes) to {}: {}", addr, bytes.len(), self.target, e);
+            }
         }
     }
 }

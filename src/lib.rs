@@ -35,6 +35,7 @@ pub mod osc_protocol;
 pub mod parser;
 pub mod repl;
 pub mod sampler;
+pub mod scheduler;
 pub mod sclang;
 pub mod spec;
 pub mod sqlite;

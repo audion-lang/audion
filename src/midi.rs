@@ -15,10 +15,12 @@
 //
 //
 
-use std::sync::{atomic::AtomicBool, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use midir::{MidiOutput, MidiOutputConnection};
+
+use crate::scheduler::Scheduler;
 
 pub struct MidiClient {
     connection: Mutex<Option<MidiOutputConnection>>,
@@ -26,6 +28,9 @@ pub struct MidiClient {
     pub sync_thread: Mutex<Option<JoinHandle<()>>>,
     pub sync_enabled: AtomicBool,
     pub previous_bpm: Mutex<Option<f64>>,
+    /// When set, channel-voice messages are queued on the lookahead scheduler
+    /// and sent at their logical beat.
+    scheduler: OnceLock<Arc<Scheduler>>,
 }
 
 impl MidiClient {
@@ -35,6 +40,20 @@ impl MidiClient {
             sync_thread: Mutex::new(None),
             sync_enabled: AtomicBool::new(false),
             previous_bpm: Mutex::new(None),
+            scheduler: OnceLock::new(),
+        }
+    }
+
+    /// Attach the lookahead scheduler.
+    pub fn set_scheduler(&self, sched: Arc<Scheduler>) {
+        let _ = self.scheduler.set(sched);
+    }
+
+    /// Send raw MIDI bytes immediately, bypassing the scheduler. Used by the
+    /// dispatch thread itself and by panic/cleanup paths.
+    pub fn send_direct(&self, msg: &[u8]) {
+        if let Some(conn) = self.connection.lock().unwrap().as_mut() {
+            let _ = conn.send(msg);
         }
     }
 
@@ -102,10 +121,13 @@ impl MidiClient {
         }
     }
 
-    /// Send raw MIDI bytes. Silently ignored if not connected.
+    /// Send raw MIDI bytes. Routed through the lookahead scheduler when one is
+    /// attached, otherwise sent immediately. Silently ignored if not connected.
     pub fn send(&self, msg: &[u8]) {
-        if let Some(conn) = self.connection.lock().unwrap().as_mut() {
-            let _ = conn.send(msg);
+        if let Some(sched) = self.scheduler.get() {
+            sched.submit_midi(msg.to_vec());
+        } else {
+            self.send_direct(msg);
         }
     }
 
@@ -144,10 +166,11 @@ impl MidiClient {
         self.send(&[0xFC]);
     }
 
-    /// Send All Notes Off (CC 123) on all 16 channels.
+    /// Send All Notes Off (CC 123) on all 16 channels. Sent immediately so it
+    /// still works during shutdown, when the scheduler is no longer draining.
     pub fn panic(&self) {
         for ch in 0..16u8 {
-            self.cc(ch, 123, 0);
+            self.send_direct(&[0xB0 | (ch & 0x0F), 123, 0]);
         }
     }
 

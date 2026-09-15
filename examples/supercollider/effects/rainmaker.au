@@ -1,0 +1,99 @@
+
+// ── Rainmaker — IDM rhythm delay · comb resonator · per-tap sequences ────────
+// 8 taps at prime-spaced 32nd-note positions → polyrhythmic interference patterns.
+// Each tap runs independent LFO sequences for filter cutoff, pitch, and amplitude
+// so the internal texture never repeats. The comb resonator pitch also drifts,
+// generating an emergent melody from noise.
+//
+// beat        : one beat in seconds  (0.5 = 120 BPM)
+// feedback    : tap feedback amount (keep < 0.7 to avoid runaway)
+// chaos       : depth of all internal sequences  (0 = static, 1 = full IDM)
+// comb_pitch  : comb resonator base pitch Hz  (80..600 sweet spot)
+// comb_decay  : comb resonance / ring time
+// pitch_spread: pitch sequence range  (0 = no shift, 1 = ±1 oct per tap)
+// drift       : stochastic tap timing jitter
+// mix         : wet/dry  (0 = dry, 1 = fully wet)
+//
+// Usage:
+//   synth("rainmaker", in_bus: HAT_O_OUT, out_bus: 0,
+//         mix: rm_mix, beat: rm_beat, feedback: rm_feedback,
+//         chaos: rm_chaos, comb_pitch: rm_comb_pitch, comb_decay: rm_comb_decay,
+//         pitch_spread: rm_pitch_spread, drift: rm_drift);
+// NOTE this needs testing
+
+rm_beat         = 0.5;
+rm_mix          = 0.6;
+rm_feedback     = 0.38;
+rm_chaos        = 0.5;
+rm_comb_pitch   = 180.0;
+rm_comb_decay   = 0.65;
+rm_pitch_spread = 0.5;
+rm_drift        = 0.35;
+
+define rainmaker(in_bus, out_bus, mix, beat, feedback, chaos,
+                 comb_pitch, comb_decay, pitch_spread, drift) {
+    // all let bindings must come before any expression statements (local_out / out)
+    let dry      = in(in_bus, 2);
+    let mono     = dry[0] + dry[1];
+    let fb_raw   = local_in(1);
+    let fb_ratio = 1.0 + lfo_noise2(0.07) * chaos * 0.14;
+    let fb_sig   = pitch_shift(hpf(fb_raw, 60), 0.1, fb_ratio, 0.0, 0.0);
+    let src      = mono + fb_sig * feedback;
+    let t32      = beat / 8.0;
+    let d        = drift * 0.005;
+    let dn0      = lfo_noise2(0.17) * d;
+    let dn1      = lfo_noise2(0.23) * d;
+    let dn2      = lfo_noise2(0.31) * d;
+    let dn3      = lfo_noise2(0.43) * d;
+    let tap0     = delay_c(src, beat * 3.0, t32 * 1.0  + dn0);
+    let tap1     = delay_c(src, beat * 3.0, t32 * 2.0  + dn1);
+    let tap2     = delay_c(src, beat * 3.0, t32 * 3.0  + dn2);
+    let tap3     = delay_c(src, beat * 3.0, t32 * 5.0  + dn3);
+    let tap4     = delay_c(src, beat * 3.0, t32 * 7.0  + dn0);
+    let tap5     = delay_c(src, beat * 3.0, t32 * 11.0 + dn1);
+    let tap6     = delay_c(src, beat * 3.0, t32 * 13.0 + dn2);
+    let tap7     = delay_c(src, beat * 3.0, t32 * 17.0 + dn3);
+    let r0       = resonz(tap0, 400  + lfo_noise2(0.19) * chaos * 320,  0.35);
+    let r1       = resonz(tap1, 900  + lfo_noise2(0.29) * chaos * 650,  0.30);
+    let r2       = resonz(tap2, 1800 + lfo_noise2(0.37) * chaos * 1100, 0.25);
+    let r3       = resonz(tap3, 550  + lfo_noise2(0.41) * chaos * 420,  0.35);
+    let r4       = resonz(tap4, 1300 + lfo_noise2(0.53) * chaos * 850,  0.28);
+    let r5       = resonz(tap5, 2600 + lfo_noise2(0.61) * chaos * 1500, 0.22);
+    let r6       = resonz(tap6, 280  + lfo_noise2(0.71) * chaos * 190,  0.40);
+    let r7       = resonz(tap7, 3500 + lfo_noise2(0.83) * chaos * 1800, 0.18);
+    let p0       = pitch_shift(r0, 0.08, 1.0 + lfo_noise2(0.13) * pitch_spread * 0.50, 0.0, 0.0);
+    let p1       = pitch_shift(r1, 0.08, 1.0 + lfo_noise2(0.18) * pitch_spread,        0.0, 0.0);
+    let p2       = pitch_shift(r2, 0.08, 1.0 + lfo_noise2(0.24) * pitch_spread * 0.75, 0.0, 0.0);
+    let p3       = pitch_shift(r3, 0.08, 1.0 - lfo_noise2(0.31) * pitch_spread * 0.50, 0.0, 0.0);
+    let p4       = pitch_shift(r4, 0.08, 1.0 + lfo_noise2(0.39) * pitch_spread,        0.0, 0.0);
+    let p5       = pitch_shift(r5, 0.08, 1.0 - lfo_noise2(0.47) * pitch_spread * 0.75, 0.0, 0.0);
+    let p6       = pitch_shift(r6, 0.08, 1.0 + lfo_noise2(0.57) * pitch_spread * 0.50, 0.0, 0.0);
+    let p7       = pitch_shift(r7, 0.08, 1.0 + lfo_noise2(0.67) * pitch_spread,        0.0, 0.0);
+    let a0       = (lfo_noise2(1.3)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a1       = (lfo_noise2(1.7)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a2       = (lfo_noise2(2.3)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a3       = (lfo_noise2(3.1)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a4       = (lfo_noise2(4.1)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a5       = (lfo_noise2(5.7)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a6       = (lfo_noise2(7.3)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let a7       = (lfo_noise2(9.7)  * 0.5 + 0.5) * chaos + (1.0 - chaos);
+    let tap_wet  = (p0 * a0 + p1 * a1 + p2 * a2 + p3 * a3 +
+                    p4 * a4 + p5 * a5 + p6 * a6 + p7 * a7) * 0.13;
+    let fb_out   = hpf(tap_wet, 80);
+    let cp_mod   = comb_pitch * (1.0 + lfo_noise2(0.09) * chaos * 0.28);
+    let ct       = 1.0 / cp_mod;
+    let c0       = comb_c(tap_wet, 0.15, ct * 1.000, comb_decay);
+    let c1       = comb_c(tap_wet, 0.15, ct * 0.500, comb_decay);
+    let c2       = comb_c(tap_wet, 0.15, ct * 0.667, comb_decay);
+    let c3       = comb_c(tap_wet, 0.15, ct * 0.750, comb_decay);
+    let c4       = comb_c(tap_wet, 0.15, ct * 1.333, comb_decay);
+    let c5       = comb_c(tap_wet, 0.15, ct * 1.500, comb_decay);
+    let c6       = comb_c(tap_wet, 0.15, ct * 2.000, comb_decay);
+    let c7       = comb_c(tap_wet, 0.15, ct * 0.333, comb_decay);
+    let comb_wet = (c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7) * 0.16;
+    let wet      = tap_wet + comb_wet;
+    let wet_r    = allpass_c(wet, 0.005, lfo_noise2(0.61) * 0.001 + 0.002, 0.001);
+    local_out(array(fb_out));
+    out(out_bus,     tanh(dry[0] * (1.0 - mix) + wet   * mix));
+    out(out_bus + 1, tanh(dry[1] * (1.0 - mix) + wet_r * mix));
+}

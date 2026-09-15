@@ -60,7 +60,7 @@ pub const UGEN_NAMES: &[&str] = &[
     // Granular
     "Dust", "Impulse", "TRand", "GrainBuf", "GrainSin", "GrainFM", "grains_t",
     // Signal processing
-    "Clip", "Wrap",
+    "Clip", "Wrap", "LinLin", "LinExp",
     // Helpers
     "array", "array_get", "sample",
     // Analysis feedback
@@ -1292,6 +1292,24 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
             let lo = args.get(1).map(|s| s.as_str()).unwrap_or("0");
             let hi = args.get(2).map(|s| s.as_str()).unwrap_or("1");
             format!("({}).wrap({}, {})", sig, lo, hi)
+        }
+        "LinLin" => {
+            // LinLin(sig, inMin, inMax, outMin, outMax) -> sig.linlin(inMin, inMax, outMin, outMax)
+            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
+            let in_min = args.get(1).map(|s| s.as_str()).unwrap_or("0");
+            let in_max = args.get(2).map(|s| s.as_str()).unwrap_or("1");
+            let out_min = args.get(3).map(|s| s.as_str()).unwrap_or("0");
+            let out_max = args.get(4).map(|s| s.as_str()).unwrap_or("1");
+            format!("({}).linlin({}, {}, {}, {})", sig, in_min, in_max, out_min, out_max)
+        }
+        "LinExp" => {
+            // LinExp(sig, inMin, inMax, outMin, outMax) -> sig.linexp(inMin, inMax, outMin, outMax)
+            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
+            let in_min = args.get(1).map(|s| s.as_str()).unwrap_or("0");
+            let in_max = args.get(2).map(|s| s.as_str()).unwrap_or("1");
+            let out_min = args.get(3).map(|s| s.as_str()).unwrap_or("1");
+            let out_max = args.get(4).map(|s| s.as_str()).unwrap_or("2");
+            format!("({}).linexp({}, {}, {}, {})", sig, in_min, in_max, out_min, out_max)
         }
 
         // Analysis feedback — send values back to Audion via OSC

@@ -589,6 +589,7 @@ dependencies = [
  "gltf",
  "hostname",
  "image",
+ "libc",
  "md-5",
  "midir",
  "midly",

@@ -1,0 +1,236 @@
+// Audion UI — "function" breakpoint curve editor -> scsynth audio-rate buffer
+// Run with: audion run --ui examples/ui_3d/function_editor_demo.au
+// (needs a running scsynth — Audion talks OSC to 127.0.0.1:57110 by default)
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// WHAT THIS IS
+// ═══════════════════════════════════════════════════════════════════════════
+// A Max/MSP-style "function" widget for Audion: draw a curve by clicking to
+// add breakpoints and dragging them around. The curve is continuously
+// resampled into an scsynth buffer (via /b_setn) that a running synth scans
+// at audio rate with phasor() + buf_rd() — so the shape you draw becomes a
+// real modulation source (an audio-rate signal generated INSIDE the synth's
+// DSP graph), not a value that gets poked in occasionally from the UI thread.
+//
+// Two widgets below, same mechanism, two different buffer resolutions —
+// that's the whole trick, and it's the same trick both times:
+//   - cutoff_env: 512-sample buffer, cubic-interpolated read (buf_rd's
+//     default) -> a smooth, genuinely audio-rate filter sweep. Draw a slow
+//     swell or a jagged wobble and hear it exactly, at full audio bandwidth.
+//   - step_seq: 8-sample buffer, NO-interpolation read (buf_rd's 4th arg =
+//     1) -> the same drawn curve turns into a stair-stepped, BPM-locked
+//     pitch sequence. Same widget type, same drag interaction — only the
+//     buffer resolution + interpolation mode change the character from
+//     "smooth LFO" to "8-step sequencer". Shrink the resolution further (or
+//     raise it) and you get anywhere between a hard step sequencer and a
+//     buttery envelope, live, with no code changes.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// HOW IT WORKS END TO END
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. UI thread (egui, src/ui/runner.rs::function_editor): renders breakpoints
+//    as draggable handles over a stepped preview of the exact buffer content
+//    (so what you see IS what will be sent — a low-res widget visibly shows
+//    the stair-steps it's about to produce). Editing a point mutates
+//    FunctionData.points (src/ui/mod.rs) and bumps FunctionData.generation.
+// 2. Audion script thread (this file's poll loop): calls widget.sync() every
+//    tick. sync() lazily /b_alloc's the backing buffer the first time it's
+//    called, and — only when `generation` has moved since the last sync —
+//    resamples the breakpoints to `resolution` evenly-spaced float samples
+//    (FunctionData::resample, linear-interpolated between points, mapped
+//    into the widget's .min()/.max() range) and pushes them with a single
+//    /b_setn OSC message (src/osc.rs::buffer_setn). Cheap to call unconditio-
+//    nally every tick — it's a generation-counter compare when nothing
+//    changed, an OSC send only when something did.
+// 3. scsynth (inside the `func_voice` synthdef below): phasor() generates an
+//    ever-increasing buffer index at a rate you choose (see the rate math
+//    comment above cutoff_rate below), and buf_rd() reads the buffer at that
+//    index every sample — this is the audio-rate part. Nothing about steps
+//    2-3 knows or cares that the buffer's content came from a hand-drawn
+//    curve instead of a loaded soundfile; it's just a buffer.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// WIDGET API (src/ui/mod.rs FunctionData/FunctionPoint, src/interpreter.rs)
+// ═══════════════════════════════════════════════════════════════════════════
+//   ui.widgets.function("id", resolution) -> widget
+//       resolution = number of samples the curve resamples to AND the frame
+//       count of the scsynth buffer it feeds. Small (8-64) = steppy/
+//       sequencer-like once read with buf_rd's no-interpolation mode; large
+//       (256-2048+) = smooth. Stay well under ~8k unless you split the
+//       buffer_setn payload — see LIMITATIONS below.
+//   widget.min(lo); widget.max(hi)   — output range the curve's 0..1 y maps
+//                                       into before it's written to the buffer.
+//   widget.style("color", r,g,b); widget.style("width", px); .style("height", px)
+//                                     — same WidgetStyle every other widget uses.
+//   widget.has_changed()             — true once after any edit (dirty flag,
+//                                       clears on read) — same contract as
+//                                       every other widget's has_changed().
+//   widget.sync()                    — allocates the backing buffer on first
+//                                       call, pushes /b_setn only when the
+//                                       curve actually changed since the last
+//                                       sync, always returns the bufnum.
+//                                       Call this every poll tick; it's cheap.
+//   widget.bufnum()                  — like sync() but never forces a write
+//                                       check beyond the very first allocation
+//                                       — use if you want to read the bufnum
+//                                       without necessarily syncing yet.
+//   widget.value()                   — the resampled curve as a plain Audion
+//                                       array (mapped into min..max), if you
+//                                       want to use it host-side too instead
+//                                       of (or in addition to) the buffer.
+//
+// Mouse interaction on the widget itself: click empty space to add a point,
+// drag any point to move it (endpoints are pinned to x=0 / x=1, only their y
+// is draggable), right-click a non-endpoint point to delete it.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// THE RATE MATH (see cutoff_rate / step_rate inside func_voice below)
+// ═══════════════════════════════════════════════════════════════════════════
+// phasor(trig, rate, start, end)'s `rate` is buffer-INDEX increment per
+// SAMPLE, not Hz. To make it sweep the whole buffer exactly `hz` times a
+// second: rate = buffer_length_in_frames * hz / sample_rate. That's the
+// `cutoff_res * cutoff_hz / sr` / `step_res * step_hz / sr` lines below —
+// `cutoff_res`/`step_res` MUST match the resolution the widget was created
+// with (512 / 8) or the phasor will wrap at the wrong point and scan garbage
+// past the buffer's real content.
+//
+// For the BPM-synced step sequencer specifically: 8 steps over 1 bar (4
+// beats) means each step is an eighth note, so one full pass over the buffer
+// should take `4 * 60/bpm` seconds -> hz = bpm/240 (steps_per_bar_hz below).
+// Change the step count or the desired note division and rework that one
+// formula; the phasor/buf_rd machinery doesn't change at all.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// LIMITATIONS / EXTENSION IDEAS
+// ═══════════════════════════════════════════════════════════════════════════
+// - buffer_setn() sends the whole curve in one OSC/UDP packet. At 32-bit
+//   floats plus OSC framing that's roughly 4-5 bytes/sample once encoded, so
+//   resolutions in the low thousands are fine but very large buffers
+//   (16k+) risk exceeding a UDP datagram — chunk the /b_setn calls (multiple
+//   sends at different start offsets) if you need a huge audio-rate buffer.
+// - Breakpoints interpolate linearly right now (FunctionPoint has a `curve`
+//   field for a future ease-in/ease-out bend per segment, already resampled
+//   in FunctionData::resample, but nothing in the UI exposes it yet — a
+//   natural next step would be a modifier-drag on a point to set it).
+// - Nothing stops you from writing to the SAME function widget's buffer from
+//   multiple synths, or reading the same bufnum with different phasor
+//   rates/directions (even negative rates, for reverse playback) — it's a
+//   plain scsynth buffer once written.
+
+bpm(120);
+
+let ui = ui_desktop();
+ui.window("Function Editor", 640, 620);
+
+// ── smooth audio-rate cutoff sweep ──────────────────────────────────────────
+let cutoff_env = ui.widgets.function("cutoff_env", 512);
+cutoff_env.label("cutoff envelope (audio-rate, 512 samples)");
+cutoff_env.min(0); cutoff_env.max(1); // normalized here; mapped to Hz in the synthdef
+cutoff_env.style("color", 100, 200, 255);
+cutoff_env.style("width", 600); cutoff_env.style("height", 140);
+
+let cutoff_hz = ui.widgets.knob("cutoff_hz");
+cutoff_hz.min(0.05); cutoff_hz.max(8); cutoff_hz.label("sweep rate (Hz)");
+cutoff_hz.style("color", 100, 200, 255); cutoff_hz.style("curve", 3);
+cutoff_hz.set(0.3);
+
+// ── stepped, BPM-synced pitch sequencer — same widget, low resolution ──────
+let step_seq = ui.widgets.function("step_seq", 8);
+step_seq.label("step sequencer (8 steps, BPM-synced, no interpolation)");
+step_seq.min(0); step_seq.max(1);
+step_seq.style("color", 255, 160, 60);
+step_seq.style("width", 600); step_seq.style("height", 100);
+
+// One pass over the 8 steps per bar (4 beats) — each step = an eighth note.
+// Change bpm() above (or live via a widget of your own) and the sequencer
+// re-locks automatically since this is recomputed every poll tick.
+fn steps_per_bar_hz(bpm_val) {
+    return bpm_val / 240;
+}
+
+let freq = ui.widgets.knob("freq");
+freq.min(55); freq.max(880); freq.label("base freq"); freq.set(110);
+freq.style("color", 200, 200, 200); freq.style("curve", 3);
+
+let amp = ui.widgets.knob("amp");
+amp.min(0); amp.max(0.6); amp.label("amp"); amp.set(0.25);
+amp.style("color", 200, 200, 200);
+
+let play = ui.widgets.toggle("play");
+play.label("play (held gate)");
+play.style("color", 60, 220, 120);
+
+// ── synthdef ─────────────────────────────────────────────────────────────
+// cutoff_buf/step_buf: bufnums backing the two function widgets above.
+// cutoff_res/step_res: must match the resolution the widgets were created
+// with (512 / 8) so the phasor scans exactly one buffer length per cycle.
+define func_voice(freq, amp, gate, out_chan,
+                   cutoff_buf, cutoff_res, cutoff_hz, cutoff_lo, cutoff_hi,
+                   step_buf, step_res, step_hz, freq_mult_lo, freq_mult_hi) {
+
+    let sr = 44100; // server sample rate assumption — matches scsynth default
+
+    // Audio-rate scan: phasor advances (buffer_len * hz / sr) frames per
+    // sample, so it traverses the whole buffer exactly `hz` times a second.
+    let cutoff_rate = cutoff_res * cutoff_hz / sr;
+    let cutoff_scan = buf_rd(1, cutoff_buf, phasor(0, cutoff_rate, 0, cutoff_res));
+    let cutoff = cutoff_lo + cutoff_scan * (cutoff_hi - cutoff_lo);
+
+    // Same scan, low-res buffer + interp=1 (buf_rd's 4th arg, none) — the
+    // drawn curve now reads back as discrete held steps instead of a curve.
+    let step_rate = step_res * step_hz / sr;
+    let step_scan = buf_rd(1, step_buf, phasor(0, step_rate, 0, step_res), 1);
+    let freq_mult = LinExp(Clip(step_scan, 0.0001, 0.9999), 0, 1, freq_mult_lo, freq_mult_hi);
+
+    let tone = saw(freq * freq_mult);
+    let filtered = lpf(tone, cutoff);
+    let sig = filtered * env(gate, 0.02, 1, 0.4) * amp;
+    out(out_chan, sig);
+    out(out_chan + 1, sig);
+}
+
+let voice_node = 0;
+let voice_playing = 0;
+
+// One octave of range for the step sequencer (0.5x..2x freq multiplier).
+let freq_mult_lo = 0.5;
+let freq_mult_hi = 2;
+
+thread func_ui_poll {
+    loop {
+        // sync() allocates the backing buffer on first call and pushes a
+        // fresh /b_setn whenever the curve changed — cheap to call every tick.
+        let cutoff_buf = cutoff_env.sync();
+        let step_buf   = step_seq.sync();
+
+        if (cutoff_hz.has_changed() || play.has_changed() || freq.has_changed() || amp.has_changed()) {
+            if (voice_playing == 1) {
+                set(voice_node, cutoff_hz: cutoff_hz.value(), freq: freq.value(), amp: amp.value());
+            }
+        }
+
+        if (play.has_changed()) {
+            if (play.value()) {
+                voice_node = synth("func_voice",
+                    freq: freq.value(), amp: amp.value(), gate: 1, out_chan: 0,
+                    cutoff_buf: cutoff_buf, cutoff_res: 512, cutoff_hz: cutoff_hz.value(), cutoff_lo: 300, cutoff_hi: 6000,
+                    step_buf: step_buf, step_res: 8, step_hz: steps_per_bar_hz(bpm()),
+                    freq_mult_lo: freq_mult_lo, freq_mult_hi: freq_mult_hi
+                );
+                voice_playing = 1;
+            } else {
+                if (voice_playing == 1) {
+                    set(voice_node, gate: 0);
+                    voice_playing = 0;
+                }
+            }
+        }
+
+        // Keep the sequencer BPM-locked even if bpm() changes at runtime.
+        if (voice_playing == 1) {
+            set(voice_node, step_hz: steps_per_bar_hz(bpm()));
+        }
+
+        wait(0.05);
+    }
+}

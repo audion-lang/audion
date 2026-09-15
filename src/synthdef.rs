@@ -1159,11 +1159,15 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
             format!("Phasor.ar({}, {}, {}, {})", trig, rate, start, end)
         }
         "buf_rd" => {
-            // buf_rd(numChannels, bufnum, phase) — read buffer at a phase signal
+            // buf_rd(numChannels, bufnum, phase, interp) — read buffer at a phase
+            // signal. interp: 1 = none (sample & hold — stair-steps a low-res
+            // buffer into a sequencer/S&H shape), 2 = linear, 4 = cubic (default,
+            // smooth — matches the historical 3-arg call).
             let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
             let bufnum   = args.get(1).map(|s| s.as_str()).unwrap_or("0");
             let phase    = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            format!("BufRd.ar({}, {}, {}, 1, 4)", numchans, bufnum, phase)
+            let interp   = args.get(3).map(|s| s.as_str()).unwrap_or("4");
+            format!("BufRd.ar({}, {}, {}, 1, {})", numchans, bufnum, phase, interp)
         }
         "PlayBuf" => {
             // PlayBuf.ar(numChannels, bufnum, rate, trigger, startPos, loop)

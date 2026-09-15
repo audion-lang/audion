@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{ui_registry, UiHandle, WidgetKind, WidgetValue};
+use super::{ui_registry, FunctionData, FunctionPoint, UiHandle, WidgetKind, WidgetValue};
 
 pub struct AudionUiApp {
     interpreter_done: Arc<AtomicBool>,
@@ -933,6 +933,18 @@ fn render_widget_inner(
                 render_canvas2d(ui, data_arc, style.width, style.height);
             }
         }
+
+        WidgetKind::Function { .. } => {
+            if let WidgetValue::Function(fd_arc) = &state.value {
+                ui.label(&label);
+                let width  = style.width.unwrap_or(420.0);
+                let height = style.height.unwrap_or(160.0);
+                let mut fd = fd_arc.lock().unwrap();
+                if function_editor(ui, &mut fd, width, height, ui.id().with(&state.id), style) {
+                    state.dirty = true;
+                }
+            }
+        }
     }
 }
 
@@ -1237,6 +1249,129 @@ fn range_slider(
         egui::FontId::proportional(10.0),
         vis.text_color(),
     );
+
+    changed
+}
+
+// ---------------------------------------------------------------------------
+// Function editor — Max/MSP "function"-style breakpoint curve. Draws the
+// exact stepped reconstruction of the resampled buffer (so a low resolution
+// visibly previews the stair-step / sequencer effect it will produce in
+// scsynth), with draggable breakpoint handles on top. Left-click empty space
+// to add a point, drag a point to move it, right-click a point to delete it
+// (endpoints can't be deleted). Returns true if the curve changed this frame.
+// ---------------------------------------------------------------------------
+
+fn function_editor(
+    ui: &mut egui::Ui,
+    fd: &mut FunctionData,
+    width: f32,
+    height: f32,
+    base_id: egui::Id,
+    style: &super::WidgetStyle,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return false;
+    }
+
+    let vis = ui.visuals().clone();
+    let accent = style.color
+        .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+        .unwrap_or(vis.selection.bg_fill);
+
+    ui.painter().rect_filled(rect, 4.0, vis.extreme_bg_color);
+    ui.painter().rect_stroke(rect, 4.0, vis.widgets.inactive.bg_stroke, egui::StrokeKind::Inside);
+
+    let to_screen = |x: f32, y: f32| -> egui::Pos2 {
+        egui::pos2(
+            rect.left() + x.clamp(0.0, 1.0) * rect.width(),
+            rect.bottom() - y.clamp(0.0, 1.0) * rect.height(),
+        )
+    };
+    let from_screen = |p: egui::Pos2| -> (f32, f32) {
+        let x = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let y = ((rect.bottom() - p.y) / rect.height()).clamp(0.0, 1.0);
+        (x, y)
+    };
+
+    // Stepped preview of the exact buffer content this widget will /b_setn —
+    // a low `resolution` shows visible stairs, a high one looks like a smooth
+    // curve, so the drawing doubles as a truthful preview of the audio result.
+    let samples = fd.resample(0.0, 1.0);
+    if samples.len() >= 2 {
+        let n = samples.len();
+        let cell_w = rect.width() / n as f32;
+        let mut pts = Vec::with_capacity(n * 2);
+        for (i, &s) in samples.iter().enumerate() {
+            let x0 = rect.left() + i as f32 * cell_w;
+            let x1 = rect.left() + (i as f32 + 1.0) * cell_w;
+            let y = rect.bottom() - s.clamp(0.0, 1.0) * rect.height();
+            pts.push(egui::pos2(x0, y));
+            pts.push(egui::pos2(x1, y));
+        }
+        ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.5, accent.gamma_multiply(0.85))));
+    }
+
+    let handle_r = 5.0_f32;
+    let n_pts = fd.points.len();
+    let mut changed = false;
+    let mut remove_idx: Option<usize> = None;
+
+    let bg_resp = ui.interact(rect, base_id.with("bg"), egui::Sense::click());
+
+    for i in 0..n_pts {
+        let (x, y) = (fd.points[i].x, fd.points[i].y);
+        let center = to_screen(x, y);
+        let hit_rect = egui::Rect::from_center_size(center, egui::Vec2::splat(handle_r * 2.5));
+        let resp = ui.interact(hit_rect, base_id.with(("pt", i)), egui::Sense::click_and_drag());
+
+        if resp.dragged() {
+            let (mut nx, ny) = from_screen(center + resp.drag_delta());
+            if i == 0 {
+                nx = 0.0;
+            } else if i == n_pts - 1 {
+                nx = 1.0;
+            } else {
+                let lo = fd.points[i - 1].x + 0.002;
+                let hi = fd.points[i + 1].x - 0.002;
+                nx = nx.clamp(lo.min(hi), hi.max(lo));
+            }
+            fd.points[i].x = nx;
+            fd.points[i].y = ny;
+            changed = true;
+        }
+        if resp.secondary_clicked() && i != 0 && i != n_pts - 1 {
+            remove_idx = Some(i);
+        }
+
+        let fill = if resp.dragged() || resp.hovered() {
+            vis.widgets.active.bg_fill
+        } else {
+            accent
+        };
+        ui.painter().circle(center, handle_r, fill, egui::Stroke::new(1.0, vis.widgets.inactive.fg_stroke.color));
+    }
+
+    if let Some(idx) = remove_idx {
+        fd.points.remove(idx);
+        changed = true;
+    } else if bg_resp.clicked() {
+        if let Some(pos) = bg_resp.interact_pointer_pos() {
+            let near_existing = fd.points.iter().any(|p| to_screen(p.x, p.y).distance(pos) < handle_r * 2.5);
+            if !near_existing {
+                let (x, y) = from_screen(pos);
+                let insert_at = fd.points.iter().position(|p| p.x > x).unwrap_or(fd.points.len());
+                fd.points.insert(insert_at, FunctionPoint { x, y, curve: 0.0 });
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        fd.points.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
+        fd.generation += 1;
+    }
 
     changed
 }

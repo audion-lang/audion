@@ -533,7 +533,7 @@ impl Interpreter {
                 };
 
                 // Load the SynthDef (cached or freshly compiled) onto the server
-                self.osc.load_synthdef(&bytes);
+                self.osc.load_synthdef(name, &bytes);
 
                 Ok(ControlFlow::None)
             }
@@ -952,6 +952,12 @@ impl Interpreter {
                     }
                     "folder_picker" => WidgetKind::FolderPicker,
                     "piano" => WidgetKind::Piano,
+                    "function" => {
+                        let resolution = args.get(1)
+                            .and_then(|v| if let Value::Number(n) = v { Some(*n as usize) } else { None })
+                            .unwrap_or(512);
+                        WidgetKind::Function { resolution }
+                    }
                     _ => return Err(AudionError::RuntimeError {
                         msg: format!("unknown widget type: ui.widgets.{}", method),
                     }),
@@ -1032,6 +1038,15 @@ impl Interpreter {
                     }
                     WidgetValue::Three(_) => Value::Nil,
                     WidgetValue::Canvas2d(_) => Value::Nil,
+                    WidgetValue::Function(fd_arc) => {
+                        let fd = fd_arc.lock().unwrap();
+                        let samples = fd.resample(state.config.min, state.config.max);
+                        let mut arr = crate::value::AudionArray::new();
+                        for s in samples {
+                            arr.push_auto(Value::Number(s as f64));
+                        }
+                        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr)))
+                    }
                     WidgetValue::Piano(piano_arc) => {
                         let piano = piano_arc.lock().unwrap();
                         let mut arr = crate::value::AudionArray::new();
@@ -1074,6 +1089,62 @@ impl Interpreter {
                     _ => {}
                 }
                 Ok(Value::Nil)
+            }
+
+            // function_widget.bufnum() — allocate (once) the scsynth buffer backing
+            // this curve and return its id, without forcing a write.
+            Value::WidgetRef(state_arc) if method == "bufnum" => {
+                use crate::ui::WidgetValue;
+                let state = state_arc.lock().unwrap();
+                if let WidgetValue::Function(fd_arc) = &state.value {
+                    let mut fd = fd_arc.lock().unwrap();
+                    if let Some(id) = fd.bufnum {
+                        Ok(Value::Number(id as f64))
+                    } else {
+                        let res = fd.resolution as i32;
+                        let id = self.osc.buffer_alloc(res, 1);
+                        let samples = fd.resample(state.config.min, state.config.max);
+                        self.osc.buffer_setn(id, &samples);
+                        fd.bufnum = Some(id);
+                        fd.synced_generation = fd.generation;
+                        Ok(Value::Number(id as f64))
+                    }
+                } else {
+                    Err(AudionError::RuntimeError {
+                        msg: "widget.bufnum() is only valid on a function() widget".to_string(),
+                    })
+                }
+            }
+
+            // function_widget.sync() — allocate the backing buffer if needed, push
+            // the current curve to it via /b_setn if it changed since the last
+            // sync, and return the bufnum. Call from the poll thread after
+            // has_changed() returns true.
+            Value::WidgetRef(state_arc) if method == "sync" => {
+                use crate::ui::WidgetValue;
+                let state = state_arc.lock().unwrap();
+                if let WidgetValue::Function(fd_arc) = &state.value {
+                    let mut fd = fd_arc.lock().unwrap();
+                    let id = match fd.bufnum {
+                        Some(id) => id,
+                        None => {
+                            let res = fd.resolution as i32;
+                            let id = self.osc.buffer_alloc(res, 1);
+                            fd.bufnum = Some(id);
+                            id
+                        }
+                    };
+                    if fd.synced_generation != fd.generation {
+                        let samples = fd.resample(state.config.min, state.config.max);
+                        self.osc.buffer_setn(id, &samples);
+                        fd.synced_generation = fd.generation;
+                    }
+                    Ok(Value::Number(id as f64))
+                } else {
+                    Err(AudionError::RuntimeError {
+                        msg: "widget.sync() is only valid on a function() widget".to_string(),
+                    })
+                }
             }
 
             // ui.three.canvas("id") / ui.three.canvas("id", w, h)

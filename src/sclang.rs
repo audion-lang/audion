@@ -59,9 +59,13 @@ pub fn compile_synthdef(name: &str, sclang_code: &str) -> Result<Vec<u8>> {
         });
     }
 
-    // Read the .scsyndef binary that sclang wrote
-    let def_dir = std::env::temp_dir().join("audion_synthdefs");
-    let def_path = def_dir.join(format!("{}.scsyndef", name));
+    // Read the .scsyndef binary that sclang wrote — same per-process
+    // directory the caller passed to generate_sclang() as out_dir (both
+    // come from synthdef_output_dir(), so they always agree; previously
+    // this recomputed a separate, fixed, PID-less path here that could
+    // silently diverge from the one actually written to).
+    let def_dir = synthdef_output_dir();
+    let def_path = std::path::Path::new(&def_dir).join(format!("{}.scsyndef", name));
     let bytes = std::fs::read(&def_path).map_err(|e| AudionError::RuntimeError {
         msg: format!(
             "failed to read compiled SynthDef at '{}': {}",
@@ -70,10 +74,8 @@ pub fn compile_synthdef(name: &str, sclang_code: &str) -> Result<Vec<u8>> {
         ),
     })?;
 
-    // Clean up the .scsyndef file
-    let _ = std::fs::remove_file(&def_path);
-    let _ = std::fs::remove_dir(&def_dir);
-
+    // Leave the file in place — osc.rs::load_synthdef reads this exact same
+    // per-process path again right after to /d_load it onto the server.
     Ok(bytes)
 }
 
@@ -119,16 +121,24 @@ impl Drop for TempFile {
     }
 }
 
+/// Per-process SynthDef output directory. Keyed by PID (not just a fixed
+/// shared path) so two audion processes compiling/loading the SAME SynthDef
+/// name at the same time (e.g. two terminal sessions, or a manual run
+/// overlapping a --watch session) never read/write/delete each other's
+/// .scd source or .scsyndef binary out from under one another — both
+/// compile_synthdef's own write-then-read-then-delete cycle and
+/// osc.rs::load_synthdef's /d_load file land here.
 pub fn synthdef_output_dir() -> String {
-    let dir = std::env::temp_dir().join("audion_synthdefs");
+    let dir = std::env::temp_dir().join(format!("audion_synthdefs_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     dir.to_string_lossy().to_string()
 }
 
 fn tempfile(name: &str) -> Result<TempFile> {
     let path = format!(
-        "{}/audion_{}.scd",
+        "{}/audion_{}_{}.scd",
         std::env::temp_dir().display(),
+        std::process::id(),
         name
     );
     Ok(TempFile { path })

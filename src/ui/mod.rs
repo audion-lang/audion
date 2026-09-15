@@ -182,6 +182,11 @@ pub enum WidgetKind {
     FolderPicker,
     /// Piano keyboard widget — mouse + optional qwerty keyboard input.
     Piano,
+    /// Max/MSP-style "function" breakpoint curve editor. `resolution` is the
+    /// number of samples the curve is resampled to (and the size of the
+    /// scsynth buffer it feeds) — small values (e.g. 8-32) produce a stepped
+    /// sequencer-like output when scanned with a non-interpolating BufRd.
+    Function { resolution: usize },
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +204,7 @@ pub enum WidgetValue {
     Three(Arc<Mutex<three::ThreeSceneData>>),
     Canvas2d(Arc<Mutex<Canvas2dData>>),
     Piano(Arc<Mutex<PianoData>>),
+    Function(Arc<Mutex<FunctionData>>),
 }
 
 impl Default for WidgetValue {
@@ -256,6 +262,89 @@ pub struct PianoData {
     pub start_note:    u8,
 }
 
+// ---------------------------------------------------------------------------
+// Function (breakpoint curve) widget data — Max/MSP "function"-style editor
+// ---------------------------------------------------------------------------
+
+/// One breakpoint: `x` and `y` are normalized 0..1 (time, value). `curve`
+/// bends the segment arriving at this point: 0 = linear, >0 bulges up
+/// (fast-then-slow), <0 dips down (slow-then-fast), range -1..1.
+#[derive(Clone, Copy, Debug)]
+pub struct FunctionPoint {
+    pub x: f32,
+    pub y: f32,
+    pub curve: f32,
+}
+
+#[derive(Debug)]
+pub struct FunctionData {
+    /// Breakpoints, kept sorted by `x`. Always has at least 2 points
+    /// (endpoints at x=0 and x=1) so the curve spans the full buffer.
+    pub points: Vec<FunctionPoint>,
+    /// Number of samples the curve resamples to — matches the scsynth buffer size.
+    pub resolution: usize,
+    /// scsynth buffer id backing this curve, allocated lazily on first `.bufnum()`.
+    pub bufnum: Option<i32>,
+    /// Bumped on every edit so the poll thread's `.has_changed()` can detect it
+    /// without diffing the whole curve.
+    pub generation: u64,
+    /// Generation last pushed to scsynth — lets `.bufnum()`/write helpers know
+    /// whether a fresh /b_setn is needed.
+    pub synced_generation: u64,
+}
+
+impl FunctionData {
+    pub fn new(resolution: usize) -> Self {
+        Self {
+            points: vec![
+                FunctionPoint { x: 0.0, y: 0.0, curve: 0.0 },
+                FunctionPoint { x: 1.0, y: 1.0, curve: 0.0 },
+            ],
+            resolution,
+            bufnum: None,
+            generation: 0,
+            synced_generation: u64::MAX, // force first sync
+        }
+    }
+
+    /// Resample the breakpoint curve to `resolution` evenly-spaced samples in
+    /// `lo..hi`. Segments interpolate linearly, then bend by `curve` (a simple
+    /// power-curve applied to the segment-local parameter — matches the feel
+    /// of `WidgetStyle::curve` used elsewhere for knob response).
+    pub fn resample(&self, lo: f64, hi: f64) -> Vec<f32> {
+        let n = self.resolution.max(1);
+        let mut out = Vec::with_capacity(n);
+        let pts = &self.points;
+        for i in 0..n {
+            let x = if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
+            // Find the segment [pts[j], pts[j+1]] containing x.
+            let mut j = 0;
+            while j + 1 < pts.len() && pts[j + 1].x < x {
+                j += 1;
+            }
+            let y = if j + 1 < pts.len() {
+                let a = pts[j];
+                let b = pts[j + 1];
+                let span = (b.x - a.x).max(1e-6);
+                let mut t = ((x - a.x) / span).clamp(0.0, 1.0);
+                // Curve bends the segment: positive = ease-in (slow start),
+                // negative = ease-out (fast start). 0 = linear.
+                if b.curve.abs() > 1e-4 {
+                    let k = b.curve.clamp(-1.0, 1.0);
+                    let exp = if k >= 0.0 { 1.0 + k * 3.0 } else { 1.0 / (1.0 - k * 3.0) };
+                    t = t.powf(exp);
+                }
+                a.y + (b.y - a.y) * t
+            } else {
+                pts.last().map(|p| p.y).unwrap_or(0.0)
+            };
+            let mapped = lo + (hi - lo) * y as f64;
+            out.push(mapped as f32);
+        }
+        out
+    }
+}
+
 impl Default for PianoData {
     fn default() -> Self {
         Self {
@@ -290,6 +379,9 @@ fn default_value_for_kind(config: &WidgetConfig) -> WidgetValue {
         ),
         WidgetKind::FilePicker { .. } | WidgetKind::FolderPicker => WidgetValue::Str(String::new()),
         WidgetKind::Piano => WidgetValue::Piano(Arc::new(Mutex::new(PianoData::default()))),
+        WidgetKind::Function { resolution } => WidgetValue::Function(
+            Arc::new(Mutex::new(FunctionData::new(*resolution)))
+        ),
         _ => WidgetValue::Float((config.min + config.max) / 2.0),
     }
 }

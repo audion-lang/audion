@@ -47,11 +47,14 @@ impl OscClient {
         let socket = UdpSocket::bind("0.0.0.0:0").expect("failed to bind UDP socket");
 
         // macOS's default SO_SNDBUF for a fresh UDP socket is small enough that
-        // a single large /d_recv (a compiled SynthDef, easily 10-15KB once a
-        // define has many params/UGens) fails outright with EMSGSIZE ("Message
+        // a moderately large OSC message (e.g. a many-breakpoint /b_setn from
+        // the function-editor widget) fails outright with EMSGSIZE ("Message
         // too long") — silently, since the caller only sees the discarded
-        // Result. Raise it to comfortably clear the 64KB UDP datagram ceiling
-        // so /d_recv never hits this regardless of how large a SynthDef gets.
+        // Result. Raise it well past what any single non-SynthDef message
+        // should need. (SynthDefs themselves are loaded via /d_load — see
+        // load_synthdef below — specifically because no SO_SNDBUF setting can
+        // lift UDP's hard ~65KB per-datagram ceiling; this buffer bump is for
+        // everything else.)
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
@@ -145,8 +148,26 @@ impl OscClient {
         self.dispatch("/n_set", args);
     }
 
-    pub fn load_synthdef(&self, synthdef_bytes: &[u8]) {
-        self.send("/d_recv", vec![OscType::Blob(synthdef_bytes.to_vec())]);
+    /// Loads a compiled SynthDef onto the server. A UDP datagram has a hard
+    /// ~65KB ceiling (the IP/UDP length field is 16-bit) that no amount of
+    /// SO_SNDBUF tuning can lift — a `/d_recv` embedding the SynthDef's bytes
+    /// inline fails outright with EMSGSIZE once a define grows large enough
+    /// (many params/UGens, e.g. a wide modulation matrix — comfortably
+    /// possible at 100KB+). So instead of `/d_recv`, write the bytes to a
+    /// file scsynth can read directly and send `/d_load <path>` — only a
+    /// short path string crosses the wire, so payload size stops mattering
+    /// no matter how large a SynthDef gets. The file is written into the
+    /// same persistent temp directory sclang already compiles into
+    /// (`sclang::synthdef_output_dir()`), keyed by SynthDef name so re-
+    /// defining just overwrites it.
+    pub fn load_synthdef(&self, name: &str, synthdef_bytes: &[u8]) {
+        let dir = crate::sclang::synthdef_output_dir();
+        let path = std::path::Path::new(&dir).join(format!("{}.scsyndef", name));
+        if let Err(e) = std::fs::write(&path, synthdef_bytes) {
+            eprintln!("warning: failed to write SynthDef '{}' to {}: {}", name, path.display(), e);
+            return;
+        }
+        self.send("/d_load", vec![OscType::String(path.to_string_lossy().to_string())]);
     }
 
     /// Query scsynth for buffer info via /b_query → /b_info reply.
@@ -303,6 +324,20 @@ impl OscClient {
     /// Close an open sound file associated with a buffer (for DiskIn streaming).
     pub fn buffer_close(&self, buf_id: i32) {
         self.send("/b_close", vec![OscType::Int(buf_id)]);
+    }
+
+    /// Write a contiguous block of samples into an existing buffer via /b_setn
+    /// (starting at frame 0, channel-interleaved if the buffer is multichannel).
+    /// Used to push a hand-drawn curve (function editor) into a buffer scsynth
+    /// can scan with Phasor/BufRd at audio rate.
+    pub fn buffer_setn(&self, buf_id: i32, data: &[f32]) {
+        let mut args: Vec<OscType> = vec![
+            OscType::Int(buf_id),
+            OscType::Int(0),
+            OscType::Int(data.len() as i32),
+        ];
+        args.extend(data.iter().map(|&f| OscType::Float(f)));
+        self.send("/b_setn", args);
     }
 
     /// Free a buffer.

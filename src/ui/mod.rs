@@ -260,6 +260,12 @@ pub struct PianoData {
     pub keyboard_mode: bool,
     pub octaves:       u8,
     pub start_note:    u8,
+    /// Physical qwerty keys currently held, as slot indices (see runner.rs's
+    /// KB_MAP/OCTAVE_*_SLOT) — snapshotted every frame so on/off edges are
+    /// derived from actual key-down state rather than egui's `key_pressed`/
+    /// `key_released` events, which can repeat or land on a frame this
+    /// widget doesn't observe (audible as missed/delayed notes).
+    pub kb_held: std::collections::HashSet<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +359,7 @@ impl Default for PianoData {
             keyboard_mode: false,
             octaves:       2,
             start_note:    60,  // C4
+            kb_held:       Default::default(),
         }
     }
 }

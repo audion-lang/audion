@@ -107,7 +107,13 @@ pub fn generate_sclang(
         })
         .map(|p| {
             let default = default_for_param(p);
-            format!("{}={}", p, default)
+            // A space after '=' is required when default is negative: sclang's
+            // lexer greedily merges adjacent operator-symbol characters, so
+            // "x=-4" tokenizes as the compound BINOP "=-" followed by "4"
+            // instead of "=" then "-4", a hard syntax error ("unexpected
+            // BINOP"). Always inserting the space sidesteps this regardless
+            // of any future default's sign.
+            format!("{}= {}", p, default)
         })
         .chain(extra_params.into_iter())
         .collect::<Vec<_>>()
@@ -157,6 +163,19 @@ pub const DEFAULT_PARAMS: &[(&str, &str)] = &[
     ("ratio", "1"),
     ("index", "0"),
     ("fb", "0"),
+    // fmx's folded-in drum pitch drop: mult=1 is neutral (no pitch change)
+    // so any caller that omits these params gets a plain sustained tone,
+    // not an unintended pitch dip from the SC-side fallback default of 0.
+    ("perc_pitch_mult", "1"),
+    ("perc_pitch_time", "0.05"),
+    ("perc_pitch_curve", "-4"),
+    // fmx's resonant-LPF + output distortion stage: all neutral/off by
+    // default (0), so any caller that omits them gets the plain filter/
+    // clean-output behavior fmx had before these were added.
+    ("lpf_res", "0"),
+    ("drive_amt", "0"),
+    ("fold_amt", "0"),
+    ("crush_amt", "0"),
 ];
 
 fn default_for_param(name: &str) -> &'static str {
@@ -602,14 +621,26 @@ fn emit_ugen_call(name: &str, args: &[String]) -> String {
             format!("Decay2.ar({}, {}, {})", sig, atk, dec)
         }
         // Percussive envelope: always uses Env.perc, frees synth when done
-        // env_perc(gate, atk, rel) — no sustain, triggers on gate
+        // env_perc(gate, atk, rel, curve?) — no sustain, triggers on gate.
+        // curve is optional (SC's own Env.perc default is -4, a fast-then-
+        // slow exponential-ish decay); pass it to shape how the pitch/amp
+        // drop feels — positive values decay slow-then-fast instead.
+        // doneAction is also optional (default 2, SC's usual "free the synth
+        // when this envelope finishes"). When a SynthDef layers more than one
+        // env_perc — e.g. a main amp envelope plus a separate filter or pitch
+        // envelope — only ONE of them should carry doneAction:2, since
+        // whichever finishes first frees the WHOLE synth regardless of which
+        // envelope triggered it. Pass 0 for every envelope except the one
+        // that should own the note's actual lifetime.
         "env_perc" => {
             let gate = args.first().map(|s| s.as_str()).unwrap_or("gate");
             let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
             let rel = args.get(2).map(|s| s.as_str()).unwrap_or("0.3");
+            let curve = args.get(3).map(|s| s.as_str()).unwrap_or("-4");
+            let done_action = args.get(4).map(|s| s.as_str()).unwrap_or("2");
             format!(
-                "EnvGen.kr(Env.perc({}, {}), {}, doneAction: 2)",
-                atk, rel, gate
+                "EnvGen.kr(Env.perc({}, {}, 1, {}), {}, doneAction: {})",
+                atk, rel, curve, gate, done_action
             )
         }
         "linen" => { // TODO remove?

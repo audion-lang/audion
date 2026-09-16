@@ -922,9 +922,15 @@ fn render_widget_inner(
             if let WidgetValue::Piano(piano_arc) = &mut state.value {
                 let id = ui.id().with(&state.id);
                 let mut piano = piano_arc.lock().unwrap();
-                if render_piano(ui, &mut piano, id, style) {
-                    state.dirty = true;
-                }
+                ui.vertical(|ui| {
+                    let octave = (piano.start_note as i32) / 12 - 1;
+                    let note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                    let root = note_names[(piano.start_note % 12) as usize];
+                    ui.label(format!("{}  —  octave {} ({}{})", label, octave, root, octave));
+                    if render_piano(ui, &mut piano, id, style) {
+                        state.dirty = true;
+                    }
+                });
             }
         }
 
@@ -1500,12 +1506,66 @@ const KB_MAP: &[(egui::Key, u8)] = &[
     (egui::Key::Semicolon, 16),
 ];
 
+/// Ableton-style octave shift: Z = down, X = up. Same convention as Live's
+/// computer MIDI keyboard, which keeps Z/X reserved for octave rather than
+/// notes (KB_MAP below starts note keys at A, so there's no clash).
+const OCTAVE_DOWN_KEY: egui::Key = egui::Key::Z;
+const OCTAVE_UP_KEY:   egui::Key = egui::Key::X;
+/// Sentinel slot ids for the octave keys in PianoData::kb_held — parked well
+/// past KB_MAP's 0..16 note-key indices so they can never collide.
+const OCTAVE_DOWN_SLOT: u8 = 250;
+const OCTAVE_UP_SLOT:   u8 = 251;
+
 fn render_piano(
     ui: &mut egui::Ui,
     piano: &mut super::PianoData,
     base_id: egui::Id,
     style: &super::WidgetStyle,
 ) -> bool {
+    // --- Keyboard input: edge-tracked from key_down LEVEL polling, not
+    // egui's key_pressed/key_released EVENT lists. Events can repeat while a
+    // key is held and can land on a frame this widget doesn't get to read
+    // before the queue is cleared, which showed up as delayed or dropped
+    // notes and a seemingly-dead octave shift. Instead we snapshot which
+    // keys are physically down this frame, diff that against last frame's
+    // snapshot (PianoData::kb_held) ourselves, and only act on the resulting
+    // on/off transitions — reliable regardless of frame timing or repeat.
+    let mut changed = false;
+    if piano.keyboard_mode {
+        let mut now_down: std::collections::HashSet<u8> = std::collections::HashSet::new();
+        for (idx, (key, _)) in KB_MAP.iter().enumerate() {
+            if ui.ctx().input(|i| i.key_down(*key)) { now_down.insert(idx as u8); }
+        }
+        if ui.ctx().input(|i| i.key_down(OCTAVE_DOWN_KEY)) { now_down.insert(OCTAVE_DOWN_SLOT); }
+        if ui.ctx().input(|i| i.key_down(OCTAVE_UP_KEY))   { now_down.insert(OCTAVE_UP_SLOT); }
+
+        let went_down = |slot: u8| now_down.contains(&slot) && !piano.kb_held.contains(&slot);
+        let went_up   = |slot: u8| !now_down.contains(&slot) && piano.kb_held.contains(&slot);
+
+        if went_down(OCTAVE_DOWN_SLOT) { piano.start_note = piano.start_note.saturating_sub(12); }
+        if went_down(OCTAVE_UP_SLOT)   { piano.start_note = piano.start_note.saturating_add(12).min(115); }
+
+        for (idx, (_, offset)) in KB_MAP.iter().enumerate() {
+            let slot = idx as u8;
+            let note = piano.start_note.saturating_add(*offset);
+            if note > 127 { continue; }
+            if went_down(slot) {
+                if piano.hold_mode {
+                    if piano.active_notes.contains(&note) { piano.active_notes.remove(&note); }
+                    else                                   { piano.active_notes.insert(note); }
+                } else {
+                    piano.active_notes.insert(note);
+                }
+                changed = true;
+            }
+            if went_up(slot) && !piano.hold_mode {
+                if piano.active_notes.remove(&note) { changed = true; }
+            }
+        }
+
+        piano.kb_held = now_down;
+    }
+
     let octaves    = piano.octaves.max(1) as usize;
     let start_note = piano.start_note;
     let num_white  = octaves * 7;
@@ -1553,7 +1613,6 @@ fn render_piano(
     let ptr     = ui.input(|i| i.pointer.interact_pos());
     let pressed = ui.input(|i| i.pointer.primary_pressed());
     let released= ui.input(|i| i.pointer.primary_released());
-    let mut changed = false;
 
     if pressed {
         if let Some(pos) = ptr {
@@ -1578,28 +1637,6 @@ fn render_piano(
         if ptr.map(|p| !rect.contains(p)).unwrap_or(true) {
             piano.active_notes.clear();
             changed = true;
-        }
-    }
-
-    // --- Keyboard input ---
-    if piano.keyboard_mode {
-        for (key, offset) in KB_MAP {
-            let note = start_note.saturating_add(*offset);
-            if note > 127 { continue; }
-            let kp = ui.ctx().input(|i| i.key_pressed(*key));
-            let kr = ui.ctx().input(|i| i.key_released(*key));
-            if kp {
-                if piano.hold_mode {
-                    if piano.active_notes.contains(&note) { piano.active_notes.remove(&note); }
-                    else                                   { piano.active_notes.insert(note); }
-                } else {
-                    piano.active_notes.insert(note);
-                }
-                changed = true;
-            }
-            if kr && !piano.hold_mode {
-                if piano.active_notes.remove(&note) { changed = true; }
-            }
         }
     }
 

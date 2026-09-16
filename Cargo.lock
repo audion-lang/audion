@@ -578,6 +578,7 @@ name = "audion"
 version = "0.0.8"
 dependencies = [
  "bytemuck",
+ "byteorder",
  "chrono",
  "clap",
  "crossterm",

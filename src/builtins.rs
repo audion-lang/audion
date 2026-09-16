@@ -1781,14 +1781,9 @@ fn builtin_record_start(args: &[Value], osc: &Arc<OscClient>, base_path: &std::p
         base_path.join(format!("recording_{}.wav", ts)).to_string_lossy().to_string()
     };
 
-    // Compile the DiskOut SynthDef once per session; cache bytes in OscClient
+    // Build the DiskOut SynthDef once per session; cache bytes in OscClient
     if !osc.has_recording_synthdef() {
-        let out_dir = crate::sclang::synthdef_output_dir();
-        let sc_code = format!(
-            "SynthDef(\\audion_diskout, {{ |bufnum=0|\n\tDiskOut.ar(bufnum, In.ar(0, 2));\n}}).writeDefFile(\"{}\");\n0.exit;\n",
-            out_dir
-        );
-        let compiled = crate::sclang::compile_synthdef("audion_diskout", &sc_code)?;
+        let compiled = crate::synthdef::build_diskout_synthdef()?;
         osc.set_recording_synthdef(compiled);
     }
 

@@ -502,14 +502,8 @@ impl Interpreter {
                         self.synthdef_cache.lock().unwrap().insert(name.clone(), (ast_hash, cached.clone()));
                         cached
                     } else {
-                        // Tier 3: compile via sclang
-                        let out_dir = crate::sclang::synthdef_output_dir();
-                        let sclang_code =
-                            crate::synthdef::generate_sclang(name, params, body, &out_dir, &buffers);
-                        if self.debug_sclang {
-                            eprintln!("\n=== SC code for '{}' ===\n{}", name, sclang_code);
-                        }
-                        let compiled = crate::sclang::compile_synthdef(name, &sclang_code)?;
+                        // Tier 3: build + encode the SynthDef binary directly
+                        let compiled = crate::synthdef::build_synthdef(name, params, body, &buffers)?;
 
                         // Store in both caches
                         self.synthdef_cache.lock().unwrap().insert(name.clone(), (ast_hash, compiled.clone()));

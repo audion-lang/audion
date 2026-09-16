@@ -57,6 +57,15 @@ shared (tag:tag_value) { } // shared scope by tag only
 - Registers a synth name matching the SFZ filename: `synth("piano", freq: 440, vel: 100)`
 - Alternative: link sfizz C library via FFI for full SFZ compliance (bigger dependency)
 
+### more UGens for `define`
+`define` blocks build SynthDefs directly (`src/dsp/` + `synthdef.rs`, no sclang — see git history around the vibelang-dsp integration). Coverage is good for the workhorse categories (oscillators, filters, envelopes, effects, dynamics, grain playback) but two whole capability classes are still missing, worth prioritizing over the smaller incremental gaps:
+- **spectral (FFT/PV_\*)**: `FFT`/`IFFT` plus the phase-vocoder `PV_*` family (`PV_MagAbove`, `PV_BinShift`, `PV_Diffuser`, etc.) — zero coverage today, no spectral processing possible at all
+- **demand-rate sequencing**: `Dseq`, `Dser`, `Drand`, `Dwhite`, `Demand`, `DemandEnvGen`, `TDuty`, etc. — pattern/sequence generators at the UGen level (audion has its own sequencing story elsewhere, but not this)
+
+Smaller, mechanical (same one-match-arm-per-UGen pattern as the existing ~127) gaps if/when needed: triggers (`Trig`, `Done`, `FreeSelf`, `PulseDivider`, `SendTrig`, `Schmidt`, `ToggleFF`, ...), more oscillators (`Klang`, `Gendy1-3`, `VOsc`/`VOsc3`, `Formant`), more filters (`Hilbert`, `OneZero`/`TwoZero`, the Butterworth `B*` family, `DetectSilence`), convolution (`Convolution`/`2`/`2L`/`3`, `PartConv`), buffer introspection (`BufFrames`, `BufDur`, `BufChannels`, ...), control (`MouseX`/`MouseY`/`MouseButton`, `Select`, `Timer`), info (`SampleRate`, `NumRunningSynths`, ...), panning (`PanB`, `DecodeB2`, `PanAz`, ...), bufdelays, conversion, random (`Rand`/`IRand`/`LinRand`), physical, envelopes.
+
+`Klank` also has a best-effort/unverified port (see comment in `synthdef.rs`) — needs a real scsynth test if anyone actually uses it.
+
 ### JIT (TBD)
 
 ### User-defined types and more oop (TBD)

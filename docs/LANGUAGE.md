@@ -2087,7 +2087,7 @@ audion --version                          # Show version
 
 ## Custom SynthDefs with `define`
 
-Create your own synths directly in audion using the `define` keyword. Audion generates SuperCollider code and compiles it via `sclang`.
+Create your own synths directly in audion using the `define` keyword. Audion builds the UGen graph and encodes it straight to SuperCollider's `scsyndef` binary format itself — no `sclang`/SuperCollider language runtime involved.
 
 ### Syntax
 
@@ -2306,7 +2306,7 @@ define shimmer(freq, amp, gate) {
 }
 ```
 
-> **Note:** `define` requires `sclang` to be installed (comes with SuperCollider). Unknown UGen names are passed through to SuperCollider as-is, so you can use any SC UGen by its class name.
+> **Note:** `define` no longer requires `sclang`/SuperCollider to be installed to compile — only `scsynth` needs to be running to actually play the sound. Unknown UGen names are passed through as a literal audio-rate UGen with your arguments as positional inputs, so most SC UGens work by class name — but ones with special multichannel-array arguments (like `Klank`) may need audion-side support to encode correctly.
 
 ---
 
@@ -2383,7 +2383,7 @@ Because arrays and objects are deep-copied on assignment, circular references ca
   scsynth -u 57110
   ```
 - The `"default"` SynthDef is available out of the box in SuperCollider
-- `sclang` is required for `define` blocks (included with SuperCollider)
+- `define` blocks compile in-process — no `sclang` required, only `scsynth` running to play
 
 ---
 

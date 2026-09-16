@@ -16,6 +16,11 @@
 //
 
 use crate::ast::{BinOp, UGenExpr};
+use crate::dsp::ctx::{arg_or, binop, konst, unop, BuildCtx};
+use crate::dsp::encoder::encode_synthdef;
+use crate::dsp::graph::{GraphIR, Input, Rate};
+use crate::error::{AudionError, Result};
+use std::collections::HashMap;
 
 /// Buffer info for sample-based SynthDefs.
 #[derive(Debug, Clone)]
@@ -67,66 +72,83 @@ pub const UGEN_NAMES: &[&str] = &[
     "send_reply",
 ];
 
-/// Generate sclang code from an audion `define` block.
-/// The `out_path` is where sclang will write the .scsyndef binary.
-/// `buffers` maps sample indices (in tree-walk order) to loaded buffer info.
-pub fn generate_sclang(
+/// Build and encode a SynthDef directly to `scsyndef` binary bytes — no
+/// sclang, no scsynth involved. Walks the parsed `define` body and builds
+/// a UGen graph (`crate::dsp`) node by node, mirroring what the old
+/// sclang-text codegen used to emit as source.
+pub fn build_synthdef(
     name: &str,
     params: &[String],
     body: &UGenExpr,
-    out_path: &str,
     buffers: &[BufferInfo],
-) -> String {
-    let mut extra_params = Vec::new();
+) -> Result<Vec<u8>> {
+    let mut ctx = BuildCtx::new();
     let single_sample = buffers.len() == 1;
 
-    // Add bufnum params for each sample
-    // Single sample: use "bufnum" for a clean API (synth("x", bufnum: b))
-    // Multiple samples: use "bufnum_0", "bufnum_1", etc.
+    // bufnum param(s) for each sample, single sample uses the clean
+    // "bufnum" name (synth("x", bufnum: b)), multiple use bufnum_0, bufnum_1, ...
+    let mut extra_params: Vec<(String, f32)> = Vec::new();
     for (i, buf) in buffers.iter().enumerate() {
-        let param_name = if single_sample {
+        let pname = if single_sample {
             "bufnum".to_string()
         } else {
             format!("bufnum_{}", i)
         };
-        extra_params.push(format!("{}={}", param_name, buf.buffer_id));
+        extra_params.push((pname, buf.buffer_id as f32));
+    }
+    if has_sample_with_vel_range(body) && !params.iter().any(|p| p == "vel") {
+        extra_params.push(("vel".to_string(), 127.0));
     }
 
-    // If any samples have velocity gating, add vel param
-    if has_sample_with_vel_range(body) {
-        if !params.contains(&"vel".to_string()) {
-            extra_params.push("vel=127".to_string());
+    for p in params {
+        // Skip user-declared "bufnum" if we auto-generate it for a single sample.
+        if single_sample && p == "bufnum" {
+            continue;
         }
+        let default: f32 = default_for_param(p).parse().unwrap_or(0.0);
+        ctx.builder.add_param(p.clone(), vec![default]);
     }
+    for (pname, default) in &extra_params {
+        ctx.builder.add_param(pname.clone(), vec![*default]);
+    }
+    ctx.builder.create_control_ugen();
 
-    let param_str = params
-        .iter()
-        .filter(|p| {
-            // Skip user-declared "bufnum" if we auto-generate it for a single sample
-            !(single_sample && p.as_str() == "bufnum")
-        })
-        .map(|p| {
-            let default = default_for_param(p);
-            // A space after '=' is required when default is negative: sclang's
-            // lexer greedily merges adjacent operator-symbol characters, so
-            // "x=-4" tokenizes as the compound BINOP "=-" followed by "4"
-            // instead of "=" then "-4", a hard syntax error ("unexpected
-            // BINOP"). Always inserting the space sidesteps this regardless
-            // of any future default's sign.
-            format!("{}= {}", p, default)
-        })
-        .chain(extra_params.into_iter())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut env: HashMap<String, Vec<Input>> = HashMap::new();
+    for pspec in &ctx.builder.params {
+        env.insert(
+            pspec.name.clone(),
+            vec![Input::Node {
+                node_id: 0,
+                output_index: pspec.index as u32,
+            }],
+        );
+    }
 
     let mut sample_idx = 0usize;
-    let body_code = emit_ugen(body, buffers, &mut sample_idx, params);
+    emit(&mut ctx, &mut env, body, buffers, &mut sample_idx)?;
 
-    // writeDefFile writes the .scsyndef binary to the given directory
-    format!(
-        "SynthDef(\\{}, {{ |{}|\n\t{};\n}}).writeDefFile(\"{}\");\n0.exit;\n",
-        name, param_str, body_code, out_path
-    )
+    let ir = GraphIR::from_builder(name.to_string(), ctx.builder);
+    encode_synthdef(&ir).map_err(|e| AudionError::RuntimeError {
+        msg: format!("SynthDef encoding failed for '{}': {}", name, e),
+    })
+}
+
+/// `SynthDef(\audion_diskout, { |bufnum=0| DiskOut.ar(bufnum, In.ar(0, 2)) })`
+/// — the tiny fixed SynthDef `record_start()` needs, built directly instead
+/// of round-tripping through a `define` body.
+pub fn build_diskout_synthdef() -> Result<Vec<u8>> {
+    let mut ctx = BuildCtx::new();
+    ctx.builder.add_param("bufnum".to_string(), vec![0.0]);
+    ctx.builder.create_control_ugen();
+    let bufnum = Input::Node { node_id: 0, output_index: 0 };
+    let input_sig = ctx.node("In", Rate::Audio, vec![konst(0.0)], 2, 0);
+    let mut inputs = vec![bufnum];
+    inputs.extend(input_sig);
+    ctx.node("DiskOut", Rate::Audio, inputs, 1, 0);
+    let ir = GraphIR::from_builder("audion_diskout".to_string(), ctx.builder);
+    encode_synthdef(&ir).map_err(|e| AudionError::RuntimeError {
+        msg: format!("SynthDef encoding failed for 'audion_diskout': {}", e),
+    })
 }
 
 /// All known SynthDef parameter names with their default values.
@@ -210,182 +232,7 @@ fn has_sample_with_vel_range(expr: &UGenExpr) -> bool {
     }
 }
 
-fn emit_ugen(expr: &UGenExpr, buffers: &[BufferInfo], sample_idx: &mut usize, params: &[String]) -> String {
-    match expr {
-        UGenExpr::Number(n) => {
-            if *n == (*n as i64) as f64 && n.is_finite() {
-                format!("{}", *n as i64)
-            } else {
-                format!("{}", n)
-            }
-        }
-        UGenExpr::StringLit(s) => {
-            // String literals in UGen context are only valid inside sample() calls.
-            // If encountered bare, just emit as a quoted string (will be caught by SC compiler).
-            format!("\"{}\"", s)
-        }
-        UGenExpr::Param(name) => name.clone(),
-        UGenExpr::BinOp { left, op, right } => {
-            let l = emit_ugen(left, buffers, sample_idx, params);
-            let r = emit_ugen(right, buffers, sample_idx, params);
-            let op_str = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Mod => "%",
-                BinOp::Gt   => ">",
-                BinOp::Lt   => "<",
-                BinOp::GtEq => ">=",
-                BinOp::LtEq => "<=",
-                BinOp::Eq   => "==",
-                BinOp::NotEq => "!=",
-                _ => "+",
-            };
-            format!("({} {} {})", l, op_str, r)
-        }
-        UGenExpr::Index { object, index } => {
-            let obj = emit_ugen(object, buffers, sample_idx, params);
-            let idx = emit_ugen(index, buffers, sample_idx, params);
-            format!("{}[{}]", obj, idx)
-        }
-        UGenExpr::Block { lets, results } => {
-            // Emit SC var declarations + assignments, then all result expressions
-            let mut lines = Vec::new();
-
-            // Filter out any let variables that shadow function parameters
-            let param_set: std::collections::HashSet<&str> = params.iter().map(|s| s.as_str()).collect();
-            let new_vars: Vec<&str> = lets.iter()
-                .map(|(n, _)| n.as_str())
-                .filter(|n| !param_set.contains(n))
-                .collect();
-
-            // Emit var declarations only for new variables (not shadowing params)
-            if !new_vars.is_empty() {
-                lines.push(format!("var {}", new_vars.join(", ")));
-            }
-
-            // Emit let assignments (all of them, whether shadowing or not)
-            for (name, value) in lets {
-                let val_code = emit_ugen(value, buffers, sample_idx, params);
-                lines.push(format!("{} = {}", name, val_code));
-            }
-
-            // Emit all result expressions (e.g., multiple out() calls)
-            for result in results {
-                lines.push(emit_ugen(result, buffers, sample_idx, params));
-            }
-
-            lines.join(";\n\t")
-        }
-        UGenExpr::UGenCall { name, args, named_args } => {
-            if name == "sample" {
-                let code = emit_sample_ugen(named_args, buffers, sample_idx);
-                // Still recurse into positional args to advance sample_idx for any nested samples
-                for a in args.iter().skip(1) {
-                    // skip the file path (first positional arg)
-                    emit_ugen(a, buffers, sample_idx, params);
-                }
-                return code;
-            }
-            if name == "stream_disk" || name == "stream_disk_variable_rate" {
-                let arg_strs: Vec<String> = args.iter().map(|a| emit_ugen(a, buffers, sample_idx, params)).collect();
-                return emit_stream_disk_ugen(name, &arg_strs, named_args);
-            }
-            let arg_strs: Vec<String> = args.iter().map(|a| emit_ugen(a, buffers, sample_idx, params)).collect();
-            emit_ugen_call(name, &arg_strs)
-        }
-    }
-}
-
-/// Emit SC code for a sample() UGen call.
-fn emit_sample_ugen(
-    named_args: &[(String, UGenExpr)],
-    buffers: &[BufferInfo],
-    sample_idx: &mut usize,
-) -> String {
-    let idx = *sample_idx;
-    *sample_idx += 1;
-
-    let num_ch = buffers.get(idx).map(|b| b.num_channels).unwrap_or(2);
-    let bufnum_param = if buffers.len() == 1 {
-        "bufnum".to_string()
-    } else {
-        format!("bufnum_{}", idx)
-    };
-
-    // Extract named properties with defaults
-    let root = get_named_number(named_args, "root").unwrap_or(60.0);
-    let vel_lo = get_named_number(named_args, "vel_lo").unwrap_or(0.0);
-    let vel_hi = get_named_number(named_args, "vel_hi").unwrap_or(127.0);
-    let key_lo = get_named_number(named_args, "key_lo").unwrap_or(0.0);
-    let key_hi = get_named_number(named_args, "key_hi").unwrap_or(127.0);
-    let loop_flag = get_named_number(named_args, "loop").unwrap_or(0.0);
-    let loop_start_sc = get_named_expr_sc(named_args, "loop_start").unwrap_or_else(|| "0".to_string());
-    let loop_end_sc = get_named_expr_sc(named_args, "loop_end");
-    let loop_end = get_named_number(named_args, "loop_end").unwrap_or(0.0);
-    let detune = get_named_number(named_args, "detune").unwrap_or(0.0);
-    let start_sc = get_named_expr_sc(named_args, "start").unwrap_or_else(|| "0".to_string());
-
-    // Calculate root frequency from MIDI note: 440 * 2^((root-69)/12)
-    let root_hz = 440.0 * (2.0_f64).powf((root - 69.0) / 12.0);
-
-    // Detune multiplier: 2^(cents/1200)
-    let detune_mult = if detune != 0.0 {
-        (2.0_f64).powf(detune / 1200.0)
-    } else {
-        1.0
-    };
-
-    // Rate expression
-    let rate_expr = format!(
-        "(freq / {:.6}) * {} * BufRateScale.kr({})",
-        root_hz, detune_mult, bufnum_param
-    );
-
-    // Use Phasor/BufRd path when loop is set and loop_end is either a non-zero literal
-    // or a variable expression (synthdef parameter).
-    let use_phasor = loop_flag != 0.0 && (loop_end > 0.0 || loop_end_sc.is_some());
-    let loop_end_sc = loop_end_sc.unwrap_or_else(|| "0".to_string());
-
-    // Build the PlayBuf/BufRd expression
-    let playback = if use_phasor {
-        // Precise loop points with BufRd + Phasor
-        format!(
-            "BufRd.ar({}, {}, Phasor.ar(0, {}, {}, {}))",
-            num_ch, bufnum_param, rate_expr, loop_start_sc, loop_end_sc
-        )
-    } else {
-        // Standard PlayBuf
-        let loop_int = if loop_flag != 0.0 { 1 } else { 0 };
-        format!(
-            "PlayBuf.ar({}, {}, {}, 1, {}, {})",
-            num_ch, bufnum_param, rate_expr, start_sc, loop_int
-        )
-    };
-
-    // Velocity gating
-    let has_vel_range = vel_lo != 0.0 || vel_hi != 127.0;
-    // Key range gating
-    let has_key_range = key_lo != 0.0 || key_hi != 127.0;
-
-    let mut result = playback;
-
-    if has_vel_range {
-        result = format!("({} * ((vel >= {}) * (vel <= {})))", result, vel_lo, vel_hi);
-    }
-
-    if has_key_range {
-        result = format!(
-            "({} * ((freq.cpsmidi >= {}) * (freq.cpsmidi <= {})))",
-            result, key_lo, key_hi
-        );
-    }
-
-    result
-}
-
-/// Extract a named numeric argument value.
+/// Extract a named numeric argument value (literal Number only).
 fn get_named_number(named_args: &[(String, UGenExpr)], key: &str) -> Option<f64> {
     named_args.iter().find_map(|(name, expr)| {
         if name == key {
@@ -400,975 +247,1263 @@ fn get_named_number(named_args: &[(String, UGenExpr)], key: &str) -> Option<f64>
     })
 }
 
-/// Recursively convert a UGenExpr to a SC code string for simple arithmetic expressions.
-fn ugen_expr_to_sc_simple(expr: &UGenExpr) -> Option<String> {
+// ---------------------------------------------------------------------------
+// Graph construction
+// ---------------------------------------------------------------------------
+
+/// Walk a `UGenExpr` tree, building nodes in `ctx` as a side effect, and
+/// return the resulting signal — represented as one `Input` per channel
+/// (almost always a single-element Vec; multi-channel only for things like
+/// a stereo `sample()` or `PlayBuf`).
+fn emit(
+    ctx: &mut BuildCtx,
+    env: &mut HashMap<String, Vec<Input>>,
+    expr: &UGenExpr,
+    buffers: &[BufferInfo],
+    sample_idx: &mut usize,
+) -> Result<Vec<Input>> {
     match expr {
-        UGenExpr::Number(n) => {
-            if *n == (*n as i64) as f64 && n.is_finite() {
-                Some(format!("{}", *n as i64))
-            } else {
-                Some(format!("{}", n))
+        UGenExpr::Number(n) => Ok(vec![konst(*n as f32)]),
+        UGenExpr::StringLit(_) => Ok(vec![]), // only meaningful inside sample()'s own handling
+        UGenExpr::Param(name) => env.get(name).cloned().ok_or_else(|| AudionError::RuntimeError {
+            msg: format!("unknown identifier '{}' in define body", name),
+        }),
+        UGenExpr::BinOp { left, op, right } => {
+            let l = emit(ctx, env, left, buffers, sample_idx)?;
+            let r = emit(ctx, env, right, buffers, sample_idx)?;
+            let idx = match op {
+                BinOp::Add => binop::ADD,
+                BinOp::Sub => binop::SUB,
+                BinOp::Mul => binop::MUL,
+                BinOp::Div => binop::DIV,
+                BinOp::Mod => binop::MOD,
+                BinOp::Gt => binop::GT,
+                BinOp::Lt => binop::LT,
+                BinOp::GtEq => binop::GE,
+                BinOp::LtEq => binop::LE,
+                BinOp::Eq => binop::EQ,
+                BinOp::NotEq => binop::NE,
+                BinOp::BitAnd => binop::BITAND,
+                BinOp::BitOr => binop::BITOR,
+                BinOp::BitXor => binop::BITXOR,
+                BinOp::LeftShift => binop::SHIFT_LEFT,
+                BinOp::RightShift => binop::SHIFT_RIGHT,
+                BinOp::Pow => binop::POW,
+                // No direct audio-rate meaning for boolean and/or; old
+                // sclang codegen fell back to "+" for these too.
+                BinOp::And | BinOp::Or => binop::ADD,
+            };
+            Ok(zip_binop(ctx, idx, &l, &r))
+        }
+        UGenExpr::Index { object, index } => {
+            let obj = emit(ctx, env, object, buffers, sample_idx)?;
+            match index.as_ref() {
+                UGenExpr::Number(n) => {
+                    let i = *n as usize;
+                    obj.get(i).copied().map(|v| vec![v]).ok_or_else(|| AudionError::RuntimeError {
+                        msg: format!("array index {} out of range (len {})", i, obj.len()),
+                    })
+                }
+                _ => Err(AudionError::RuntimeError {
+                    msg: "array index must be a constant number".to_string(),
+                }),
             }
         }
-        UGenExpr::Param(p) => Some(p.clone()),
-        UGenExpr::BinOp { left, op, right } => {
-            let l = ugen_expr_to_sc_simple(left)?;
-            let r = ugen_expr_to_sc_simple(right)?;
-            let op_str = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Mod => "%",
-                _ => return None,
-            };
-            Some(format!("({} {} {})", l, op_str, r))
+        UGenExpr::Block { lets, results } => {
+            for (name, value) in lets {
+                let v = emit(ctx, env, value, buffers, sample_idx)?;
+                env.insert(name.clone(), v);
+            }
+            let mut last = Vec::new();
+            for r in results {
+                last = emit(ctx, env, r, buffers, sample_idx)?;
+            }
+            Ok(last)
         }
-        UGenExpr::UGenCall { .. } => {
-            // Delegate to emit_ugen with no buffer context (safe for non-sample UGen calls)
-            Some(emit_ugen(expr, &[], &mut 0, &[]))
+        UGenExpr::UGenCall { name, args, named_args } => {
+            emit_ugen_call(ctx, env, name, args, named_args, buffers, sample_idx)
         }
-        _ => None,
     }
 }
 
-/// Returns the SC code string for a named arg, handling Number, Param, and BinOp expressions.
-fn get_named_expr_sc(named_args: &[(String, UGenExpr)], key: &str) -> Option<String> {
-    named_args.iter().find_map(|(name, expr)| {
-        if name == key {
-            ugen_expr_to_sc_simple(expr)
-        } else {
-            None
-        }
-    })
+fn zip_binop(ctx: &mut BuildCtx, special_index: i16, a: &[Input], b: &[Input]) -> Vec<Input> {
+    let n = a.len().max(b.len()).max(1);
+    (0..n)
+        .map(|i| {
+            let ai = a.get(i % a.len().max(1)).copied().unwrap_or(Input::Constant(0.0));
+            let bi = b.get(i % b.len().max(1)).copied().unwrap_or(Input::Constant(0.0));
+            ctx.binop(special_index, ai, bi)
+        })
+        .collect()
 }
 
-/// Emit SC code for stream_disk() and stream_disk_variable_rate() UGen calls.
-fn emit_stream_disk_ugen(
+fn emit_ugen_call(
+    ctx: &mut BuildCtx,
+    env: &mut HashMap<String, Vec<Input>>,
     name: &str,
-    args: &[String],
+    args: &[UGenExpr],
     named_args: &[(String, UGenExpr)],
-) -> String {
-    let channels = get_named_number(named_args, "channels").unwrap_or(2.0) as i32;
-    let loop_flag = get_named_number(named_args, "loop").unwrap_or(0.0) as i32;
-
-    if name == "stream_disk_variable_rate" {
-        let bufnum = args.first().map(|s| s.as_str()).unwrap_or("0");
-        let rate = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-        format!("VDiskIn.ar({}, {}, {}, {})", channels, bufnum, rate, loop_flag)
-    } else {
-        // stream_disk
-        let bufnum = args.first().map(|s| s.as_str()).unwrap_or("0");
-        format!("DiskIn.ar({}, {}, {})", channels, bufnum, loop_flag)
-    }
-}
-
-fn emit_ugen_call(name: &str, args: &[String]) -> String {
+    buffers: &[BufferInfo],
+    sample_idx: &mut usize,
+) -> Result<Vec<Input>> {
     match name {
-        // Array operations (compile to SuperCollider syntax)
-        "array_get" => {
-            // array_get(arr, index) → arr[index] or arr.at(index)
-            let arr = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let index = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("{}[{}]", arr, index)
+        "sample" => {
+            let out = emit_sample_ugen(ctx, env, named_args, buffers, sample_idx)?;
+            // Still recurse into positional args (skipping the file path) to
+            // advance sample_idx for any nested samples.
+            for a in args.iter().skip(1) {
+                emit(ctx, env, a, buffers, sample_idx)?;
+            }
+            Ok(out)
+        }
+        "stream_disk" | "stream_disk_variable_rate" => {
+            let arg_vals = args
+                .iter()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(emit_stream_disk_ugen(ctx, name, &arg_vals, named_args))
         }
         "array" => {
-            // array(a, b, c) → [a, b, c]
-            format!("[{}]", args.join(", "))
+            let mut out = Vec::new();
+            for a in args {
+                out.extend(emit(ctx, env, a, buffers, sample_idx)?);
+            }
+            Ok(out)
         }
+        "array_get" => {
+            let arr = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_default();
+            match args.get(1) {
+                Some(UGenExpr::Number(n)) => {
+                    let i = *n as usize;
+                    arr.get(i).copied().map(|v| vec![v]).ok_or_else(|| AudionError::RuntimeError {
+                        msg: format!("array_get index {} out of range (len {})", i, arr.len()),
+                    })
+                }
+                _ => Err(AudionError::RuntimeError {
+                    msg: "array_get index must be a constant number".to_string(),
+                }),
+            }
+        }
+        // Routing UGens that take a whole channel array as one argument -
+        // must build a single node with all channels inline as consecutive
+        // inputs, not go through the per-channel expansion below.
+        "out" => {
+            let bus = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .and_then(|v| v.first().copied())
+                .unwrap_or_else(|| konst(0.0));
+            let sig = args
+                .get(1)
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_else(|| vec![konst(0.0)]);
+            let mut inputs = vec![bus];
+            inputs.extend(sig);
+            Ok(ctx.node("Out", Rate::Audio, inputs, 0, 0))
+        }
+        "local_out" => {
+            let sig = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_else(|| vec![konst(0.0)]);
+            let rate = ctx.rate_of(&sig);
+            Ok(ctx.node("LocalOut", rate, sig, 0, 0))
+        }
+        "buf_wr" => {
+            let sig = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_else(|| vec![konst(0.0)]);
+            let bufnum = eval_arg_or(ctx, env, args, 1, buffers, sample_idx, 0.0)?;
+            let phase = eval_arg_or(ctx, env, args, 2, buffers, sample_idx, 0.0)?;
+            let loop_flag = eval_arg_or(ctx, env, args, 3, buffers, sample_idx, 1.0)?;
+            let mut inputs = sig;
+            inputs.push(bufnum);
+            inputs.push(phase);
+            inputs.push(loop_flag);
+            Ok(ctx.node("BufWr", Rate::Audio, inputs, 0, 0))
+        }
+        "record_buf" => {
+            let sig = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_else(|| vec![konst(0.0)]);
+            let bufnum = eval_arg_or(ctx, env, args, 1, buffers, sample_idx, 0.0)?;
+            let offset = eval_arg_or(ctx, env, args, 2, buffers, sample_idx, 0.0)?;
+            let rec_level = eval_arg_or(ctx, env, args, 3, buffers, sample_idx, 1.0)?;
+            let pre_level = eval_arg_or(ctx, env, args, 4, buffers, sample_idx, 0.0)?;
+            let run = eval_arg_or(ctx, env, args, 5, buffers, sample_idx, 1.0)?;
+            let loop_flag = eval_arg_or(ctx, env, args, 6, buffers, sample_idx, 1.0)?;
+            let mut inputs = sig;
+            inputs.extend([bufnum, offset, rec_level, pre_level, run, loop_flag]);
+            inputs.push(konst(1.0)); // trigger
+            inputs.push(konst(0.0)); // doneAction
+            Ok(ctx.node("RecordBuf", Rate::Audio, inputs, 1, 0))
+        }
+        "splay" => {
+            let sig = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_else(|| vec![konst(0.0)]);
+            let spread = eval_arg_or(ctx, env, args, 1, buffers, sample_idx, 1.0)?;
+            let level = eval_arg_or(ctx, env, args, 2, buffers, sample_idx, 1.0)?;
+            let center = eval_arg_or(ctx, env, args, 3, buffers, sample_idx, 0.0)?;
+            let mut inputs = sig;
+            inputs.extend([spread, level, center, konst(1.0)]); // levelComp=1
+            Ok(ctx.node("Splay", Rate::Audio, inputs, 2, 0))
+        }
+        "klank" => {
+            // NOTE: less-common UGen, not currently used anywhere in
+            // audion_lib. Best-effort port of Klank's server input layout
+            // (input, freqscale, freqoffset, decayscale, then interleaved
+            // freq/amp/decay triples) — verify against real scsynth output
+            // before relying on it.
+            let input = args
+                .first()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .and_then(|v| v.first().copied())
+                .unwrap_or_else(|| konst(0.0));
+            let freqs = args
+                .get(1)
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_default();
+            let amps = args
+                .get(2)
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_default();
+            let rings = args
+                .get(3)
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .transpose()?
+                .unwrap_or_default();
+            let mut inputs = vec![input, konst(1.0), konst(0.0), konst(1.0)];
+            let n = freqs.len().max(amps.len()).max(rings.len());
+            for i in 0..n {
+                inputs.push(freqs.get(i).copied().unwrap_or_else(|| konst(0.0)));
+                inputs.push(amps.get(i).copied().unwrap_or_else(|| konst(1.0)));
+                inputs.push(rings.get(i).copied().unwrap_or_else(|| konst(1.0)));
+            }
+            Ok(vec![ctx.node1("Klank", Rate::Audio, inputs, 0)])
+        }
+        _ => {
+            let arg_vals = args
+                .iter()
+                .map(|a| emit(ctx, env, a, buffers, sample_idx))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ugen_call(ctx, name, &arg_vals))
+        }
+    }
+}
 
+/// Evaluate `args[idx]` if present (returning its first channel), else a constant default.
+fn eval_arg_or(
+    ctx: &mut BuildCtx,
+    env: &mut HashMap<String, Vec<Input>>,
+    args: &[UGenExpr],
+    idx: usize,
+    buffers: &[BufferInfo],
+    sample_idx: &mut usize,
+    default: f32,
+) -> Result<Input> {
+    match args.get(idx) {
+        Some(a) => {
+            let v = emit(ctx, env, a, buffers, sample_idx)?;
+            Ok(v.first().copied().unwrap_or_else(|| konst(default)))
+        }
+        None => Ok(konst(default)),
+    }
+}
+
+/// Dispatch a UGen call across channels: SC-style multichannel expansion —
+/// if any argument has more than one channel, the whole UGen is replicated
+/// once per channel (shorter arguments cycle).
+fn ugen_call(ctx: &mut BuildCtx, name: &str, args: &[Vec<Input>]) -> Vec<Input> {
+    let n = args.iter().map(|a| a.len().max(1)).max().unwrap_or(1);
+    if n <= 1 {
+        let scalar: Vec<Input> = args
+            .iter()
+            .map(|a| a.first().copied().unwrap_or(Input::Constant(0.0)))
+            .collect();
+        return ugen_call_scalar(ctx, name, &scalar);
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let scalar: Vec<Input> = args
+            .iter()
+            .map(|a| {
+                if a.is_empty() {
+                    Input::Constant(0.0)
+                } else {
+                    a[i % a.len()]
+                }
+            })
+            .collect();
+        out.extend(ugen_call_scalar(ctx, name, &scalar));
+    }
+    out
+}
+
+/// Emit a `sample()` UGen call: root/velocity/key-range gated buffer playback.
+fn emit_sample_ugen(
+    ctx: &mut BuildCtx,
+    env: &mut HashMap<String, Vec<Input>>,
+    named_args: &[(String, UGenExpr)],
+    buffers: &[BufferInfo],
+    sample_idx: &mut usize,
+) -> Result<Vec<Input>> {
+    let idx = *sample_idx;
+    *sample_idx += 1;
+
+    let num_ch = buffers.get(idx).map(|b| b.num_channels).unwrap_or(2);
+    let bufnum_name = if buffers.len() == 1 {
+        "bufnum".to_string()
+    } else {
+        format!("bufnum_{}", idx)
+    };
+    let bufnum = env
+        .get(&bufnum_name)
+        .and_then(|v| v.first().copied())
+        .unwrap_or_else(|| konst(0.0));
+
+    let root = get_named_number(named_args, "root").unwrap_or(60.0);
+    let vel_lo = get_named_number(named_args, "vel_lo").unwrap_or(0.0);
+    let vel_hi = get_named_number(named_args, "vel_hi").unwrap_or(127.0);
+    let key_lo = get_named_number(named_args, "key_lo").unwrap_or(0.0);
+    let key_hi = get_named_number(named_args, "key_hi").unwrap_or(127.0);
+    let loop_flag = get_named_number(named_args, "loop").unwrap_or(0.0);
+    let loop_end_num = get_named_number(named_args, "loop_end").unwrap_or(0.0);
+    let detune = get_named_number(named_args, "detune").unwrap_or(0.0);
+
+    let loop_start_in = named_input(ctx, env, named_args, "loop_start", buffers, sample_idx)?
+        .unwrap_or_else(|| konst(0.0));
+    let loop_end_in = named_input(ctx, env, named_args, "loop_end", buffers, sample_idx)?;
+    let start_in = named_input(ctx, env, named_args, "start", buffers, sample_idx)?
+        .unwrap_or_else(|| konst(0.0));
+
+    // root frequency from MIDI note: 440 * 2^((root-69)/12)
+    let root_hz = 440.0 * (2.0_f64).powf((root - 69.0) / 12.0);
+    // detune multiplier: 2^(cents/1200)
+    let detune_mult = if detune != 0.0 { (2.0_f64).powf(detune / 1200.0) } else { 1.0 };
+
+    let freq = env.get("freq").and_then(|v| v.first().copied()).unwrap_or_else(|| konst(440.0));
+    let root_hz_c = konst(root_hz as f32);
+    let mut rate_expr = ctx.binop(binop::DIV, freq, root_hz_c);
+    if detune_mult != 1.0 {
+        let dm = konst(detune_mult as f32);
+        rate_expr = ctx.binop(binop::MUL, rate_expr, dm);
+    }
+    let buf_rate_scale = ctx.node1("BufRateScale", Rate::Control, vec![bufnum], 0);
+    let rate_expr = ctx.binop(binop::MUL, rate_expr, buf_rate_scale);
+
+    let use_phasor = loop_flag != 0.0 && (loop_end_num > 0.0 || loop_end_in.is_some());
+    let loop_end_final = loop_end_in.unwrap_or_else(|| konst(0.0));
+
+    let playback: Vec<Input> = if use_phasor {
+        // Precise loop points with BufRd + Phasor.
+        // Phasor.ar(trig, rate, start, end, resetPos)
+        let phasor = ctx.node1(
+            "Phasor",
+            Rate::Audio,
+            vec![konst(0.0), rate_expr, loop_start_in, loop_end_final, konst(0.0)],
+            0,
+        );
+        // BufRd.ar real inputs: [bufnum, phase, loop, interpolation]; numChannels is shape-only.
+        ctx.node(
+            "BufRd",
+            Rate::Audio,
+            vec![bufnum, phasor, konst(0.0), konst(4.0)],
+            num_ch,
+            0,
+        )
+    } else {
+        // PlayBuf real inputs: [bufnum, rate, trigger, startPos, loop, doneAction]; numChannels is shape-only.
+        let loop_int = if loop_flag != 0.0 { 1.0 } else { 0.0 };
+        ctx.node(
+            "PlayBuf",
+            Rate::Audio,
+            vec![
+                bufnum,
+                rate_expr,
+                konst(1.0),
+                start_in,
+                konst(loop_int),
+                konst(0.0),
+            ],
+            num_ch,
+            0,
+        )
+    };
+
+    let has_vel_range = vel_lo != 0.0 || vel_hi != 127.0;
+    let has_key_range = key_lo != 0.0 || key_hi != 127.0;
+
+    let mut result = playback;
+
+    if has_vel_range {
+        let vel = env.get("vel").and_then(|v| v.first().copied()).unwrap_or_else(|| konst(127.0));
+        let ge = ctx.binop(binop::GE, vel, konst(vel_lo as f32));
+        let le = ctx.binop(binop::LE, vel, konst(vel_hi as f32));
+        let gate = ctx.binop(binop::MUL, ge, le);
+        result = result.into_iter().map(|c| ctx.binop(binop::MUL, c, gate)).collect();
+    }
+
+    if has_key_range {
+        // freq.cpsmidi (UnaryOpUGen has no direct cpsmidi selector in the
+        // table we verified, so derive it: midi = log2(freq/440)*12 + 69)
+        let ratio = ctx.binop(binop::DIV, freq, konst(440.0));
+        let log2 = ctx.unop(unop::LOG2, ratio);
+        let scaled = ctx.binop(binop::MUL, log2, konst(12.0));
+        let midi = ctx.binop(binop::ADD, scaled, konst(69.0));
+        let ge = ctx.binop(binop::GE, midi, konst(key_lo as f32));
+        let le = ctx.binop(binop::LE, midi, konst(key_hi as f32));
+        let gate = ctx.binop(binop::MUL, ge, le);
+        result = result.into_iter().map(|c| ctx.binop(binop::MUL, c, gate)).collect();
+    }
+
+    Ok(result)
+}
+
+/// Evaluate a named arg (if present) through the full expression walker,
+/// returning its first channel.
+fn named_input(
+    ctx: &mut BuildCtx,
+    env: &mut HashMap<String, Vec<Input>>,
+    named_args: &[(String, UGenExpr)],
+    key: &str,
+    buffers: &[BufferInfo],
+    sample_idx: &mut usize,
+) -> Result<Option<Input>> {
+    match named_args.iter().find(|(n, _)| n == key) {
+        Some((_, expr)) => {
+            let v = emit(ctx, env, expr, buffers, sample_idx)?;
+            Ok(v.first().copied())
+        }
+        None => Ok(None),
+    }
+}
+
+fn emit_stream_disk_ugen(
+    ctx: &mut BuildCtx,
+    name: &str,
+    args: &[Vec<Input>],
+    named_args: &[(String, UGenExpr)],
+) -> Vec<Input> {
+    let channels = get_named_number(named_args, "channels").unwrap_or(2.0) as u32;
+    let loop_flag = get_named_number(named_args, "loop").unwrap_or(0.0) as f32;
+
+    if name == "stream_disk_variable_rate" {
+        let bufnum = args.first().and_then(|v| v.first().copied()).unwrap_or(Input::Constant(0.0));
+        let rate = args.get(1).and_then(|v| v.first().copied()).unwrap_or_else(|| konst(1.0));
+        // VDiskIn real inputs: [bufnum, rate, loop, sendID]; numChannels is shape-only.
+        ctx.node(
+            "VDiskIn",
+            Rate::Audio,
+            vec![bufnum, rate, konst(loop_flag), konst(0.0)],
+            channels,
+            0,
+        )
+    } else {
+        let bufnum = args.first().and_then(|v| v.first().copied()).unwrap_or(Input::Constant(0.0));
+        // DiskIn real inputs: [bufnum, loop]; numChannels is shape-only.
+        ctx.node("DiskIn", Rate::Audio, vec![bufnum, konst(loop_flag)], channels, 0)
+    }
+}
+
+/// The big table: one UGen call, already channel-expanded to scalar
+/// inputs. Mirrors the old sclang-text `emit_ugen_call` 1:1, just building
+/// graph nodes instead of formatting SC source.
+fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input> {
+    let a = |i: usize, d: f32| arg_or(args, i, d);
+    match name {
         // Oscillators
-        "sine" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            format!("SinOsc.ar({})", freq)
-        }
-        "saw" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            format!("Saw.ar({})", freq)
-        }
+        "sine" => vec![ctx.node1("SinOsc", Rate::Audio, vec![a(0, 440.0), konst(0.0)], 0)],
+        "saw" => vec![ctx.node1("Saw", Rate::Audio, vec![a(0, 440.0)], 0)],
         "square" | "pulse" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let width = args.get(1).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("Pulse.ar({}, {})", freq, width)
+            let freq = a(0, 440.0);
+            let width = a(1, 0.5);
+            vec![ctx.node1("Pulse", Rate::Audio, vec![freq, width], 0)]
         }
-        "tri" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            format!("LFTri.ar({})", freq)
-        }
-        "noise" => "WhiteNoise.ar".to_string(),
-        "white" => "WhiteNoise.ar".to_string(), // same just obvious alias
-        "pink" => "PinkNoise.ar".to_string(),
-        "brown" => "BrownNoise.ar".to_string(),
-        "gray" => "GrayNoise.ar".to_string(),
-        "clip_noise" => "ClipNoise.ar".to_string(),
+        "tri" => vec![ctx.node1("LFTri", Rate::Audio, vec![a(0, 440.0), konst(0.0)], 0)],
+        "noise" | "white" => vec![ctx.node1("WhiteNoise", Rate::Audio, vec![], 0)],
+        "pink" => vec![ctx.node1("PinkNoise", Rate::Audio, vec![], 0)],
+        "brown" => vec![ctx.node1("BrownNoise", Rate::Audio, vec![], 0)],
+        "gray" => vec![ctx.node1("GrayNoise", Rate::Audio, vec![], 0)],
+        "clip_noise" => vec![ctx.node1("ClipNoise", Rate::Audio, vec![], 0)],
 
-        // More oscillators
         "blip" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let numharm = args.get(1).map(|s| s.as_str()).unwrap_or("200");
-            format!("Blip.ar({}, {})", freq, numharm)
+            let freq = a(0, 440.0);
+            let numharm = a(1, 200.0);
+            vec![ctx.node1("Blip", Rate::Audio, vec![freq, numharm], 0)]
         }
         "var_saw" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let width = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("VarSaw.ar({}, 0, {})", freq, width)
+            let freq = a(0, 440.0);
+            let width = a(1, 0.0);
+            vec![ctx.node1("VarSaw", Rate::Audio, vec![freq, konst(0.0), width], 0)]
         }
         "sync_saw" => {
-            let sync_freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let saw_freq = args.get(1).map(|s| s.as_str()).unwrap_or("440");
-            format!("SyncSaw.ar({}, {})", sync_freq, saw_freq)
+            let sf = a(0, 440.0);
+            let saw = a(1, 440.0);
+            vec![ctx.node1("SyncSaw", Rate::Audio, vec![sf, saw], 0)]
         }
-        "fsin_osc" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            format!("FSinOsc.ar({})", freq)
-        }
-        "lf_par" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFPar.ar({})", freq)
-        }
-        "lf_cub" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFCub.ar({})", freq)
-        }
+        "fsin_osc" => vec![ctx.node1("FSinOsc", Rate::Audio, vec![a(0, 440.0), konst(0.0)], 0)],
+        "lf_par" => vec![ctx.node1("LFPar", Rate::Audio, vec![a(0, 1.0), konst(0.0)], 0)],
+        "lf_cub" => vec![ctx.node1("LFCub", Rate::Audio, vec![a(0, 1.0), konst(0.0)], 0)],
         "pm_osc" => {
-            // PMOsc.ar(carfreq, modfreq, pmindex, modphase)
-            let carfreq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let modfreq = args.get(1).map(|s| s.as_str()).unwrap_or("440");
-            let pmindex = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let modphase = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            format!("PMOsc.ar({}, {}, {}, {})", carfreq, modfreq, pmindex, modphase)
+            let carfreq = a(0, 440.0);
+            let modfreq = a(1, 440.0);
+            let pmindex = a(2, 0.0);
+            let modphase = a(3, 0.0);
+            vec![ctx.node1("PMOsc", Rate::Audio, vec![carfreq, modfreq, pmindex, modphase], 0)]
         }
 
         // Filters
         "lpf" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let cutoff = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            format!("LPF.ar({}, {})", sig, cutoff)
+            let sig = a(0, 0.0);
+            let cutoff = a(1, 1000.0);
+            vec![ctx.node1("LPF", Rate::Audio, vec![sig, cutoff], 0)]
         }
         "hpf" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let cutoff = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            format!("HPF.ar({}, {})", sig, cutoff)
+            let sig = a(0, 0.0);
+            let cutoff = a(1, 1000.0);
+            vec![ctx.node1("HPF", Rate::Audio, vec![sig, cutoff], 0)]
         }
         "bpf" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let rq = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("BPF.ar({}, {}, {})", sig, freq, rq)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let rq = a(2, 1.0);
+            vec![ctx.node1("BPF", Rate::Audio, vec![sig, freq, rq], 0)]
         }
         "rlpf" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let cutoff = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let rq = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("RLPF.ar({}, {}, {})", sig, cutoff, rq)
+            let sig = a(0, 0.0);
+            let cutoff = a(1, 1000.0);
+            let rq = a(2, 1.0);
+            vec![ctx.node1("RLPF", Rate::Audio, vec![sig, cutoff, rq], 0)]
         }
         "rhpf" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let cutoff = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let rq = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("RHPF.ar({}, {}, {})", sig, cutoff, rq)
+            let sig = a(0, 0.0);
+            let cutoff = a(1, 1000.0);
+            let rq = a(2, 1.0);
+            vec![ctx.node1("RHPF", Rate::Audio, vec![sig, cutoff, rq], 0)]
         }
 
         // Envelope: env(gate) / env(gate, atk, sus, rel)
-        // When sus=0, generates Env.perc(atk, rel) for percussive one-shots
-        // Otherwise generates Env.asr(atk, sus, rel) for sustained sounds
         "env" => {
-            let gate = args.first().map(|s| s.as_str()).unwrap_or("gate");
-            let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
-            let sus = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let rel = args.get(3).map(|s| s.as_str()).unwrap_or("0.3");
-            if sus == "0" {
-                // Percussive envelope: attack to peak then decay, ignores gate
-                format!(
-                    "EnvGen.kr(Env.perc({}, {}), {}, doneAction: 2)",
-                    atk, rel, gate
-                )
+            let gate = a(0, 1.0);
+            let atk = a(1, 0.01);
+            let sus_is_zero = matches!(args.get(2), Some(Input::Constant(v)) if *v == 0.0);
+            let rel = a(3, 0.3);
+            if sus_is_zero {
+                vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, konst(-4.0)), gate, 2.0)]
             } else {
-                format!(
-                    "EnvGen.kr(Env.asr({}, {}, {}), {}, doneAction: 2)",
-                    atk, sus, rel, gate
-                )
+                let sus = a(2, 1.0);
+                vec![emit_env_gen(ctx, EnvShape::Asr(atk, sus, rel), gate, 2.0)]
             }
         }
-        // === Envelope UGens ===
         "line" => {
-            // Line.ar(start, end, dur, doneAction)
-            let start = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let end = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("Line.ar({}, {}, {})", start, end, dur)
+            let start = a(0, 0.0);
+            let end = a(1, 1.0);
+            let dur = a(2, 1.0);
+            vec![ctx.node1("Line", Rate::Audio, vec![start, end, dur, konst(0.0)], 0)]
         }
         "xline" => {
-            // XLine.ar(start, end, dur, doneAction)
-            let start = args.first().map(|s| s.as_str()).unwrap_or("0.01");
-            let end = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("XLine.ar({}, {}, {})", start, end, dur)
+            let start = a(0, 0.01);
+            let end = a(1, 1.0);
+            let dur = a(2, 1.0);
+            vec![ctx.node1("XLine", Rate::Audio, vec![start, end, dur, konst(0.0)], 0)]
         }
-        "decay" => { // TODO examples of how to use "in" param ?
-            // Decay.ar(in, decayTime, mult, add)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let time = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let mult = args.get(2).map(|s| s.as_str()).unwrap_or("1.0");
-            let add = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            format!("Decay.ar({}, {}, {}, {})", sig, time, mult, add)
+        "decay" => {
+            let sig = a(0, 0.0);
+            let time = a(1, 1.0);
+            let mult = a(2, 1.0);
+            let add = a(3, 0.0);
+            let decayed = ctx.node1("Decay", Rate::Audio, vec![sig, time], 0);
+            let scaled = ctx.binop(binop::MUL, decayed, mult);
+            vec![ctx.binop(binop::ADD, scaled, add)]
         }
-        "decay2" => { // TODO examples of how to use "in" param ?
-            // Decay2.ar(in, attackTime, decayTime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
-            let dec = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("Decay2.ar({}, {}, {})", sig, atk, dec)
+        "decay2" => {
+            let sig = a(0, 0.0);
+            let atk = a(1, 0.01);
+            let dec = a(2, 1.0);
+            vec![ctx.node1("Decay2", Rate::Audio, vec![sig, atk, dec], 0)]
         }
-        // Percussive envelope: always uses Env.perc, frees synth when done
-        // env_perc(gate, atk, rel, curve?) — no sustain, triggers on gate.
-        // curve is optional (SC's own Env.perc default is -4, a fast-then-
-        // slow exponential-ish decay); pass it to shape how the pitch/amp
-        // drop feels — positive values decay slow-then-fast instead.
-        // doneAction is also optional (default 2, SC's usual "free the synth
-        // when this envelope finishes"). When a SynthDef layers more than one
-        // env_perc — e.g. a main amp envelope plus a separate filter or pitch
-        // envelope — only ONE of them should carry doneAction:2, since
-        // whichever finishes first frees the WHOLE synth regardless of which
-        // envelope triggered it. Pass 0 for every envelope except the one
-        // that should own the note's actual lifetime.
         "env_perc" => {
-            let gate = args.first().map(|s| s.as_str()).unwrap_or("gate");
-            let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
-            let rel = args.get(2).map(|s| s.as_str()).unwrap_or("0.3");
-            let curve = args.get(3).map(|s| s.as_str()).unwrap_or("-4");
-            let done_action = args.get(4).map(|s| s.as_str()).unwrap_or("2");
-            format!(
-                "EnvGen.kr(Env.perc({}, {}, 1, {}), {}, doneAction: {})",
-                atk, rel, curve, gate, done_action
-            )
+            let gate = a(0, 1.0);
+            let atk = a(1, 0.01);
+            let rel = a(2, 0.3);
+            let curve = a(3, -4.0);
+            let done_action = args.get(4).copied().unwrap_or_else(|| konst(2.0));
+            vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, curve), gate, done_action_f(done_action))]
         }
-        "linen" => { // TODO remove?
-            // Linen.kr(gate, attackTime, susLevel, releaseTime, doneAction)
-            let gate = args.first().map(|s| s.as_str()).unwrap_or("gate");
-            let atk = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
-            let sus = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let rel = args.get(3).map(|s| s.as_str()).unwrap_or("0.3");
-            format!("Linen.kr({}, {}, {}, {}, 2)", gate, atk, sus, rel)
+        "linen" => {
+            let gate = a(0, 1.0);
+            let atk = a(1, 0.01);
+            let sus = a(2, 1.0);
+            let rel = a(3, 0.3);
+            vec![ctx.node1("Linen", Rate::Control, vec![gate, atk, sus, rel, konst(2.0)], 0)]
         }
 
         // LFOs (control rate)
-        "lfo_sine" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("SinOsc.kr({})", freq)
-        }
-        "lfo_saw" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFSaw.kr({})", freq)
-        }
-        "lfo_tri" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFTri.kr({})", freq)
-        }
+        "lfo_sine" => vec![ctx.node1("SinOsc", Rate::Control, vec![a(0, 1.0), konst(0.0)], 0)],
+        "lfo_saw" => vec![ctx.node1("LFSaw", Rate::Control, vec![a(0, 1.0), konst(0.0)], 0)],
+        "lfo_tri" => vec![ctx.node1("LFTri", Rate::Control, vec![a(0, 1.0), konst(0.0)], 0)],
         "lfo_pulse" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            let width = args.get(1).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("LFPulse.kr({}, 0, {})", freq, width)
+            let freq = a(0, 1.0);
+            let width = a(1, 0.5);
+            vec![ctx.node1("LFPulse", Rate::Control, vec![freq, konst(0.0), width], 0)]
         }
-        "lfo_noise" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFNoise1.kr({})", freq)
-        }
-        "lfo_step" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFNoise0.kr({})", freq)
-        }
-        "lfo_noise2" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LFNoise2.kr({})", freq)
-        }
+        "lfo_noise" => vec![ctx.node1("LFNoise1", Rate::Control, vec![a(0, 1.0)], 0)],
+        "lfo_step" => vec![ctx.node1("LFNoise0", Rate::Control, vec![a(0, 1.0)], 0)],
+        "lfo_noise2" => vec![ctx.node1("LFNoise2", Rate::Control, vec![a(0, 1.0)], 0)],
 
-        // More noise generators
-        "dust2" => {
-            let density = args.first().map(|s| s.as_str()).unwrap_or("10");
-            format!("Dust2.ar({})", density)
-        }
-        "crackle" => {
-            let chaos = args.first().map(|s| s.as_str()).unwrap_or("1.5");
-            format!("Crackle.ar({})", chaos)
-        }
+        "dust2" => vec![ctx.node1("Dust2", Rate::Audio, vec![a(0, 10.0)], 0)],
+        "crackle" => vec![ctx.node1("Crackle", Rate::Audio, vec![a(0, 1.5)], 0)],
         "coin_gate" => {
-            let prob = args.first().map(|s| s.as_str()).unwrap_or("0.5");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            format!("CoinGate.ar({}, {})", prob, trig)
+            let prob = a(0, 0.5);
+            let trig = if args.len() > 1 {
+                a(1, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("CoinGate", Rate::Audio, vec![prob, trig], 0)]
         }
 
         // Effects
         "reverb" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let mix = args.get(1).map(|s| s.as_str()).unwrap_or("0.33");
-            let room = args.get(2).map(|s| s.as_str()).unwrap_or("0.5");
-            let damp = args.get(3).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("FreeVerb.ar({}, {}, {}, {})", sig, mix, room, damp)
+            let sig = a(0, 0.0);
+            let mix = a(1, 0.33);
+            let room = a(2, 0.5);
+            let damp = a(3, 0.5);
+            vec![ctx.node1("FreeVerb", Rate::Audio, vec![sig, mix, room, damp], 0)]
         }
         "freeverb2" => {
-            // FreeVerb2.ar(in, in2, mix, room, damp)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let sig2 = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let mix = args.get(2).map(|s| s.as_str()).unwrap_or("0.33");
-            let room = args.get(3).map(|s| s.as_str()).unwrap_or("0.5");
-            let damp = args.get(4).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("FreeVerb2.ar({}, {}, {}, {}, {})", sig, sig2, mix, room, damp)
+            let sig = a(0, 0.0);
+            let sig2 = a(1, 0.0);
+            let mix = a(2, 0.33);
+            let room = a(3, 0.5);
+            let damp = a(4, 0.5);
+            vec![ctx.node1("FreeVerb2", Rate::Audio, vec![sig, sig2, mix, room, damp], 0)]
         }
         "gverb" => {
-            // GVerb.ar(in, roomsize, revtime, damping, inputbw, spread, drylevel, earlyreflevel, taillevel, maxroomsize)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let roomsize = args.get(1).map(|s| s.as_str()).unwrap_or("10");
-            let revtime = args.get(2).map(|s| s.as_str()).unwrap_or("3");
-            let damping = args.get(3).map(|s| s.as_str()).unwrap_or("0.5");
-            let inputbw = args.get(4).map(|s| s.as_str()).unwrap_or("0.5");
-            let spread = args.get(5).map(|s| s.as_str()).unwrap_or("15");
-            let drylevel = args.get(6).map(|s| s.as_str()).unwrap_or("1");
-            let earlylevel = args.get(7).map(|s| s.as_str()).unwrap_or("0.7");
-            let taillevel = args.get(8).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("GVerb.ar({}, {}, {}, {}, {}, {}, {}, {}, {})",
-                sig, roomsize, revtime, damping, inputbw, spread, drylevel, earlylevel, taillevel)
+            let sig = a(0, 0.0);
+            let roomsize = a(1, 10.0);
+            let revtime = a(2, 3.0);
+            let damping = a(3, 0.5);
+            let inputbw = a(4, 0.5);
+            let spread = a(5, 15.0);
+            let drylevel = a(6, 1.0);
+            let earlylevel = a(7, 0.7);
+            let taillevel = a(8, 0.5);
+            let maxroomsize = konst(300.0);
+            vec![ctx.node1(
+                "GVerb",
+                Rate::Audio,
+                vec![sig, roomsize, revtime, damping, inputbw, spread, drylevel, earlylevel, taillevel, maxroomsize],
+                0,
+            )]
         }
         "delay" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let time = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("CombL.ar({}, {}, {}, {})", sig, time, time, decay)
+            let sig = a(0, 0.0);
+            let time = a(1, 0.2);
+            let decay = a(2, 1.0);
+            vec![ctx.node1("CombL", Rate::Audio, vec![sig, time, time, decay], 0)]
         }
         "delay_c" => {
-            // DelayC.ar(in, maxdelaytime, delaytime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            format!("DelayC.ar({}, {}, {})", sig, maxtime, time)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            vec![ctx.node1("DelayC", Rate::Audio, vec![sig, maxtime, time], 0)]
         }
         "local_in" => {
-            // LocalIn.ar(numChannels)
-            let channels = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("LocalIn.ar({})", channels)
-        }
-        "local_out" => {
-            // LocalOut.ar(channelsArray)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("LocalOut.ar({})", sig)
+            // LocalIn.ar(numChannels, default=0.0): numChannels is client-side
+            // only (sets output count); real server inputs are `default`
+            // wrap-extended to numChannels values (SCClassLibrary InOut.sc).
+            let channels = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(1).max(1);
+            let defaults: Vec<Input> = (0..channels).map(|_| konst(0.0)).collect();
+            ctx.node("LocalIn", Rate::Audio, defaults, channels, 0)
         }
 
-        // === Category 1: Allpass Filters (Essential for reverbs, phasers, flangers) ===
+        // Allpass filters
         "allpass_n" => {
-            // AllpassN.ar(in, maxdelaytime, delaytime, decaytime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("AllpassN.ar({}, {}, {}, {})", sig, maxtime, time, decay)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            let decay = a(3, 1.0);
+            vec![ctx.node1("AllpassN", Rate::Audio, vec![sig, maxtime, time, decay], 0)]
         }
         "allpass_l" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("AllpassL.ar({}, {}, {}, {})", sig, maxtime, time, decay)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            let decay = a(3, 1.0);
+            vec![ctx.node1("AllpassL", Rate::Audio, vec![sig, maxtime, time, decay], 0)]
         }
         "allpass_c" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("AllpassC.ar({}, {}, {}, {})", sig, maxtime, time, decay)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            let decay = a(3, 1.0);
+            vec![ctx.node1("AllpassC", Rate::Audio, vec![sig, maxtime, time, decay], 0)]
         }
 
-        // === Category 2: More Filter Types ===
         "resonz" => {
-            // Resonz.ar(in, freq, bwr) - Resonant bandpass filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("440");
-            let bwr = args.get(2).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Resonz.ar({}, {}, {})", sig, freq, bwr)
+            let sig = a(0, 0.0);
+            let freq = a(1, 440.0);
+            let bwr = a(2, 0.1);
+            vec![ctx.node1("Resonz", Rate::Audio, vec![sig, freq, bwr], 0)]
         }
         "moog_ff" => {
-            // MoogFF.ar(in, freq, gain) - Moog ladder filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let gain = args.get(2).map(|s| s.as_str()).unwrap_or("2");
-            format!("MoogFF.ar({}, {}, {})", sig, freq, gain)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let gain = a(2, 2.0);
+            vec![ctx.node1("MoogFF", Rate::Audio, vec![sig, freq, gain, konst(0.0)], 0)]
         }
         "brf" => {
-            // BRF.ar(in, freq, rq) - Band-reject (notch) filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let rq = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("BRF.ar({}, {}, {})", sig, freq, rq)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let rq = a(2, 1.0);
+            vec![ctx.node1("BRF", Rate::Audio, vec![sig, freq, rq], 0)]
         }
         "formlet" => {
-            // Formlet.ar(in, freq, attacktime, decaytime) - Formant filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let attack = args.get(2).map(|s| s.as_str()).unwrap_or("0.005");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("0.04");
-            format!("Formlet.ar({}, {}, {}, {})", sig, freq, attack, decay)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let attack = a(2, 0.005);
+            let decay = a(3, 0.04);
+            vec![ctx.node1("Formlet", Rate::Audio, vec![sig, freq, attack, decay], 0)]
         }
         "lag" => {
-            // Lag.ar(in, lagtime) - Exponential lag (slew rate limiter)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lagtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Lag.ar({}, {})", sig, lagtime)
+            let sig = a(0, 0.0);
+            let lagtime = a(1, 0.1);
+            vec![ctx.node1("Lag", Rate::Audio, vec![sig, lagtime], 0)]
         }
         "lag2" => {
-            // Lag2.ar(in, lagtime) - Double exponential lag (smoother)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lagtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Lag2.ar({}, {})", sig, lagtime)
+            let sig = a(0, 0.0);
+            let lagtime = a(1, 0.1);
+            vec![ctx.node1("Lag2", Rate::Audio, vec![sig, lagtime], 0)]
         }
         "leak_dc" => {
-            // LeakDC.ar(in, coef) - DC blocker
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let coef = args.get(1).map(|s| s.as_str()).unwrap_or("0.995");
-            format!("LeakDC.ar({}, {})", sig, coef)
+            let sig = a(0, 0.0);
+            let coef = a(1, 0.995);
+            vec![ctx.node1("LeakDC", Rate::Audio, vec![sig, coef], 0)]
         }
         "ringz" => {
-            // Ringz.ar(in, freq, decaytime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("440");
-            let decay = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("Ringz.ar({}, {}, {})", sig, freq, decay)
+            let sig = a(0, 0.0);
+            let freq = a(1, 440.0);
+            let decay = a(2, 1.0);
+            vec![ctx.node1("Ringz", Rate::Audio, vec![sig, freq, decay], 0)]
         }
         "one_pole" => {
-            // OnePole.ar(in, coef)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let coef = args.get(1).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("OnePole.ar({}, {})", sig, coef)
+            let sig = a(0, 0.0);
+            let coef = a(1, 0.5);
+            vec![ctx.node1("OnePole", Rate::Audio, vec![sig, coef], 0)]
         }
         "two_pole" => {
-            // TwoPole.ar(in, freq, radius)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let radius = args.get(2).map(|s| s.as_str()).unwrap_or("0.8");
-            format!("TwoPole.ar({}, {}, {})", sig, freq, radius)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let radius = a(2, 0.8);
+            vec![ctx.node1("TwoPole", Rate::Audio, vec![sig, freq, radius], 0)]
         }
         "ramp" => {
-            // Ramp.ar(in, lagtime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lagtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Ramp.ar({}, {})", sig, lagtime)
+            let sig = a(0, 0.0);
+            let lagtime = a(1, 0.1);
+            vec![ctx.node1("Ramp", Rate::Audio, vec![sig, lagtime], 0)]
         }
-        "hpz1" => {
-            // HPZ1.ar(in) - 2 point highpass filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("HPZ1.ar({})", sig)
-        }
-        "lpz1" => {
-            // LPZ1.ar(in) - 2 point lowpass filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("LPZ1.ar({})", sig)
-        }
-        "hpz2" => {
-            // HPZ2.ar(in) - 2 point highpass filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("HPZ2.ar({})", sig)
-        }
-        "lpz2" => {
-            // LPZ2.ar(in) - 2 point lowpass filter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("LPZ2.ar({})", sig)
-        }
+        "hpz1" => vec![ctx.node1("HPZ1", Rate::Audio, vec![a(0, 0.0)], 0)],
+        "lpz1" => vec![ctx.node1("LPZ1", Rate::Audio, vec![a(0, 0.0)], 0)],
+        "hpz2" => vec![ctx.node1("HPZ2", Rate::Audio, vec![a(0, 0.0)], 0)],
+        "lpz2" => vec![ctx.node1("LPZ2", Rate::Audio, vec![a(0, 0.0)], 0)],
         "mid_eq" => {
-            // MidEQ.ar(in, freq, rq, db)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("1000");
-            let rq = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let db = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            format!("MidEQ.ar({}, {}, {}, {})", sig, freq, rq, db)
+            let sig = a(0, 0.0);
+            let freq = a(1, 1000.0);
+            let rq = a(2, 1.0);
+            let db = a(3, 0.0);
+            vec![ctx.node1("MidEQ", Rate::Audio, vec![sig, freq, rq, db], 0)]
         }
         "slew" => {
-            // Slew.ar(in, up, dn) - Slew rate limiter
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let up = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let dn = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("Slew.ar({}, {}, {})", sig, up, dn)
+            let sig = a(0, 0.0);
+            let up = a(1, 1.0);
+            let dn = a(2, 1.0);
+            vec![ctx.node1("Slew", Rate::Audio, vec![sig, up, dn], 0)]
         }
 
-        // === Category 3: Variable Delays ===
         "delay_n" => {
-            // DelayN.ar(in, maxdelaytime, delaytime) - No interpolation
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            format!("DelayN.ar({}, {}, {})", sig, maxtime, time)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            vec![ctx.node1("DelayN", Rate::Audio, vec![sig, maxtime, time], 0)]
         }
         "delay_l" => {
-            // DelayL.ar(in, maxdelaytime, delaytime) - Linear interpolation
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            format!("DelayL.ar({}, {}, {})", sig, maxtime, time)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            vec![ctx.node1("DelayL", Rate::Audio, vec![sig, maxtime, time], 0)]
         }
         "comb_n" => {
-            // CombN.ar(in, maxdelaytime, delaytime, decaytime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("CombN.ar({}, {}, {}, {})", sig, maxtime, time, decay)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            let decay = a(3, 1.0);
+            vec![ctx.node1("CombN", Rate::Audio, vec![sig, maxtime, time, decay], 0)]
         }
         "comb_c" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let maxtime = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let time = args.get(2).map(|s| s.as_str()).unwrap_or("0.2");
-            let decay = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("CombC.ar({}, {}, {}, {})", sig, maxtime, time, decay)
+            let sig = a(0, 0.0);
+            let maxtime = a(1, 0.2);
+            let time = a(2, 0.2);
+            let decay = a(3, 1.0);
+            vec![ctx.node1("CombC", Rate::Audio, vec![sig, maxtime, time, decay], 0)]
         }
-        "delay1" => {
-            // Delay1.ar(in) - 1 sample delay
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("Delay1.ar({})", sig)
-        }
-        "delay2" => {
-            // Delay2.ar(in) - 2 sample delay
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("Delay2.ar({})", sig)
-        }
+        "delay1" => vec![ctx.node1("Delay1", Rate::Audio, vec![a(0, 0.0)], 0)],
+        "delay2" => vec![ctx.node1("Delay2", Rate::Audio, vec![a(0, 0.0)], 0)],
         "pluck" => {
-            // Pluck.ar(in, trig, maxdelaytime, delaytime, decaytime, coef)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("WhiteNoise.ar");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            let maxtime = args.get(2).map(|s| s.as_str()).unwrap_or("0.1");
-            let time = args.get(3).map(|s| s.as_str()).unwrap_or("0.1");
-            let decay = args.get(4).map(|s| s.as_str()).unwrap_or("5");
-            let coef = args.get(5).map(|s| s.as_str()).unwrap_or("0.5");
-            format!("Pluck.ar({}, {}, {}, {}, {}, {})", sig, trig, maxtime, time, decay, coef)
-        }
-        "klank" => {
-            // klank(input, freqs, amps, rings)
-            // freqs/amps/rings should be array() expressions → SC Array literals
-            // Wraps in Klank.ar(`[...]) Ref to prevent SC multichannel expansion
-            let input = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freqs = args.get(1).map(|s| s.as_str()).unwrap_or("[]");
-            let amps  = args.get(2).map(|s| s.as_str()).unwrap_or("[]");
-            let rings = args.get(3).map(|s| s.as_str()).unwrap_or("[]");
-            format!("Klank.ar(`[{}, {}, {}], {})", freqs, amps, rings, input)
+            let sig = a(0, 0.0);
+            let trig = a(1, 1.0);
+            let maxtime = a(2, 0.1);
+            let time = a(3, 0.1);
+            let decay = a(4, 5.0);
+            let coef = a(5, 0.5);
+            vec![ctx.node1("Pluck", Rate::Audio, vec![sig, trig, maxtime, time, decay, coef], 0)]
         }
 
-        // === Category 4: Nonlinear Processing (Distortion, Waveshaping) ===
-        "tanh" => {
-            // tanh() - Hyperbolic tangent (soft clipping)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("{}.tanh", sig)
-        }
-        "atan" => {
-            // atan() - Arctangent (soft clipping)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("{}.atan", sig)
-        }
+        // Distortion / dynamics
+        "tanh" => vec![ctx.unop(unop::TANH, a(0, 0.0))],
+        "atan" => vec![ctx.unop(unop::ARC_TAN, a(0, 0.0))],
         "wrap" => {
-            // wrap(in, lo, hi) - Wrapping
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lo = args.get(1).map(|s| s.as_str()).unwrap_or("-1");
-            let hi = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("{}.wrap({}, {})", sig, lo, hi)
+            let sig = a(0, 0.0);
+            let lo = a(1, -1.0);
+            let hi = a(2, 1.0);
+            let rate = ctx.rate_of(&[sig, lo, hi]);
+            vec![ctx.node1("Wrap", rate, vec![sig, lo, hi], 0)]
         }
         "fold" => {
-            // fold(in, lo, hi) - Folding
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lo = args.get(1).map(|s| s.as_str()).unwrap_or("-1");
-            let hi = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("{}.fold({}, {})", sig, lo, hi)
+            let sig = a(0, 0.0);
+            let lo = a(1, -1.0);
+            let hi = a(2, 1.0);
+            let rate = ctx.rate_of(&[sig, lo, hi]);
+            vec![ctx.node1("Fold", rate, vec![sig, lo, hi], 0)]
         }
-        "softclip" => {
-            // softclip() - Soft clipping
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("{}.softclip", sig)
-        }
+        "softclip" => vec![ctx.unop(unop::SOFT_CLIP, a(0, 0.0))],
         "dist" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let amount = args.get(1).map(|s| s.as_str()).unwrap_or("2");
-            format!("({} * {}).clip2(1)", sig, amount)
+            let sig = a(0, 0.0);
+            let amount = a(1, 2.0);
+            let scaled = ctx.binop(binop::MUL, sig, amount);
+            vec![ctx.binop(binop::CLIP2, scaled, konst(1.0))]
         }
 
-        // === Category 5: Dynamics Processing ===
         "compander" => {
-            // Compander.ar(in, control, thresh, slopeBelow, slopeAbove, clampTime, relaxTime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let control = args.get(1).map(|s| s.as_str()).unwrap_or(&sig);
-            let thresh = args.get(2).map(|s| s.as_str()).unwrap_or("0.5");
-            let slope_below = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            let slope_above = args.get(4).map(|s| s.as_str()).unwrap_or("0.5");
-            let clamp = args.get(5).map(|s| s.as_str()).unwrap_or("0.01");
-            let relax = args.get(6).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Compander.ar({}, {}, {}, {}, {}, {}, {})",
-                sig, control, thresh, slope_below, slope_above, clamp, relax)
+            let sig = a(0, 0.0);
+            let control = args.get(1).copied().unwrap_or(sig);
+            let thresh = a(2, 0.5);
+            let slope_below = a(3, 1.0);
+            let slope_above = a(4, 0.5);
+            let clamp = a(5, 0.01);
+            let relax = a(6, 0.1);
+            vec![ctx.node1("Compander", Rate::Audio, vec![sig, control, thresh, slope_below, slope_above, clamp, relax], 0)]
         }
         "limiter" => {
-            // Limiter.ar(in, level, dur)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let level = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("0.01");
-            format!("Limiter.ar({}, {}, {})", sig, level, dur)
+            let sig = a(0, 0.0);
+            let level = a(1, 1.0);
+            let dur = a(2, 0.01);
+            vec![ctx.node1("Limiter", Rate::Audio, vec![sig, level, dur], 0)]
         }
         "amplitude" => {
-            // Amplitude.ar(in, attacktime, releasetime)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let attack = args.get(1).map(|s| s.as_str()).unwrap_or("0.01");
-            let release = args.get(2).map(|s| s.as_str()).unwrap_or("0.01");
-            format!("Amplitude.ar({}, {}, {})", sig, attack, release)
+            let sig = a(0, 0.0);
+            let attack = a(1, 0.01);
+            let release = a(2, 0.01);
+            vec![ctx.node1("Amplitude", Rate::Audio, vec![sig, attack, release], 0)]
         }
         "normalizer" => {
-            // Normalizer.ar(in, level, dur)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let level = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("0.01");
-            format!("Normalizer.ar({}, {}, {})", sig, level, dur)
+            let sig = a(0, 0.0);
+            let level = a(1, 1.0);
+            let dur = a(2, 0.01);
+            vec![ctx.node1("Normalizer", Rate::Audio, vec![sig, level, dur], 0)]
         }
 
-        // === Category 6: Pitch/Frequency Effects ===
+        // Pitch/Frequency effects
         "pitch_shift" => {
-            // PitchShift.ar(in, windowSize, pitchRatio, pitchDispersion, timeDispersion)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let winsize = args.get(1).map(|s| s.as_str()).unwrap_or("0.2");
-            let ratio = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let disp = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            let time_disp = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            format!("PitchShift.ar({}, {}, {}, {}, {})", sig, winsize, ratio, disp, time_disp)
+            let sig = a(0, 0.0);
+            let winsize = a(1, 0.2);
+            let ratio = a(2, 1.0);
+            let disp = a(3, 0.0);
+            let time_disp = a(4, 0.0);
+            vec![ctx.node1("PitchShift", Rate::Audio, vec![sig, winsize, ratio, disp, time_disp], 0)]
         }
         "freq_shift" => {
-            // FreqShift.ar(in, freq, phase)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let freq = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let phase = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            format!("FreqShift.ar({}, {}, {})", sig, freq, phase)
+            let sig = a(0, 0.0);
+            let freq = a(1, 0.0);
+            let phase = a(2, 0.0);
+            vec![ctx.node1("FreqShift", Rate::Audio, vec![sig, freq, phase], 0)]
         }
         "pitch" => {
-            // Pitch.kr(in, initFreq, minFreq, maxFreq, execFreq, maxBinsPerOctave, median, ampThreshold, peakThreshold, downSample, clar)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let init = args.get(1).map(|s| s.as_str()).unwrap_or("440");
-            let minf = args.get(2).map(|s| s.as_str()).unwrap_or("60");
-            let maxf = args.get(3).map(|s| s.as_str()).unwrap_or("4000");
-            format!("Pitch.kr({}, {}, {}, {})", sig, init, minf, maxf)
+            let sig = a(0, 0.0);
+            let init = a(1, 440.0);
+            let minf = a(2, 60.0);
+            let maxf = a(3, 4000.0);
+            vec![ctx.node1(
+                "Pitch",
+                Rate::Control,
+                vec![sig, init, minf, maxf, konst(100.0), konst(16.0), konst(1.0), konst(0.01), konst(0.5), konst(1.0)],
+                0,
+            )]
         }
         "vibrato" => {
-            // Vibrato.ar(freq, rate, depth, delay, onset, rateVariation, depthVariation, iphase)
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("440");
-            let rate = args.get(1).map(|s| s.as_str()).unwrap_or("6");
-            let depth = args.get(2).map(|s| s.as_str()).unwrap_or("0.02");
-            let delay = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            let onset = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            let ratevar = args.get(5).map(|s| s.as_str()).unwrap_or("0.04");
-            let depthvar = args.get(6).map(|s| s.as_str()).unwrap_or("0.1");
-            format!("Vibrato.ar({}, {}, {}, {}, {}, {}, {})", freq, rate, depth, delay, onset, ratevar, depthvar)
+            let freq = a(0, 440.0);
+            let rate = a(1, 6.0);
+            let depth = a(2, 0.02);
+            let delay = a(3, 0.0);
+            let onset = a(4, 0.0);
+            let ratevar = a(5, 0.04);
+            let depthvar = a(6, 0.1);
+            vec![ctx.node1(
+                "Vibrato",
+                Rate::Audio,
+                vec![freq, rate, depth, delay, onset, ratevar, depthvar, konst(0.0), konst(0.0)],
+                0,
+            )]
         }
 
-        // === Category 7: Analysis & Control ===
+        // Analysis & control
         "running_sum" => {
-            // RunningSum.ar(in, numsamps)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let num = args.get(1).map(|s| s.as_str()).unwrap_or("40");
-            format!("RunningSum.ar({}, {})", sig, num)
+            let sig = a(0, 0.0);
+            let num = a(1, 40.0);
+            vec![ctx.node1("RunningSum", Rate::Audio, vec![sig, num], 0)]
         }
         "median" => {
-            // Median.ar(length, in)
-            let length = args.first().map(|s| s.as_str()).unwrap_or("3");
-            let sig = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("Median.ar({}, {})", length, sig)
+            let length = a(0, 3.0);
+            let sig = a(1, 0.0);
+            vec![ctx.node1("Median", Rate::Audio, vec![length, sig], 0)]
         }
         "running_max" => {
-            // RunningMax.ar(in, numsamps)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let num = args.get(1).map(|s| s.as_str()).unwrap_or("40");
-            format!("RunningMax.ar({}, {})", sig, num)
+            let sig = a(0, 0.0);
+            let num = a(1, 40.0);
+            vec![ctx.node1("RunningMax", Rate::Audio, vec![sig, num], 0)]
         }
         "running_min" => {
-            // RunningMin.ar(in, numsamps)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let num = args.get(1).map(|s| s.as_str()).unwrap_or("40");
-            format!("RunningMin.ar({}, {})", sig, num)
+            let sig = a(0, 0.0);
+            let num = a(1, 40.0);
+            vec![ctx.node1("RunningMin", Rate::Audio, vec![sig, num], 0)]
         }
         "peak" => {
-            // Peak.ar(in, trig)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(10)");
-            format!("Peak.ar({}, {})", sig, trig)
+            let sig = a(0, 0.0);
+            let trig = if args.len() > 1 {
+                a(1, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(10.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("Peak", Rate::Audio, vec![sig, trig], 0)]
         }
-        "zero_crossing" => {
-            // ZeroCrossing.ar(in)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("ZeroCrossing.ar({})", sig)
-        }
+        "zero_crossing" => vec![ctx.node1("ZeroCrossing", Rate::Audio, vec![a(0, 0.0)], 0)],
 
-        // === Triggers ===
         "latch" => {
-            // Latch.ar(in, trig)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            format!("Latch.ar({}, {})", sig, trig)
+            let sig = a(0, 0.0);
+            let trig = if args.len() > 1 {
+                a(1, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("Latch", Rate::Audio, vec![sig, trig], 0)]
         }
         "gate" => {
-            // Gate.ar(in, trig)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("Gate.ar({}, {})", sig, trig)
+            let sig = a(0, 0.0);
+            let trig = a(1, 0.0);
+            vec![ctx.node1("Gate", Rate::Audio, vec![sig, trig], 0)]
         }
         "pulse_count" => {
-            // PulseCount.ar(trig, reset)
-            let trig = args.first().map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            let reset = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("PulseCount.ar({}, {})", trig, reset)
+            let trig = if !args.is_empty() {
+                a(0, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            let reset = a(1, 0.0);
+            vec![ctx.node1("PulseCount", Rate::Audio, vec![trig, reset], 0)]
         }
         "t_exprand" => {
-            // TExpRand.ar(lo, hi, trig)
-            let lo = args.first().map(|s| s.as_str()).unwrap_or("0.01");
-            let hi = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let trig = args.get(2).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            format!("TExpRand.ar({}, {}, {})", lo, hi, trig)
+            let lo = a(0, 0.01);
+            let hi = a(1, 1.0);
+            let trig = if args.len() > 2 {
+                a(2, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("TExpRand", Rate::Audio, vec![lo, hi, trig], 0)]
         }
         "t_irand" => {
-            // TIRand.ar(lo, hi, trig)
-            let lo = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let hi = args.get(1).map(|s| s.as_str()).unwrap_or("127");
-            let trig = args.get(2).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            format!("TIRand.ar({}, {}, {})", lo, hi, trig)
+            let lo = a(0, 0.0);
+            let hi = a(1, 127.0);
+            let trig = if args.len() > 2 {
+                a(2, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("TIRand", Rate::Audio, vec![lo, hi, trig], 0)]
         }
         "sweep" => {
-            // Sweep.ar(trig, rate)
-            let trig = args.first().map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            let rate = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            format!("Sweep.ar({}, {})", trig, rate)
+            let trig = if !args.is_empty() {
+                a(0, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            let rate = a(1, 1.0);
+            vec![ctx.node1("Sweep", Rate::Audio, vec![trig, rate], 0)]
         }
 
         // Input/Output
         "in" => {
-            let bus = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let channels = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            format!("In.ar({}, {})", bus, channels)
-        }
-        "out" => {
-            let bus = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let sig = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("Out.ar({}, {})", bus, sig)
+            let bus = a(0, 0.0);
+            let channels = args.get(1).and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(1);
+            ctx.node("In", Rate::Audio, vec![bus], channels, 0)
         }
         "pan" => {
-            let pos = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let sig = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            format!("Pan2.ar({}, {})", sig, pos)
+            let pos = a(0, 0.0);
+            let sig = a(1, 0.0);
+            ctx.node("Pan2", Rate::Audio, vec![sig, pos, konst(1.0)], 2, 0)
         }
         "pan4" => {
-            // Pan4.ar(in, xpos, ypos, level)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let xpos = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let ypos = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let level = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("Pan4.ar({}, {}, {}, {})", sig, xpos, ypos, level)
-        }
-        "splay" => {
-            // Splay.ar(inArray, spread, level, center)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("[0, 0, 0, 0]");
-            let spread = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let level = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let center = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            format!("Splay.ar({}, {}, {}, {})", sig, spread, level, center)
+            let sig = a(0, 0.0);
+            let xpos = a(1, 0.0);
+            let ypos = a(2, 0.0);
+            let level = a(3, 1.0);
+            ctx.node("Pan4", Rate::Audio, vec![sig, xpos, ypos, level], 4, 0)
         }
         "balance2" => {
-            // Balance2.ar(left, right, pos, level)
-            let left = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let right = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let pos = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let level = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("Balance2.ar({}, {}, {}, {})", left, right, pos, level)
+            let left = a(0, 0.0);
+            let right = a(1, 0.0);
+            let pos = a(2, 0.0);
+            let level = a(3, 1.0);
+            ctx.node("Balance2", Rate::Audio, vec![left, right, pos, level], 2, 0)
         }
 
         // Buffer playback
-        "buf_rate_scale" => {
-            // BufRateScale.kr(bufnum) — sample-rate ratio for correct PlayBuf pitch
-            let bufnum = args.first().map(|s| s.as_str()).unwrap_or("0");
-            format!("BufRateScale.kr({})", bufnum)
-        }
+        "buf_rate_scale" => vec![ctx.node1("BufRateScale", Rate::Control, vec![a(0, 0.0)], 0)],
         "phasor" => {
-            // phasor(trig, rate, start, end) — ramp phase between start/end frames
-            // use with buf_rd for precise loop points
-            let trig  = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let rate  = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let start = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let end   = args.get(3).map(|s| s.as_str()).unwrap_or("44100");
-            format!("Phasor.ar({}, {}, {}, {})", trig, rate, start, end)
+            let trig = a(0, 0.0);
+            let rate = a(1, 1.0);
+            let start = a(2, 0.0);
+            let end = a(3, 44100.0);
+            vec![ctx.node1("Phasor", Rate::Audio, vec![trig, rate, start, end, konst(0.0)], 0)]
         }
         "buf_rd" => {
-            // buf_rd(numChannels, bufnum, phase, interp) — read buffer at a phase
-            // signal. interp: 1 = none (sample & hold — stair-steps a low-res
-            // buffer into a sequencer/S&H shape), 2 = linear, 4 = cubic (default,
-            // smooth — matches the historical 3-arg call).
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let bufnum   = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let phase    = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let interp   = args.get(3).map(|s| s.as_str()).unwrap_or("4");
-            format!("BufRd.ar({}, {}, {}, 1, {})", numchans, bufnum, phase, interp)
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let bufnum = a(1, 0.0);
+            let phase = a(2, 0.0);
+            let interp = a(3, 4.0);
+            ctx.node("BufRd", Rate::Audio, vec![bufnum, phase, konst(1.0), interp], numchans, 0)
         }
         "PlayBuf" => {
-            // PlayBuf.ar(numChannels, bufnum, rate, trigger, startPos, loop)
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let bufnum = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let rate = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let trig = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            let startpos = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            let looping = args.get(5).map(|s| s.as_str()).unwrap_or("0");
-            format!("PlayBuf.ar({}, {}, {}, {}, {}, {})", numchans, bufnum, rate, trig, startpos, looping)
-        }
-        "buf_wr" => {
-            // BufWr.ar(inputArray, bufnum, phase, loop)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let bufnum = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let phase = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let loop_flag = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            format!("BufWr.ar({}, {}, {}, {})", sig, bufnum, phase, loop_flag)
-        }
-        "record_buf" => {
-            // RecordBuf.ar(inputArray, bufnum, offset, recLevel, preLevel, run, loop, trigger, doneAction)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let bufnum = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let offset = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let reclevel = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            let prelevel = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            let run = args.get(5).map(|s| s.as_str()).unwrap_or("1");
-            let loop_flag = args.get(6).map(|s| s.as_str()).unwrap_or("1");
-            format!("RecordBuf.ar({}, {}, {}, {}, {}, {}, {})", sig, bufnum, offset, reclevel, prelevel, run, loop_flag)
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let bufnum = a(1, 0.0);
+            let rate = a(2, 1.0);
+            let trig = a(3, 1.0);
+            let startpos = a(4, 0.0);
+            let looping = a(5, 0.0);
+            ctx.node("PlayBuf", Rate::Audio, vec![bufnum, rate, trig, startpos, looping, konst(0.0)], numchans, 0)
         }
         "local_buf" => {
-            // LocalBuf.new(numFrames, numChannels)
-            let frames = args.first().map(|s| s.as_str()).unwrap_or("2048");
-            let channels = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            format!("LocalBuf.new({}, {})", frames, channels)
+            let frames = a(0, 2048.0);
+            let channels = a(1, 1.0);
+            vec![ctx.node1("LocalBuf", Rate::Scalar, vec![channels, frames], 0)]
         }
 
         // Granular synthesis
-        "Dust" => {
-            let density = args.first().map(|s| s.as_str()).unwrap_or("10");
-            format!("Dust.ar({})", density)
-        }
-        "Impulse" => {
-            let freq = args.first().map(|s| s.as_str()).unwrap_or("1");
-            format!("Impulse.ar({})", freq)
-        }
+        "Dust" => vec![ctx.node1("Dust", Rate::Audio, vec![a(0, 10.0)], 0)],
+        "Impulse" => vec![ctx.node1("Impulse", Rate::Audio, vec![a(0, 1.0), konst(0.0)], 0)],
         "TRand" => {
-            let lo = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let hi = args.get(1).map(|s| s.as_str()).unwrap_or("1");
-            let trig = args.get(2).map(|s| s.as_str()).unwrap_or("Impulse.ar(1)");
-            format!("TRand.ar({}, {}, {})", lo, hi, trig)
+            let lo = a(0, 0.0);
+            let hi = a(1, 1.0);
+            let trig = if args.len() > 2 {
+                a(2, 0.0)
+            } else {
+                ctx.node1("Impulse", Rate::Audio, vec![konst(1.0), konst(0.0)], 0)
+            };
+            vec![ctx.node1("TRand", Rate::Audio, vec![lo, hi, trig], 0)]
         }
         "GrainBuf" => {
-            // GrainBuf.ar(numChannels, trigger, dur, sndbuf, rate, pos, interp, pan, envbufnum, maxGrains)
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(10)");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("0.1");
-            let sndbuf = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            let rate = args.get(4).map(|s| s.as_str()).unwrap_or("1");
-            let pos = args.get(5).map(|s| s.as_str()).unwrap_or("0");
-            let interp = args.get(6).map(|s| s.as_str()).unwrap_or("2");
-            let pan = args.get(7).map(|s| s.as_str()).unwrap_or("0");
-            let envbuf = args.get(8).map(|s| s.as_str()).unwrap_or("-1");
-            let maxgrains = args.get(9).map(|s| s.as_str()).unwrap_or("512");
-            format!(
-                "GrainBuf.ar({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-                numchans, trig, dur, sndbuf, rate, pos, interp, pan, envbuf, maxgrains
-            )
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let trig = a(1, 10.0);
+            let dur = a(2, 0.1);
+            let sndbuf = a(3, 0.0);
+            let rate = a(4, 1.0);
+            let pos = a(5, 0.0);
+            let interp = a(6, 2.0);
+            let pan = a(7, 0.0);
+            let envbuf = a(8, -1.0);
+            let maxgrains = a(9, 512.0);
+            ctx.node("GrainBuf", Rate::Audio, vec![trig, dur, sndbuf, rate, pos, interp, pan, envbuf, maxgrains], numchans, 0)
         }
         "GrainSin" => {
-            // GrainSin.ar(numChannels, trigger, dur, freq, pan, envbufnum, maxGrains)
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(10)");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("0.1");
-            let freq = args.get(3).map(|s| s.as_str()).unwrap_or("440");
-            let pan = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            let envbuf = args.get(5).map(|s| s.as_str()).unwrap_or("-1");
-            let maxgrains = args.get(6).map(|s| s.as_str()).unwrap_or("512");
-            format!(
-                "GrainSin.ar({}, {}, {}, {}, {}, {}, {})",
-                numchans, trig, dur, freq, pan, envbuf, maxgrains
-            )
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let trig = a(1, 10.0);
+            let dur = a(2, 0.1);
+            let freq = a(3, 440.0);
+            let pan = a(4, 0.0);
+            let envbuf = a(5, -1.0);
+            let maxgrains = a(6, 512.0);
+            ctx.node("GrainSin", Rate::Audio, vec![trig, dur, freq, pan, envbuf, maxgrains], numchans, 0)
         }
         "GrainFM" => {
-            // GrainFM.ar(numChannels, trigger, dur, carfreq, modfreq, index, pan, envbufnum, maxGrains)
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(10)");
-            let dur = args.get(2).map(|s| s.as_str()).unwrap_or("0.1");
-            let carfreq = args.get(3).map(|s| s.as_str()).unwrap_or("440");
-            let modfreq = args.get(4).map(|s| s.as_str()).unwrap_or("200");
-            let index = args.get(5).map(|s| s.as_str()).unwrap_or("1");
-            let pan = args.get(6).map(|s| s.as_str()).unwrap_or("0");
-            let envbuf = args.get(7).map(|s| s.as_str()).unwrap_or("-1");
-            let maxgrains = args.get(8).map(|s| s.as_str()).unwrap_or("512");
-            format!(
-                "GrainFM.ar({}, {}, {}, {}, {}, {}, {}, {}, {})",
-                numchans, trig, dur, carfreq, modfreq, index, pan, envbuf, maxgrains
-            )
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let trig = a(1, 10.0);
+            let dur = a(2, 0.1);
+            let carfreq = a(3, 440.0);
+            let modfreq = a(4, 200.0);
+            let index = a(5, 1.0);
+            let pan = a(6, 0.0);
+            let envbuf = a(7, -1.0);
+            let maxgrains = a(8, 512.0);
+            ctx.node("GrainFM", Rate::Audio, vec![trig, dur, carfreq, modfreq, index, pan, envbuf, maxgrains], numchans, 0)
         }
         "grains_t" => {
-            // TGrains.ar(numChannels, trigger, bufnum, rate, centerPos, dur, pan, amp, interp)
-            let numchans = args.first().map(|s| s.as_str()).unwrap_or("2");
-            let trig = args.get(1).map(|s| s.as_str()).unwrap_or("Impulse.ar(10)");
-            let bufnum = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            let rate = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            let centerpos = args.get(4).map(|s| s.as_str()).unwrap_or("0");
-            let dur = args.get(5).map(|s| s.as_str()).unwrap_or("0.1");
-            let pan = args.get(6).map(|s| s.as_str()).unwrap_or("0");
-            let amp = args.get(7).map(|s| s.as_str()).unwrap_or("0.1");
-            let interp = args.get(8).map(|s| s.as_str()).unwrap_or("4");
-            format!(
-                "TGrains.ar({}, {}, {}, {}, {}, {}, {}, {}, {})",
-                numchans, trig, bufnum, rate, centerpos, dur, pan, amp, interp
-            )
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let trig = a(1, 10.0);
+            let bufnum = a(2, 0.0);
+            let rate = a(3, 1.0);
+            let centerpos = a(4, 0.0);
+            let dur = a(5, 0.1);
+            let pan = a(6, 0.0);
+            let amp = a(7, 0.1);
+            let interp = a(8, 4.0);
+            ctx.node("TGrains", Rate::Audio, vec![trig, bufnum, rate, centerpos, dur, pan, amp, interp], numchans, 0)
         }
 
-        // Signal processing methods (not UGens!)
+        // Signal processing methods
         "Clip" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lo = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let hi = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("({}).clip({}, {})", sig, lo, hi)
+            let sig = a(0, 0.0);
+            let lo = a(1, 0.0);
+            let hi = a(2, 1.0);
+            let rate = ctx.rate_of(&[sig, lo, hi]);
+            vec![ctx.node1("Clip", rate, vec![sig, lo, hi], 0)]
         }
         "Wrap" => {
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let lo = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let hi = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            format!("({}).wrap({}, {})", sig, lo, hi)
+            let sig = a(0, 0.0);
+            let lo = a(1, 0.0);
+            let hi = a(2, 1.0);
+            let rate = ctx.rate_of(&[sig, lo, hi]);
+            vec![ctx.node1("Wrap", rate, vec![sig, lo, hi], 0)]
         }
         "LinLin" => {
-            // LinLin(sig, inMin, inMax, outMin, outMax) -> sig.linlin(inMin, inMax, outMin, outMax)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let in_min = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let in_max = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let out_min = args.get(3).map(|s| s.as_str()).unwrap_or("0");
-            let out_max = args.get(4).map(|s| s.as_str()).unwrap_or("1");
-            format!("({}).linlin({}, {}, {}, {})", sig, in_min, in_max, out_min, out_max)
+            let sig = a(0, 0.0);
+            let in_min = a(1, 0.0);
+            let in_max = a(2, 1.0);
+            let out_min = a(3, 0.0);
+            let out_max = a(4, 1.0);
+            vec![emit_lin_lin(ctx, sig, in_min, in_max, out_min, out_max)]
         }
         "LinExp" => {
-            // LinExp(sig, inMin, inMax, outMin, outMax) -> sig.linexp(inMin, inMax, outMin, outMax)
-            let sig = args.first().map(|s| s.as_str()).unwrap_or("0");
-            let in_min = args.get(1).map(|s| s.as_str()).unwrap_or("0");
-            let in_max = args.get(2).map(|s| s.as_str()).unwrap_or("1");
-            let out_min = args.get(3).map(|s| s.as_str()).unwrap_or("1");
-            let out_max = args.get(4).map(|s| s.as_str()).unwrap_or("2");
-            format!("({}).linexp({}, {}, {}, {})", sig, in_min, in_max, out_min, out_max)
+            let sig = a(0, 0.0);
+            let in_min = a(1, 0.0);
+            let in_max = a(2, 1.0);
+            let out_min = a(3, 1.0);
+            let out_max = a(4, 2.0);
+            vec![emit_lin_exp(ctx, sig, in_min, in_max, out_min, out_max)]
         }
 
         // Analysis feedback — send values back to Audion via OSC
         "send_reply" => {
-            let rate   = args.first().map(|s| s.as_str()).unwrap_or("10");
-            let addr   = args.get(1).map(|s| s.as_str()).unwrap_or("\"reply\"");
-            let values = args.get(2).map(|s| s.as_str()).unwrap_or("0");
-            // Convert SC string "/foo" → SC symbol '/foo' (required by SendReply)
-            let sc_addr = if addr.starts_with('"') && addr.ends_with('"') {
-                format!("'{}'", &addr[1..addr.len()-1])
-            } else {
-                addr.to_string()
-            };
+            let rate = a(0, 10.0);
+            let addr = args.get(1).copied().unwrap_or_else(|| konst(0.0));
+            let values = a(2, 0.0);
             // Rate is in Hz; silently cap at 100 to prevent OSC flooding.
-            // Wrap values in A2K in case any are audio-rate (e.g. Amplitude.ar).
-            format!("SendReply.kr(Impulse.kr(({}).min(100)), {}, A2K.kr({}), -1)", rate, sc_addr, values)
+            let capped = ctx.binop(binop::MIN, rate, konst(100.0));
+            let trig = ctx.node1("Impulse", Rate::Control, vec![capped, konst(0.0)], 0);
+            // A2K in case `values` is audio-rate (e.g. Amplitude.ar).
+            let values_k = ctx.node1("A2K", Rate::Control, vec![values], 0);
+            ctx.node("SendReply", Rate::Control, vec![trig, addr, values_k, konst(-1.0)], 0, 0)
         }
 
-        // Unknown — pass through as raw SC UGen
-        other => {
-            let args_str = args.join(", ");
-            format!("{}.ar({})", other, args_str)
-        }
+        // Unknown — pass through as a raw SC UGen name at audio rate.
+        other => vec![ctx.node1(other, Rate::Audio, args.to_vec(), 0)],
     }
+}
+
+/// Envelope shapes supported by `env()`/`env_perc()`, lowered to a literal
+/// Env array fed into `EnvGen`, matching `Env.perc`/`Env.asr`'s expansion
+/// (SCClassLibrary/Common/Audio/Env.sc):
+///   Env.perc(atk, rel, level=1, curve=-4)  -> levels [0, level, 0], no release node
+///   Env.asr(atk, susLevel, rel, curve=-4)  -> levels [0, susLevel, 0], releaseNode=1
+/// (`sus` in `env()`/Env.asr is a sustain LEVEL, not a hold duration — the
+/// envelope holds indefinitely at that level until `gate` drops.)
+enum EnvShape {
+    Perc(Input, Input, Input), // atk, rel, curve
+    Asr(Input, Input, Input),  // atk, susLevel, rel
+}
+
+fn done_action_f(input: Input) -> f32 {
+    if let Input::Constant(v) = input {
+        v
+    } else {
+        2.0
+    }
+}
+
+/// Build an `EnvGen.kr(Env.perc(...)/Env.asr(...), gate, doneAction: n)`
+/// equivalent. EnvGen's real server inputs are `[gate, levelScale,
+/// levelBias, timeScale, doneAction, initialLevel, numSegments,
+/// releaseNode, loopNode, then numSegments * (level, dur, shapeCode,
+/// curveValue)]` (levelScale/levelBias/timeScale default to 1/0/1 — audion
+/// doesn't expose them). A plain numeric curve (as opposed to a named
+/// shape like \sine) always encodes as shapeCode 5 with the number itself
+/// as curveValue.
+fn emit_env_gen(ctx: &mut BuildCtx, shape: EnvShape, gate: Input, done_action: f32) -> Input {
+    let (seg_levels, times, curve, release_node): (Vec<Input>, Vec<Input>, Input, f32) = match shape {
+        EnvShape::Perc(atk, rel, curve) => (vec![konst(1.0), konst(0.0)], vec![atk, rel], curve, -99.0),
+        EnvShape::Asr(atk, sus_level, rel) => (vec![sus_level, konst(0.0)], vec![atk, rel], konst(-4.0), 1.0),
+    };
+
+    let n = times.len();
+    let mut inputs = vec![
+        gate,
+        konst(1.0), // levelScale
+        konst(0.0), // levelBias
+        konst(1.0), // timeScale
+        konst(done_action),
+        konst(0.0),           // initialLevel
+        konst(n as f32),      // numSegments
+        konst(release_node),  // releaseNode
+        konst(-99.0),         // loopNode: none
+    ];
+    for i in 0..n {
+        inputs.push(seg_levels[i]);
+        inputs.push(times[i]);
+        inputs.push(konst(5.0)); // shapeCode 5 = numeric curve
+        inputs.push(curve);          // curveValue
+    }
+    ctx.node1("EnvGen", Rate::Control, inputs, 0)
+}
+
+/// `sig.linlin(inMin, inMax, outMin, outMax)` lowered to `MulAdd`:
+/// scale = (outMax-outMin)/(inMax-inMin); offset = outMin - inMin*scale.
+fn emit_lin_lin(ctx: &mut BuildCtx, sig: Input, in_min: Input, in_max: Input, out_min: Input, out_max: Input) -> Input {
+    let dst_span = ctx.binop(binop::SUB, out_max, out_min);
+    let src_span = ctx.binop(binop::SUB, in_max, in_min);
+    let scale = ctx.binop(binop::DIV, dst_span, src_span);
+    let scaled_in_min = ctx.binop(binop::MUL, scale, in_min);
+    let offset = ctx.binop(binop::SUB, out_min, scaled_in_min);
+    let rate = ctx.rate_of(&[sig, scale, offset]);
+    ctx.node1("MulAdd", rate, vec![sig, scale, offset], 0)
+}
+
+/// `sig.linexp(inMin, inMax, outMin, outMax)`:
+/// outMin * (outMax/outMin) ** ((sig-inMin)/(inMax-inMin))
+fn emit_lin_exp(ctx: &mut BuildCtx, sig: Input, in_min: Input, in_max: Input, out_min: Input, out_max: Input) -> Input {
+    let numer = ctx.binop(binop::SUB, sig, in_min);
+    let denom = ctx.binop(binop::SUB, in_max, in_min);
+    let ratio = ctx.binop(binop::DIV, numer, denom);
+    let out_ratio = ctx.binop(binop::DIV, out_max, out_min);
+    let log_out_ratio = ctx.unop(unop::LOG, out_ratio);
+    let scaled = ctx.binop(binop::MUL, ratio, log_out_ratio);
+    let expd = ctx.unop(unop::EXP, scaled);
+    ctx.binop(binop::MUL, out_min, expd)
 }
 
 /// Collect all sample file paths from a UGenExpr tree, in tree-walk order.
@@ -1382,7 +1517,6 @@ fn collect_sample_paths_inner(expr: &UGenExpr, paths: &mut Vec<String>) {
     match expr {
         UGenExpr::UGenCall { name, args, .. } => {
             if name == "sample" {
-                // First positional arg should be a StringLit (the file path)
                 if let Some(UGenExpr::StringLit(path)) = args.first() {
                     paths.push(path.clone());
                 }
@@ -1406,4 +1540,3 @@ fn collect_sample_paths_inner(expr: &UGenExpr, paths: &mut Vec<String>) {
         _ => {}
     }
 }
-

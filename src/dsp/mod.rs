@@ -14,33 +14,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 //
+//! Standalone SynthDef binary encoder — no sclang, no scsynth. `graph.rs`
+//! and `encoder.rs` are adapted from vibelang-dsp
+//! (https://github.com/trusch/vibelang, MIT OR Apache-2.0); `ctx.rs` is
+//! audion-original glue that lets `synthdef.rs` walk a `define` body and
+//! build the graph directly instead of emitting sclang source text.
 
-pub mod ast;
-pub mod builtins;
-pub mod define_cache;
-pub mod clock;
-pub mod defcompile;
-pub mod dsp;
-pub mod environment;
-pub mod error;
-pub mod interpreter;
-pub mod lexer;
-pub mod math;
-pub mod ml;
-pub mod strings;
-pub mod sequences;
-pub mod melodies;
-pub mod dmx;
-pub mod midi;
-pub mod osc;
-pub mod osc_protocol;
-pub mod parser;
-pub mod repl;
-pub mod sampler;
-pub mod scheduler;
-pub mod spec;
-pub mod sqlite;
-pub mod synthdef;
-pub mod token;
-pub mod ui;
-pub mod value;
+pub mod ctx;
+pub mod encoder;
+pub mod errors;
+pub mod graph;

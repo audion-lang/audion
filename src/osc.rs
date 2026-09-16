@@ -161,7 +161,7 @@ impl OscClient {
     /// (`sclang::synthdef_output_dir()`), keyed by SynthDef name so re-
     /// defining just overwrites it.
     pub fn load_synthdef(&self, name: &str, synthdef_bytes: &[u8]) {
-        let dir = crate::sclang::synthdef_output_dir();
+        let dir = crate::defcompile::synthdef_output_dir();
         let path = std::path::Path::new(&dir).join(format!("{}.scsyndef", name));
         if let Err(e) = std::fs::write(&path, synthdef_bytes) {
             eprintln!("warning: failed to write SynthDef '{}' to {}: {}", name, path.display(), e);

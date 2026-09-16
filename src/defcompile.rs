@@ -14,33 +14,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 //
+//! SynthDef compilation used to shell out to sclang; `synthdef.rs` now
+//! builds and encodes SynthDef binaries directly (see `src/dsp/`). This
+//! module just keeps the shared output directory that `osc.rs::load_synthdef`
+//! writes `.scsyndef` files into for `/d_load`.
 
-pub mod ast;
-pub mod builtins;
-pub mod define_cache;
-pub mod clock;
-pub mod defcompile;
-pub mod dsp;
-pub mod environment;
-pub mod error;
-pub mod interpreter;
-pub mod lexer;
-pub mod math;
-pub mod ml;
-pub mod strings;
-pub mod sequences;
-pub mod melodies;
-pub mod dmx;
-pub mod midi;
-pub mod osc;
-pub mod osc_protocol;
-pub mod parser;
-pub mod repl;
-pub mod sampler;
-pub mod scheduler;
-pub mod spec;
-pub mod sqlite;
-pub mod synthdef;
-pub mod token;
-pub mod ui;
-pub mod value;
+/// Per-process SynthDef output directory. Keyed by PID so two audion
+/// processes writing/loading the SAME SynthDef name at the same time never
+/// clobber each other's `.scsyndef` file.
+pub fn synthdef_output_dir() -> String {
+    let dir = std::env::temp_dir().join(format!("audion_synthdefs_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().to_string()
+}

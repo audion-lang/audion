@@ -251,6 +251,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "os_process_id", "os_pid",
     "os_process_parent_id", "os_ppid",
     "os_current_working_directory", "os_cwd",
+    "os_script_dir",
     "os_current_working_directory_change", "os_chdir",
     "os_arguments", "os_args",
     "os_exit",
@@ -497,6 +498,7 @@ pub fn call_builtin(
         "os_process_id" | "os_pid" => builtin_os_process_id(),
         "os_process_parent_id" | "os_ppid" => builtin_os_process_parent_id(),
         "os_current_working_directory" | "os_cwd" => builtin_os_cwd(),
+        "os_script_dir" => builtin_os_script_dir(base_path),
         "os_current_working_directory_change" | "os_chdir" => builtin_os_chdir(args),
         "os_arguments" | "os_args" => builtin_os_arguments(env),
         "os_exit" => builtin_os_exit(args),
@@ -3966,6 +3968,23 @@ fn builtin_os_cwd() -> Result<Value> {
             msg: format!("os_cwd() failed: {}", e),
         }),
     }
+}
+
+// os_script_dir() → absolute directory of the .au file currently executing
+// (the file being run, or the file an `include` is inside, at the point of
+// the call — NOT the process's working directory, which changes depending on
+// where `audion run` happens to be invoked from). Use this for paths that
+// must always resolve next to the script regardless of cwd, e.g. sibling
+// data files a script reads/writes at runtime.
+fn builtin_os_script_dir(base_path: &std::path::Path) -> Result<Value> {
+    let abs = if base_path.is_absolute() {
+        base_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(base_path))
+            .unwrap_or_else(|_| base_path.to_path_buf())
+    };
+    Ok(Value::String(abs.to_string_lossy().to_string()))
 }
 
 fn builtin_os_chdir(args: &[Value]) -> Result<Value> {

@@ -1085,6 +1085,95 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
 
+            // function_widget.points() — the sparse breakpoints actually being
+            // edited (x, y, curve — each 0..1/-1..1, NOT scaled to min/max),
+            // as opposed to .value()'s fully resampled N-point buffer. Use
+            // this for save/restore so a curve with a handful of drag points
+            // round-trips as a handful of drag points, not hundreds of them.
+            Value::WidgetRef(state_arc) if method == "points" => {
+                use crate::ui::WidgetValue;
+                let state = state_arc.lock().unwrap();
+                if let WidgetValue::Function(fd_arc) = &state.value {
+                    let fd = fd_arc.lock().unwrap();
+                    let mut arr = crate::value::AudionArray::new();
+                    for p in &fd.points {
+                        let mut pt = crate::value::AudionArray::new();
+                        pt.set(Value::String("x".to_string()), Value::Number(p.x as f64));
+                        pt.set(Value::String("y".to_string()), Value::Number(p.y as f64));
+                        pt.set(Value::String("curve".to_string()), Value::Number(p.curve as f64));
+                        arr.push_auto(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(pt))));
+                    }
+                    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr))))
+                } else {
+                    Err(AudionError::RuntimeError {
+                        msg: "widget.points() is only valid on a function() widget".to_string(),
+                    })
+                }
+            }
+
+            // function_widget.set_points([{x,y,curve}, ...]) — restore exactly
+            // the breakpoints from a prior .points() call (the counterpart
+            // save/load pair for curve widgets).
+            Value::WidgetRef(state_arc) if method == "set_points" => {
+                use crate::ui::WidgetValue;
+                let arr = args.first().and_then(|v| if let Value::Array(a) = v { Some(a.clone()) } else { None })
+                    .ok_or_else(|| AudionError::RuntimeError {
+                        msg: "widget.set_points() requires an array of {x,y,curve} points".to_string(),
+                    })?;
+                let mut state = state_arc.lock().unwrap();
+                if !matches!(state.value, WidgetValue::Function(_)) {
+                    return Err(AudionError::RuntimeError {
+                        msg: "widget.set_points() is only valid on a function() widget".to_string(),
+                    });
+                }
+                let guard = arr.lock().unwrap();
+                let mut points: Vec<crate::ui::FunctionPoint> = Vec::new();
+                for (_, v) in guard.entries().iter() {
+                    if let Value::Array(pt) = v {
+                        let pg = pt.lock().unwrap();
+                        let get = |key: &str| -> f32 {
+                            pg.entries().iter()
+                                .find(|(k, _)| matches!(k, Value::String(s) if s == key))
+                                .and_then(|(_, v)| v.as_number())
+                                .unwrap_or(0.0) as f32
+                        };
+                        points.push(crate::ui::FunctionPoint { x: get("x"), y: get("y"), curve: get("curve") });
+                    }
+                }
+                drop(guard);
+                if points.len() >= 2 {
+                    if let WidgetValue::Function(fd_arc) = &state.value {
+                        let mut fd = fd_arc.lock().unwrap();
+                        fd.points = points;
+                        fd.generation += 1;
+                    }
+                }
+                Ok(Value::Nil)
+            }
+
+            // dropdown_widget.set_options([...]) — refresh the option list at
+            // runtime (e.g. after scanning a directory for preset files).
+            // Clamps the current selection if it now falls outside the list.
+            Value::WidgetRef(state_arc) if method == "set_options" => {
+                let arr = args.first().and_then(|v| if let Value::Array(a) = v { Some(a.clone()) } else { None })
+                    .ok_or_else(|| AudionError::RuntimeError {
+                        msg: "widget.set_options() requires an array of strings".to_string(),
+                    })?;
+                let guard = arr.lock().unwrap();
+                let options: Vec<String> = guard.entries().iter()
+                    .filter_map(|(_, v)| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .collect();
+                drop(guard);
+                let mut state = state_arc.lock().unwrap();
+                state.config.options = options;
+                let max_idx = (state.config.options.len() as f64 - 1.0).max(0.0);
+                if let crate::ui::WidgetValue::Float(idx) = &mut state.value {
+                    if *idx > max_idx { *idx = max_idx; }
+                    if *idx < 0.0 { *idx = 0.0; }
+                }
+                Ok(Value::Nil)
+            }
+
             // function_widget.bufnum() — allocate (once) the scsynth buffer backing
             // this curve and return its id, without forcing a write.
             Value::WidgetRef(state_arc) if method == "bufnum" => {
@@ -1477,6 +1566,13 @@ impl Interpreter {
                     }
                 }
                 Ok(Value::Nil)
+            }
+
+            // widget.min() / widget.max() with no argument act as getters
+            // (return the current bound) instead of setters.
+            Value::WidgetRef(state_arc) if args.is_empty() && matches!(method, "min" | "max") => {
+                let state = state_arc.lock().unwrap();
+                Ok(Value::Number(if method == "min" { state.config.min } else { state.config.max }))
             }
 
             Value::WidgetRef(state_arc) if matches!(method, "min" | "max" | "label" | "style" | "width" | "height") => {

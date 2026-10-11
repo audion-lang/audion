@@ -235,9 +235,21 @@ pub enum Value {
     Function {
         name: String,
         params: Vec<Param>,
-        body: Box<Stmt>,
+        /// `Arc` rather than `Box` so every `Value::Function` minted from the
+        /// same declaration site can share one body and a hot-reload can
+        /// swap it for all of them in one atomic pointer write (see
+        /// `Interpreter::fn_registry`), instead of each instance owning an
+        /// independent deep copy.
+        body: Arc<Stmt>,
         closure: Arc<Mutex<Environment>>,
         file: String,
+        /// Dotted path to this function's declaration site (e.g.
+        /// `"drum_sequencer.do_mutate"`), set when the function is declared
+        /// as a named `fn` or bound via `let name = fn() {...}`. `None` for
+        /// anonymous closures, which aren't hot-patchable by name.
+        /// Call sites use this to re-check `Interpreter::fn_registry` for a
+        /// newer body before running one.
+        qualified_path: Option<String>,
     },
     BuiltinFn(String),
     Bytes(Vec<u8>),
@@ -335,6 +347,7 @@ impl Value {
                         body,
                         closure,
                         file,
+                        qualified_path,
                     } = value
                     {
                         let new_closure = if Arc::ptr_eq(closure, env_arc) {
@@ -347,9 +360,12 @@ impl Value {
                             Value::Function {
                                 name: fn_name.clone(),
                                 params: params.clone(),
-                                body: Box::new(*body.clone()),
+                                // Shared, not deep-cloned: this instance and the
+                                // original should see the same hot-patched body.
+                                body: body.clone(),
                                 closure: new_closure,
                                 file: file.clone(),
+                                qualified_path: qualified_path.clone(),
                             },
                         );
                     }

@@ -2938,9 +2938,15 @@ fn call_user_function(
                 }
             }
 
-            // Create temporary interpreter to execute the callback
+            // Create temporary interpreter to execute the callback. Caches are
+            // throwaway and isolated here (matches the pre-existing pattern
+            // for this helper), so this callback path doesn't participate in
+            // hot-reload patching — only the main program and `thread{}`
+            // bodies do.
             let synthdef_cache = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
             let define_cache = std::sync::Arc::new(std::sync::Mutex::new(crate::define_cache::DefineCache::new()));
+            let fn_registry = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+            let loop_registry = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
             let mut interp = crate::interpreter::Interpreter::new_for_thread(
                 call_env,
                 osc.clone(),
@@ -2953,6 +2959,8 @@ fn call_user_function(
                 synthdef_cache,
                 define_cache,
                 base_path.to_path_buf(),
+                fn_registry,
+                loop_registry,
             );
 
             match interp.exec_stmt(body)? {

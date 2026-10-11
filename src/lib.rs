@@ -23,6 +23,7 @@ pub mod defcompile;
 pub mod dsp;
 pub mod environment;
 pub mod error;
+pub mod hotreload;
 pub mod interpreter;
 pub mod lexer;
 pub mod math;

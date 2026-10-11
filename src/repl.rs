@@ -63,7 +63,9 @@ pub fn run_repl(server: &str, bpm: f64) {
 
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(crate::define_cache::DefineCache::new()));
-    let mut interpreter = Interpreter::new(env, osc, midi, dmx, osc_proto, clock, shutdown, false, synthdef_cache, define_cache);
+    let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let mut interpreter = Interpreter::new(env, osc, midi, dmx, osc_proto, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
 
     // Store command-line arguments
     let args: Vec<String> = std::env::args().collect();

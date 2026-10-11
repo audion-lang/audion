@@ -32,6 +32,7 @@ mod dmx;
 mod dsp;
 mod environment;
 mod error;
+mod hotreload;
 mod interpreter;
 mod lexer;
 mod math;
@@ -161,12 +162,14 @@ fn make_interpreter(
     debug_sclang: bool,
     synthdef_cache: &Arc<Mutex<std::collections::HashMap<String, (u64, Vec<u8>)>>>,
     define_cache: &Arc<Mutex<define_cache::DefineCache>>,
+    fn_registry: &interpreter::FnRegistry,
+    loop_registry: &interpreter::LoopRegistry,
     args: &[String],
     base_path: &Option<PathBuf>,
 ) -> interpreter::Interpreter {
     let env = Arc::new(Mutex::new(environment::Environment::new()));
     let mut interp = interpreter::Interpreter::new(
-        env, osc.clone(), midi.clone(), dmx_client.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(), define_cache.clone(),
+        env, osc.clone(), midi.clone(), dmx_client.clone(), osc_proto.clone(), clock_inst.clone(), shutdown.clone(), debug_sclang, synthdef_cache.clone(), define_cache.clone(), fn_registry.clone(), loop_registry.clone(),
     );
     interp.set_args(args.to_vec());
     if let Some(ref bp) = base_path {
@@ -184,6 +187,14 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(define_cache::DefineCache::new()));
+    // Shared across every reload in watch mode (unlike synthdef_cache, this
+    // *is* the running program's code) so a hot-patched function body stays
+    // visible to already-running threads after the Interpreter that defined
+    // it has been replaced. See hotreload.rs.
+    let fn_registry: interpreter::FnRegistry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    // Same lifetime/sharing story as fn_registry, for named threads' loop
+    // bodies instead of named functions' bodies. See hotreload.rs.
+    let loop_registry: interpreter::LoopRegistry = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // Lookahead scheduler: sequencer threads run `latency()` seconds ahead and
     // this dispatches their events (timestamped OSC bundles to scsynth, exact
@@ -227,7 +238,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             let interp_done = Arc::new(AtomicBool::new(false));
             let interp_done_bg = interp_done.clone();
             let osc_bg = osc.clone();
-            let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
+            let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &fn_registry, &loop_registry, &args, &base_path);
             interp.current_file = file_name.clone();
             let _interp_thread = thread::spawn(move || {
                 // This thread (not the process main thread, which eframe owns in
@@ -258,7 +269,7 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
             return;
         }
 
-        let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
+        let mut interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &fn_registry, &loop_registry, &args, &base_path);
         interp.current_file = file_name.clone();
         if let Err(e) = interp.run(&stmts) {
             eprintln!("{}", e);
@@ -277,13 +288,48 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     // -- Watch mode --
     let mut interp: Option<interpreter::Interpreter> = None;
     let source = read_source(path);
-    let mut last_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    // Tracks mtimes for the entry script *and* every file it `include`s, so
+    // editing an include triggers a reload too, not just the entry script.
+    // Repopulated after each full reload since includes can change.
+    let mut watched_mtimes: std::collections::HashMap<PathBuf, Option<std::time::SystemTime>> =
+        std::collections::HashMap::new();
+    watched_mtimes.insert(path.clone(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+
+    // Last-known-good parse of the entry script and of every included file,
+    // scoped by canonical path. Used only to attempt the no-teardown
+    // hot-patch path (see hotreload.rs) — a full reload always re-derives
+    // these from scratch afterward, so a stale/missing entry here just means
+    // falling back to a full reload, never incorrect behavior.
+    let mut entry_stmts: Vec<ast::Stmt> = Vec::new();
+    let mut include_stmts: std::collections::HashMap<PathBuf, Vec<ast::Stmt>> = std::collections::HashMap::new();
+    let entry_base_path_str = base_path.clone().unwrap_or_else(|| PathBuf::from(".")).display().to_string();
+
+    fn snapshot_includes(paths: &[PathBuf]) -> std::collections::HashMap<PathBuf, Vec<ast::Stmt>> {
+        let mut map = std::collections::HashMap::new();
+        for p in paths {
+            if let Ok(src) = std::fs::read_to_string(p) {
+                if let Some(stmts) = try_compile(&src, "watch: ") {
+                    map.insert(p.clone(), stmts);
+                }
+            }
+        }
+        map
+    }
 
     if let Some(stmts) = try_compile(&source, "watch: ") {
-        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &fn_registry, &loop_registry, &args, &base_path);
         new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
-            Ok(_) => { interp = Some(new_interp); }
+            Ok(_) => {
+                let included = new_interp.included_file_paths();
+                for p in &included {
+                    let mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                    watched_mtimes.insert(p.clone(), mtime);
+                }
+                entry_stmts = stmts;
+                include_stmts = snapshot_includes(&included);
+                interp = Some(new_interp);
+            }
             Err(e) => { eprintln!("{}", e); }
         }
     }
@@ -292,12 +338,113 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
     loop {
         std::thread::sleep(Duration::from_millis(500));
 
-        let new_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        if new_mtime == last_mtime {
+        let changed_paths: Vec<PathBuf> = watched_mtimes.iter().filter_map(|(p, last)| {
+            let current = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+            if current != *last { Some(p.clone()) } else { None }
+        }).collect();
+        if changed_paths.is_empty() {
             continue;
         }
-        last_mtime = new_mtime;
 
+        // Try the no-teardown path first: every changed file must itself
+        // re-parse cleanly *and* diff as "only things this module knows how
+        // to patch/restart changed" against what's currently running. Any
+        // failure anywhere falls back to the full reload below — never
+        // applies a partial plan.
+        let mut fast_plan = hotreload::ReloadPlan::default();
+        let mut fast_path_ok = interp.is_some() && !entry_stmts.is_empty();
+        let mut new_entry_stmts: Option<Vec<ast::Stmt>> = None;
+        let mut new_include_stmts: std::collections::HashMap<PathBuf, Vec<ast::Stmt>> = std::collections::HashMap::new();
+
+        if fast_path_ok {
+            for p in &changed_paths {
+                let src = match std::fs::read_to_string(p) {
+                    Ok(s) => s,
+                    Err(_) => { fast_path_ok = false; break; }
+                };
+                let stmts = match try_compile(&src, "watch: ") {
+                    Some(s) => s,
+                    None => { fast_path_ok = false; break; }
+                };
+                let (old_stmts, base_str, file_str): (&[ast::Stmt], String, String) = if p == path {
+                    (&entry_stmts, entry_base_path_str.clone(), file_name.clone())
+                } else {
+                    match include_stmts.get(p) {
+                        Some(old) => (
+                            old,
+                            p.parent().unwrap_or(std::path::Path::new(".")).display().to_string(),
+                            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                        ),
+                        // Never seen this included file's previous content
+                        // (e.g. it was added since the last full reload) —
+                        // can't diff it, so don't guess.
+                        None => { fast_path_ok = false; break; }
+                    }
+                };
+                match hotreload::diff_for_patch(old_stmts, &stmts, &base_str, &file_str) {
+                    Some(mut plan) => {
+                        fast_plan.fn_patches.append(&mut plan.fn_patches);
+                        fast_plan.thread_actions.append(&mut plan.thread_actions);
+                    }
+                    None => { fast_path_ok = false; break; }
+                }
+                if p == path {
+                    new_entry_stmts = Some(stmts);
+                } else {
+                    new_include_stmts.insert(p.clone(), stmts);
+                }
+            }
+        }
+
+        if fast_path_ok {
+            let n_fns = fast_plan.fn_patches.len();
+            {
+                let mut registry = fn_registry.lock().unwrap();
+                for (qualified_path, body) in fast_plan.fn_patches {
+                    registry.insert(qualified_path, body);
+                }
+            }
+            let mut n_loop_swaps = 0;
+            let mut n_restarts = 0;
+            if let Some(ref mut live) = interp {
+                for (thread_name, action) in fast_plan.thread_actions {
+                    match action {
+                        hotreload::ThreadAction::LoopSwap { new_loop_body } => {
+                            live.swap_loop_body(&thread_name, new_loop_body);
+                            n_loop_swaps += 1;
+                        }
+                        hotreload::ThreadAction::Restart { new_body } => {
+                            if live.restart_thread(&thread_name, new_body) {
+                                n_restarts += 1;
+                            } else {
+                                eprintln!(
+                                    "watch: couldn't restart thread '{}' (not spawned by the top-level script) — leaving it running on its old code",
+                                    thread_name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(s) = new_entry_stmts {
+                entry_stmts = s;
+            }
+            for (p, s) in new_include_stmts {
+                include_stmts.insert(p.clone(), s);
+                let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+                watched_mtimes.insert(p, mtime);
+            }
+            if changed_paths.iter().any(|p| p == path) {
+                watched_mtimes.insert(path.clone(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+            }
+            eprintln!(
+                "hot-patched {} function(s), {} thread loop(s) swapped in place, {} thread(s) restarted",
+                n_fns, n_loop_swaps, n_restarts
+            );
+            continue;
+        }
+
+        // Fall back: full teardown and rebuild, same as always.
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -321,16 +468,27 @@ fn run_file(path: &PathBuf, server: &str, bpm: f64, debug_sclang: bool, watch: b
         }
 
         builtins::reset_assert_stats();
-        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &args, &base_path);
+        let mut new_interp = make_interpreter(&osc, &midi, &dmx_client, &osc_proto, &clock_inst, &shutdown, debug_sclang, &synthdef_cache, &define_cache, &fn_registry, &loop_registry, &args, &base_path);
         new_interp.current_file = file_name.clone();
         match new_interp.run_without_join(&stmts) {
             Ok(_) => {
                 eprintln!("reloaded {}", path.display());
+                watched_mtimes.clear();
+                watched_mtimes.insert(path.clone(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+                let included = new_interp.included_file_paths();
+                for p in &included {
+                    let mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                    watched_mtimes.insert(p.clone(), mtime);
+                }
+                entry_stmts = stmts;
+                include_stmts = snapshot_includes(&included);
                 interp = Some(new_interp);
             }
             Err(e) => {
                 eprintln!("watch: runtime error: {}", e);
                 interp = None;
+                entry_stmts = Vec::new();
+                include_stmts.clear();
             }
         }
     }

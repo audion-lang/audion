@@ -222,3 +222,29 @@ pub enum Stmt {
         path: Vec<String>,
     },
 }
+
+/// Splits a `thread{}` body into its one-time setup statements and, if the
+/// body ends in an unconditional `loop{}`/`while{}` (the idiom every
+/// long-running sequencer thread in practice follows — see breaks_seq.au),
+/// that trailing loop construct.
+///
+/// This is the boundary hot-reload treats differently (see hotreload.rs and
+/// `Interpreter::swap_loop_body`/`restart_thread`): the setup statements ran
+/// once already and can't be safely re-run without resetting whatever
+/// thread-local state they established, but the loop body runs forever and
+/// can be swapped out in place at the next iteration boundary — no lost
+/// beat, no reset state. A body that doesn't match this shape has no
+/// swappable part; the whole thing is "setup" and any change needs a
+/// restart.
+pub fn split_thread_body(body: &Stmt) -> (&[Stmt], Option<&Stmt>) {
+    if let Stmt::Block(stmts) = body {
+        if let Some(last) = stmts.last() {
+            if matches!(last, Stmt::Loop { .. } | Stmt::While { .. }) {
+                return (&stmts[..stmts.len() - 1], Some(last));
+            }
+        }
+        (&stmts[..], None)
+    } else {
+        (std::slice::from_ref(body), None)
+    }
+}

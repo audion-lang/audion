@@ -1354,7 +1354,9 @@ fn test_midi_note_requires_args() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache);
+    let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
 
     let mut lex = Lexer::new("midi_note(60);");
     let tokens = lex.tokenize().unwrap();
@@ -1374,7 +1376,9 @@ fn test_midi_cc_requires_args() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache);
+    let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
 
     let mut lex = Lexer::new("midi_cc(1);");
     let tokens = lex.tokenize().unwrap();
@@ -1566,7 +1570,9 @@ fn test_osc_send_no_args_is_error() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache);
+    let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
 
     let mut lex = Lexer::new("osc_send();");
     let tokens = lex.tokenize().unwrap();
@@ -1610,7 +1616,9 @@ fn test_osc_send_loopback() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let synthdef_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache);
+    let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
 
     let src = r#"
         osc_listen(19876);

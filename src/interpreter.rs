@@ -73,10 +73,93 @@ fn hash_synthdef(name: &str, params: &[String], body: &UGenExpr) -> u64 {
     hasher.finish()
 }
 
+/// Runs a spawned thread's body, with its trailing `loop{}`/`while{}` (if
+/// any — see `ast::split_thread_body`) re-fetched from `loop_registry` once
+/// per iteration instead of running a fixed, captured AST forever. This is
+/// what lets `Interpreter::swap_loop_body` patch an already-running
+/// thread's loop logic without killing it: the swap is just a write to a
+/// shared map, and this is the only place that ever reads it back.
+///
+/// Setup statements (everything before the trailing loop) still only run
+/// once, exactly as today — they're not re-fetched or re-run, which is why
+/// a change to *them* needs `Interpreter::restart_thread` instead.
+fn run_thread_body_hot(interp: &mut Interpreter, thread_name: &str, body: Arc<Stmt>) {
+    let (setup, loop_part) = crate::ast::split_thread_body(&body);
+    for stmt in setup {
+        if interp.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(e) = interp.exec_stmt(stmt) {
+            eprintln!("thread '{}' error: {}", thread_name, e);
+            return;
+        }
+    }
+    let loop_part = match loop_part {
+        Some(l) => l.clone(),
+        // No trailing loop construct — nothing left to run, and nothing to
+        // register either (there's no loop to ever hot-swap).
+        None => return,
+    };
+    {
+        // Seed, don't overwrite: a patch may already be queued for this
+        // thread name (e.g. this is a restart following a loop-body swap
+        // that arrived while the thread was being killed and respawned).
+        let mut reg = interp.loop_registry.lock().unwrap();
+        reg.entry(thread_name.to_string()).or_insert_with(|| Arc::new(loop_part.clone()));
+    }
+
+    loop {
+        if interp.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        let current = interp.loop_registry.lock().unwrap().get(thread_name).cloned();
+        let current = current.unwrap_or_else(|| Arc::new(loop_part.clone()));
+        let step_result = match current.as_ref() {
+            Stmt::Loop { body: inner } => interp.exec_stmt(inner),
+            Stmt::While { cond, body: inner } => match interp.eval_expr(cond) {
+                Ok(v) if !v.is_truthy() => return,
+                Ok(_) => interp.exec_stmt(inner),
+                Err(e) => Err(e),
+            },
+            // split_thread_body only ever returns Loop/While as the loop part.
+            _ => return,
+        };
+        match step_result {
+            Ok(ControlFlow::Break) => return,
+            Ok(ControlFlow::Return(_)) => return,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("thread '{}' error: {}", thread_name, e);
+                return;
+            }
+        }
+    }
+}
+
 /// Cache entry for a compiled SynthDef: (ast_hash, compiled_bytes)
 pub type SynthDefCache = Arc<Mutex<HashMap<String, (u64, Vec<u8>)>>>;
 
 pub type SharedDefineCache = Arc<Mutex<crate::define_cache::DefineCache>>;
+
+/// Live bodies of every named function, keyed by qualified declaration path
+/// (e.g. `"drum_sequencer.do_mutate"`). Shared across the main interpreter and
+/// every thread's own `Interpreter` instance, and persisted across watch-mode
+/// reloads (unlike `synthdef_cache`'s hits/misses, this *is* the running
+/// program's code) so a hot-reload can overwrite one entry and have every
+/// `Value::Function` minted from that declaration site — no matter how many
+/// times it's been called, no matter which thread holds a copy — pick up the
+/// new body on its very next call. See `hotreload.rs`.
+pub type FnRegistry = Arc<Mutex<HashMap<String, Arc<Stmt>>>>;
+
+/// Current loop body for each named `thread{}` that has one (see
+/// `ast::split_thread_body`), keyed by thread name. Shared between the main
+/// interpreter and every thread's own `Interpreter` instance: a thread
+/// polls its own entry once per iteration (see `run_thread_body_hot` in
+/// this file) and picks up whatever's current without ever being killed —
+/// the "no lost beat" half of hot-reload. Threads whose body doesn't end in
+/// an unconditional loop aren't swappable this way and have no entry here;
+/// see `Interpreter::restart_thread` for that case instead.
+pub type LoopRegistry = Arc<Mutex<HashMap<String, Arc<Stmt>>>>;
 
 pub struct Interpreter {
     pub env: Arc<Mutex<Environment>>,
@@ -100,6 +183,25 @@ pub struct Interpreter {
     /// Persistent disk cache for compiled SynthDefs.
     /// Survives process restarts; consulted when the in-memory cache misses.
     pub define_cache: SharedDefineCache,
+    /// Shared live-body registry for hot-patchable named functions (see
+    /// `FnRegistry`). Consulted by every call site before running a
+    /// `Value::Function` that carries a `qualified_path`.
+    pub fn_registry: FnRegistry,
+    /// Shared live loop-body registry for named threads (see `LoopRegistry`).
+    pub loop_registry: LoopRegistry,
+    /// The environment each currently-tracked named thread was spawned
+    /// against (its spawn-time parent, not the child env created for it) —
+    /// so `restart_thread` can respawn against the exact same shared state
+    /// (e.g. a factory's `patterns`/`tension` maps) instead of a disconnected
+    /// fresh one. Not shared: only ever touched by the `Interpreter`
+    /// instance that actually ran the `thread{}` statement, same as
+    /// `thread_handles`.
+    thread_spawn_envs: HashMap<String, Arc<Mutex<Environment>>>,
+    /// Dotted path of enclosing named-function declarations currently being
+    /// executed (pushed on call entry, popped on exit), used to compute the
+    /// qualified path of any `fn`/`let name = fn(){}` declared while running
+    /// inside them. Per call stack, not shared.
+    fn_path_stack: Vec<String>,
 }
 
 impl Interpreter {
@@ -114,6 +216,8 @@ impl Interpreter {
         debug_sclang: bool,
         synthdef_cache: SynthDefCache,
         define_cache: SharedDefineCache,
+        fn_registry: FnRegistry,
+        loop_registry: LoopRegistry,
     ) -> Self {
         // Register builtins in the environment (single source of truth: builtins::BUILTIN_NAMES)
         {
@@ -140,6 +244,10 @@ impl Interpreter {
             debug_sclang,
             synthdef_cache,
             define_cache,
+            fn_registry,
+            loop_registry,
+            thread_spawn_envs: HashMap::new(),
+            fn_path_stack: Vec::new(),
         }
     }
 
@@ -155,6 +263,8 @@ impl Interpreter {
         synthdef_cache: SynthDefCache,
         define_cache: SharedDefineCache,
         base_path: PathBuf,
+        fn_registry: FnRegistry,
+        loop_registry: LoopRegistry,
     ) -> Self {
         Interpreter {
             env,
@@ -173,11 +283,38 @@ impl Interpreter {
             debug_sclang,
             synthdef_cache,
             define_cache,
+            fn_registry,
+            loop_registry,
+            thread_spawn_envs: HashMap::new(),
+            fn_path_stack: Vec::new(),
         }
     }
 
     pub fn set_base_path(&mut self, path: PathBuf) {
         self.base_path = path;
+    }
+
+    /// Dotted qualified path for a function/thread named `name`, given which
+    /// named functions are currently being executed (`fn_path_stack`). E.g.
+    /// declaring `do_mutate` while running inside `drum_sequencer` yields
+    /// `"drum_sequencer.do_mutate"`. This is purely lexical (based on the
+    /// live call stack of *named* functions, not on how many times any of
+    /// them has been called), which is what lets every instance minted from
+    /// the same declaration site share one hot-patchable registry entry —
+    /// see `FnRegistry`.
+    fn qualify_path(&self, name: &str) -> String {
+        match self.fn_path_stack.last() {
+            // Nested: the enclosing entry is already a full, file-scoped
+            // path (it was computed the same way), so just extend it — do
+            // NOT join the whole stack, or multi-level call nesting would
+            // repeat prefixes that are already baked into each entry.
+            Some(parent) => format!("{}.{}", parent, name),
+            // Top-level: scope by file, not just name. Two `include`d files
+            // can each declare a same-named top-level `fn` (they're isolated
+            // by Environment today) — without this prefix both would collide
+            // on one registry entry and silently shadow each other.
+            None => format!("{}/{}::{}", self.base_path.display(), self.current_file, name),
+        }
     }
 
     /// Store command-line arguments in the environment as __ARGS__ array
@@ -286,6 +423,36 @@ impl Interpreter {
                 let val = match init {
                     Some(expr) => self.eval_expr(expr).map_err(|e| e.at_line(*line, &self.current_file))?.deep_clone(),
                     None => Value::Nil,
+                };
+                // `let name = fn() {...}` declares a function just as much as
+                // `fn name() {...}` does — tag it the same way so it's
+                // hot-patchable and shares a registry entry with every other
+                // instance minted from this exact `let`, the same way a
+                // nested `fn` inside a factory does. Only applies to a
+                // function fresh off an `Expr::FnExpr` (qualified_path still
+                // unset); a `let` that just rebinds an existing function
+                // value is not a new declaration site.
+                let val = if let Value::Function { name: fname, params, body, closure, file, qualified_path: None } = &val {
+                    if fname == "<anonymous>" {
+                        let qualified_path = self.qualify_path(name);
+                        self.fn_registry
+                            .lock()
+                            .unwrap()
+                            .entry(qualified_path.clone())
+                            .or_insert_with(|| body.clone());
+                        Value::Function {
+                            name: name.clone(),
+                            params: params.clone(),
+                            body: body.clone(),
+                            closure: closure.clone(),
+                            file: file.clone(),
+                            qualified_path: Some(qualified_path),
+                        }
+                    } else {
+                        val
+                    }
+                } else {
+                    val
                 };
                 self.env.lock().unwrap().define(name.clone(), val);
                 Ok(ControlFlow::None)
@@ -429,12 +596,26 @@ impl Interpreter {
             Stmt::Break => Ok(ControlFlow::Break),
             Stmt::Continue => Ok(ControlFlow::Continue),
             Stmt::FnDecl { name, params, body } => {
+                let qualified_path = self.qualify_path(name);
+                let body: Arc<Stmt> = Arc::new((**body).clone());
+                // Seed, don't overwrite: a hot-reload patch (hotreload.rs) may
+                // already hold a newer body for this path than whatever this
+                // particular execution of the declaration carries (e.g. a
+                // second call to an already-patched factory function running
+                // off a stale, not-yet-reparsed AST). Only the patch path is
+                // allowed to overwrite an existing entry.
+                self.fn_registry
+                    .lock()
+                    .unwrap()
+                    .entry(qualified_path.clone())
+                    .or_insert_with(|| body.clone());
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
-                    body: body.clone(),
+                    body,
                     closure: self.env.clone(),
                     file: self.current_file.clone(),
+                    qualified_path: Some(qualified_path),
                 };
                 self.env.lock().unwrap().define(name.clone(), func);
                 Ok(ControlFlow::None)
@@ -771,8 +952,61 @@ impl Interpreter {
     }
 
     fn exec_thread(&mut self, name: &str, body: &Stmt) {
-        let child_env = Arc::new(Mutex::new(Environment::new_child(self.env.clone())));
-        let body = body.clone();
+        let parent_env = self.env.clone();
+        let body: Arc<Stmt> = Arc::new(body.clone());
+        self.thread_spawn_envs.insert(name.to_string(), parent_env.clone());
+        self.spawn_thread_internal(name, parent_env, body);
+    }
+
+    /// Hot-reload entry point: a named thread whose *setup* changed (as
+    /// opposed to just its trailing loop body — see `ast::split_thread_body`)
+    /// can't be patched in place, since the setup already ran and won't run
+    /// again on its own. This kills the existing OS thread and respawns it
+    /// fresh with the new body, against the *same* environment it was
+    /// originally spawned from (not a disconnected new one), so it still
+    /// sees whatever shared state (e.g. a factory's own `patterns`/`tension`)
+    /// the rest of the program is using. Thread-local state the old
+    /// instance had accumulated (e.g. a loop counter) is lost — that's the
+    /// one real cost of this path, same as discussed for anything that
+    /// isn't a pure loop-body edit.
+    ///
+    /// Returns `false` if this interpreter instance never spawned a thread
+    /// by this name (it can only restart threads it spawned itself — see
+    /// `thread_spawn_envs`'s docs), in which case the caller should fall
+    /// back to a full reload instead of silently doing nothing.
+    pub fn restart_thread(&mut self, name: &str, new_body: Arc<Stmt>) -> bool {
+        let parent_env = match self.thread_spawn_envs.get(name) {
+            Some(e) => e.clone(),
+            None => return false,
+        };
+        if let Some(handle) = self.thread_handles.remove(name) {
+            self.shutdown.store(true, Ordering::Relaxed);
+            let _ = handle.join();
+            self.shutdown.store(false, Ordering::Relaxed);
+        }
+        self.loop_registry.lock().unwrap().remove(name);
+        self.spawn_thread_internal(name, parent_env, new_body);
+        true
+    }
+
+    /// Hot-reload entry point for the common case: only a named thread's
+    /// trailing loop body changed, its one-time setup didn't. No thread is
+    /// killed — the already-running thread polls `loop_registry` once per
+    /// iteration (see `run_thread_body_hot`) and picks this up at the next
+    /// iteration boundary, mid-performance, with all its local state intact.
+    pub fn swap_loop_body(&self, name: &str, new_loop_body: Arc<Stmt>) {
+        self.loop_registry.lock().unwrap().insert(name.to_string(), new_loop_body);
+    }
+
+    /// What a named thread's hot-loop poll would currently see for `name`.
+    /// Exposed mainly for testing `swap_loop_body` without needing a real
+    /// spawned thread to observe it.
+    pub fn current_loop_body(&self, name: &str) -> Option<Arc<Stmt>> {
+        self.loop_registry.lock().unwrap().get(name).cloned()
+    }
+
+    fn spawn_thread_internal(&mut self, name: &str, parent_env: Arc<Mutex<Environment>>, body: Arc<Stmt>) {
+        let child_env = Arc::new(Mutex::new(Environment::new_child(parent_env)));
         let osc = self.osc.clone();
         let midi = self.midi.clone();
         let dmx = self.dmx.clone();
@@ -791,6 +1025,8 @@ impl Interpreter {
         let define_cache = self.define_cache.clone();
         let base_path = self.base_path.clone();
         let current_file = self.current_file.clone();
+        let fn_registry = self.fn_registry.clone();
+        let loop_registry = self.loop_registry.clone();
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
@@ -813,15 +1049,19 @@ impl Interpreter {
 
                 clock.seed_logical_beat(parent_beat);
                 let mut interp =
-                    Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, define_cache, base_path);
+                    Interpreter::new_for_thread(child_env, osc, midi, dmx, osc_protocol, clock, shutdown, debug_sclang, synthdef_cache, define_cache, base_path, fn_registry, loop_registry);
                 interp.current_file = current_file;
-                if let Err(e) = interp.exec_stmt(&body) {
-                    eprintln!("thread '{}' error: {}", thread_name, e);
-                }
+                run_thread_body_hot(&mut interp, &thread_name, body);
             })
             .expect("failed to spawn thread");
 
         self.thread_handles.insert(name.to_string(), handle);
+    }
+
+    /// Canonical paths of every file pulled in via `include`, so watch mode
+    /// can watch them too (not just the entry script).
+    pub fn included_file_paths(&self) -> Vec<PathBuf> {
+        self.included_files.lock().unwrap().iter().cloned().collect()
     }
 
     pub fn join_threads(&mut self) {
@@ -1942,6 +2182,7 @@ impl Interpreter {
                         body,
                         closure,
                         file,
+                        qualified_path,
                     } => {
                         // Trampoline loop for tail call optimization
                         let mut cur_name = name;
@@ -1949,6 +2190,7 @@ impl Interpreter {
                         let mut cur_body = body;
                         let mut cur_closure = closure;
                         let mut cur_file = file;
+                        let mut cur_qualified_path = qualified_path;
                         let mut cur_positional = positional;
                         let mut _cur_named = named;
 
@@ -1964,11 +2206,26 @@ impl Interpreter {
                                 }
                             }
 
+                            // A hot-reload patch (hotreload.rs) may have swapped
+                            // in a newer body for this declaration site since
+                            // this Value::Function was captured — always defer
+                            // to the registry when this function has a path.
+                            let run_body = match &cur_qualified_path {
+                                Some(path) => self.fn_registry.lock().unwrap().get(path).cloned().unwrap_or_else(|| cur_body.clone()),
+                                None => cur_body.clone(),
+                            };
+                            if let Some(path) = &cur_qualified_path {
+                                self.fn_path_stack.push(path.clone());
+                            }
+
                             let old_env = std::mem::replace(&mut self.env, call_env);
                             let old_file = std::mem::replace(&mut self.current_file, cur_file.clone());
-                            let result = self.exec_stmt(&cur_body);
+                            let result = self.exec_stmt(&run_body);
                             self.env = old_env;
                             self.current_file = old_file;
+                            if cur_qualified_path.is_some() {
+                                self.fn_path_stack.pop();
+                            }
 
                             match result? {
                                 ControlFlow::Return(v) => return Ok(v),
@@ -1985,12 +2242,13 @@ impl Interpreter {
                                     };
 
                                     match callee {
-                                        Value::Function { name, params, body, closure, file } => {
+                                        Value::Function { name, params, body, closure, file, qualified_path } => {
                                             cur_name = name;
                                             cur_params = params;
                                             cur_body = body;
                                             cur_closure = closure;
                                             cur_file = file;
+                                            cur_qualified_path = qualified_path;
                                             cur_positional = tc_pos;
                                             _cur_named = tc_named;
                                             continue;
@@ -2023,9 +2281,10 @@ impl Interpreter {
             Expr::FnExpr { params, body } => Ok(Value::Function {
                 name: "<anonymous>".to_string(),
                 params: params.clone(),
-                body: body.clone(),
+                body: Arc::new((**body).clone()),
                 closure: self.env.clone(),
                 file: self.current_file.clone(),
+                qualified_path: None,
             }),
             Expr::ArrayLit { elements } => {
                 let mut arr = AudionArray::new();
@@ -2366,6 +2625,7 @@ impl Interpreter {
                 body,
                 closure,
                 file,
+                qualified_path,
             }) => {
                 // Trampoline loop for tail call optimization
                 let mut cur_name = fname;
@@ -2373,6 +2633,7 @@ impl Interpreter {
                 let mut cur_body = body;
                 let mut cur_closure = closure;
                 let mut cur_file = file;
+                let mut cur_qualified_path = qualified_path;
                 let mut cur_positional = positional.to_vec();
                 let mut _cur_named = named.to_vec();
 
@@ -2387,11 +2648,22 @@ impl Interpreter {
                         }
                     }
 
+                    let run_body = match &cur_qualified_path {
+                        Some(path) => self.fn_registry.lock().unwrap().get(path).cloned().unwrap_or_else(|| cur_body.clone()),
+                        None => cur_body.clone(),
+                    };
+                    if let Some(path) = &cur_qualified_path {
+                        self.fn_path_stack.push(path.clone());
+                    }
+
                     let old_env = std::mem::replace(&mut self.env, call_env);
                     let old_file = std::mem::replace(&mut self.current_file, cur_file.clone());
-                    let result = self.exec_stmt(&cur_body);
+                    let result = self.exec_stmt(&run_body);
                     self.env = old_env;
                     self.current_file = old_file;
+                    if cur_qualified_path.is_some() {
+                        self.fn_path_stack.pop();
+                    }
 
                     match result? {
                         ControlFlow::Return(v) => return Ok(v),
@@ -2407,12 +2679,13 @@ impl Interpreter {
                             };
 
                             match callee {
-                                Value::Function { name, params, body, closure, file } => {
+                                Value::Function { name, params, body, closure, file, qualified_path } => {
                                     cur_name = name;
                                     cur_params = params;
                                     cur_body = body;
                                     cur_closure = closure;
                                     cur_file = file;
+                                    cur_qualified_path = qualified_path;
                                     cur_positional = tc_pos;
                                     _cur_named = tc_named;
                                     continue;

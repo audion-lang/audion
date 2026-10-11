@@ -161,6 +161,14 @@ fn diff_stmt(old: &Stmt, new: &Stmt, path_prefix: &str, plan: &mut ReloadPlan) -
             Stmt::ForIn { var: ov, iter: oit, body: ob },
             Stmt::ForIn { var: nv, iter: nit, body: nb },
         ) => ov == nv && dbg_eq(oit, nit) && diff_stmt(ob, nb, path_prefix, plan),
+        (
+            Stmt::Try { body: ob, catch_var: ov, catch_body: ocb },
+            Stmt::Try { body: nb, catch_var: nv, catch_body: ncb },
+        ) => {
+            ov == nv
+                && diff_stmt(ob, nb, path_prefix, plan)
+                && diff_stmt(ocb, ncb, path_prefix, plan)
+        }
         (Stmt::Thread { name: on, body: ob }, Stmt::Thread { name: nn, body: nb }) => {
             // Unlike every other wrapper, a thread difference never forces
             // a full reload by itself — it always resolves to a

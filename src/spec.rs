@@ -86,6 +86,7 @@ pub fn generate() -> String {
         "loop { break; }                     // infinite loop\n",
         "for (let i=0; i<10; i+=1) { }       // C-style for\n",
         "thread drums { loop { wait(1); } }  // named thread\n",
+        "try { risky(); } catch (e) { }      // catch runtime errors (e = message string)\n",
         "include \"lib.au\";                    // include file\n",
         "include \"lib.au\" as utils;           // aliased include\n",
         "using lib;                           // import namespace\n",

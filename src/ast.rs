@@ -221,6 +221,19 @@ pub enum Stmt {
     Using {
         path: Vec<String>,
     },
+    /// `try { body } catch (catch_var) { catch_body }` — runs `body`; if it
+    /// raises a runtime error, binds the error message to `catch_var` in a
+    /// fresh scope and runs `catch_body` instead of propagating. Lets a
+    /// script decide, per call site, whether a failure should take down the
+    /// enclosing thread (don't wrap it) or be handled and continued (wrap
+    /// it) — see docs/live-coding discussion. Control flow (`return`,
+    /// `break`, `continue`) from `body` always propagates normally; only
+    /// actual runtime errors are caught.
+    Try {
+        body: Box<Stmt>,
+        catch_var: String,
+        catch_body: Box<Stmt>,
+    },
 }
 
 /// Splits a `thread{}` body into its one-time setup statements and, if the

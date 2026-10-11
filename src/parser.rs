@@ -62,6 +62,7 @@ impl Parser {
             TokenKind::Define => self.parse_synthdef(),
             TokenKind::Include => self.parse_include(),
             TokenKind::Using => self.parse_using(),
+            TokenKind::Try => self.parse_try(),
             TokenKind::LBrace => self.parse_block(),
             _ => self.parse_expr_stmt(),
         }
@@ -148,6 +149,17 @@ impl Parser {
         self.expect(TokenKind::RParen)?;
         let body = Box::new(self.parse_block_or_stmt()?);
         Ok(Stmt::While { cond, body })
+    }
+
+    fn parse_try(&mut self) -> Result<Stmt> {
+        self.advance(); // consume 'try'
+        let body = Box::new(self.parse_block()?);
+        self.expect(TokenKind::Catch)?;
+        self.expect(TokenKind::LParen)?;
+        let catch_var = self.expect_ident()?;
+        self.expect(TokenKind::RParen)?;
+        let catch_body = Box::new(self.parse_block()?);
+        Ok(Stmt::Try { body, catch_var, catch_body })
     }
 
     fn parse_loop(&mut self) -> Result<Stmt> {

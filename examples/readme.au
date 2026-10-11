@@ -32,6 +32,7 @@ bass_freq = bassline[0];
 
 thread bass_with_light_strobe {
     loop {
+        // use a try/catch in the loop if you are live-coding
         osc_send("/light/strobe", rand(0.2, 0.4));
         synth("tom", freq: bass_freq, amp: 0.6);
         wait(1);

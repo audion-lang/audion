@@ -720,6 +720,25 @@ impl Interpreter {
                 self.exec_using(path)?;
                 Ok(ControlFlow::None)
             }
+            Stmt::Try { body, catch_var, catch_body } => {
+                match self.exec_stmt(body) {
+                    // Control flow (including a runtime error that already
+                    // became a ControlFlow higher up, which doesn't happen
+                    // today but keeping this exhaustive) and successful
+                    // completion both pass through untouched — only an
+                    // actual Err is a catchable failure.
+                    Ok(flow) => Ok(flow),
+                    Err(e) => {
+                        let parent = self.env.clone();
+                        let child = Arc::new(Mutex::new(Environment::new_child(parent.clone())));
+                        child.lock().unwrap().define(catch_var.clone(), Value::String(e.to_string()));
+                        let old_env = std::mem::replace(&mut self.env, child);
+                        let result = self.exec_stmt(catch_body);
+                        self.env = old_env;
+                        result
+                    }
+                }
+            }
         }
     }
 

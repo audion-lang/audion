@@ -12,12 +12,10 @@ use audion::osc_protocol::OscProtocolClient;
 use audion::parser::Parser;
 use audion::value::Value;
 
-pub fn eval(src: &str) -> Value {
-    let mut lex = Lexer::new(src);
-    let tokens = lex.tokenize().unwrap();
-    let mut par = Parser::new(tokens);
-    let stmts = par.parse().unwrap();
-
+/// A bare Interpreter, same ingredients `eval()` uses, for tests that need
+/// to inspect a `Result` (e.g. assert an error propagated) rather than
+/// unwrapping it immediately.
+pub fn fresh_test_interp() -> Interpreter {
     let env = Arc::new(Mutex::new(Environment::new()));
     let osc = Arc::new(OscClient::new("127.0.0.1:57110"));
     let midi = Arc::new(MidiClient::new());
@@ -29,8 +27,15 @@ pub fn eval(src: &str) -> Value {
     let define_cache = Arc::new(Mutex::new(audion::define_cache::DefineCache::new()));
     let fn_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let loop_registry = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let mut interp = Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry);
-    interp.run_line(&stmts).unwrap()
+    Interpreter::new(env, osc, midi, dmx, osc_protocol, clock, shutdown, false, synthdef_cache, define_cache, fn_registry, loop_registry)
+}
+
+pub fn eval(src: &str) -> Value {
+    let mut lex = Lexer::new(src);
+    let tokens = lex.tokenize().unwrap();
+    let mut par = Parser::new(tokens);
+    let stmts = par.parse().unwrap();
+    fresh_test_interp().run_line(&stmts).unwrap()
 }
 
 pub fn parse_source(src: &str) -> Vec<audion::ast::Stmt> {

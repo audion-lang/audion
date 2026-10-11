@@ -42,6 +42,8 @@ pub enum TokenKind {
     Include,
     As,
     Using,
+    Try,
+    Catch,
 
     // Operators
     Plus,

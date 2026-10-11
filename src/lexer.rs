@@ -23,6 +23,7 @@ pub const KEYWORDS: &[&str] = &[
     "fn", "let", "if", "else", "while", "loop", "for", "return",
     "thread", "define", "break", "continue", "this",
     "include", "as", "using", "true", "false", "nil",
+    "try", "catch",
 ];
 
 pub struct Lexer {
@@ -338,6 +339,8 @@ impl Lexer {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "nil" => TokenKind::Nil,
+            "try" => TokenKind::Try,
+            "catch" => TokenKind::Catch,
             _ => TokenKind::Ident(text),
         }
     }

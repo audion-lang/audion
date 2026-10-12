@@ -3,7 +3,7 @@
 This is a list of features that will be added, the order is not definite and this list may be incomplete. If you have an idea please open a feature request. We will make our best effort to respond quickly. The idea behind Audion is to be small, useful and most of all: fun. Programming (and therefore creating) can be fun, don't beleive anyone that tells you otherwise.
 
 ### error handling
-has been improved but we may want to *catch* errors in situations like API calls etc.
+try/catch is done [√] — a script can choose per call site whether a failing call kills its thread (default) or is caught (`try { } catch (e) { }`). Still open: anything beyond that, e.g. structured retry/backoff helpers for API calls.
 
 ### Embedded Subset
 - export a subset of audion to C for defined targets: teensy/daisy/others
@@ -22,16 +22,20 @@ be able to pause generation, lazy evaluation
 doing sound design is cool but it may not be your priority, we need the basics readymade
 - analog synths (basics: saw/supersaw/tri/square) additive, subtractive [√ see examples]
 - digital synths (fm/vector/granular/wavetable) [√ see examples]
-- effect chains (reverbs/delays/compressors/filters/eq)
+- effect chains (reverbs/delays/compressors/filters) [√] — FreeVerb, CombC/L/N, Compander, LPF/HPF/BPF all available in `define` blocks. Dedicated shelf/peak EQ UGens (`BLowShelf`/`BHiShelf`/`BPeakEQ`) still missing, see the Butterworth `B*` gap below.
 
 ### more generators and modifiers
-sequence/melodic generators and modifiers
+large library already built [√] — ~60 `array_seq_*`/`array_mel_*` generators (euclidean, markov, permutations, de Bruijn, necklaces, partitions, lattice walks, automata, etc.), used for example by `drum_sequencer()`'s euclidean+markov mutation. Keep adding more as needed.
 
 ### AI model invocation/training features
-there are some nice crates but things are not very stable right now, ongoing
+lightweight, built-in models already landed [√] (`src/ml.rs`, `ml_*` builtins) — Markov chain train/generate/next (used by `midi_markov.au` and `drum_sequencer()`'s mutation), weighted_choice, softmax, entropy, normalize, and a full Kalman filter/smoother set (filter, smooth, state, update, predict, used for anticipation in `breaks_seq.au`). Still open: invoking/training heavier external models (the unstable-crates problem from before).
 
 ### UI/window
-- will be implemented as separate binary, see audion-window repo
+built directly into the `audion` binary [√] (`--ui` flag, `src/ui/`), not a separate binary/repo:
+- widgets (slider, knob, button, toggle, dropdown, text, array, ...) backed by `eframe`
+- `.aui` TOML config for layout/widget defaults, auto-saved and reloaded
+- `ui.three.*` facade for 3D canvases, backed by a real GPU renderer (`three.rs`/`three_gpu.rs`/`three_loader.rs`)
+- still open: accessibility pass (keyboard nav, screen reader annotations)
 
 ### distributed runtime (TBD)
 - because yes: sync and run multiple PCs for an artwork

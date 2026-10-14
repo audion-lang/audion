@@ -55,7 +55,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "pitch_shift", "freq_shift", "pitch", "vibrato",
     // Analysis / triggers
     "running_sum", "median", "running_max", "running_min",
-    "peak", "zero_crossing", "latch", "gate", "pulse_count",
+    "peak", "zero_crossing", "latch", "gate", "pulse_count", "changed",
     "t_exprand", "t_irand", "sweep",
     // Routing
     "in", "out", "pan", "pan4", "splay", "balance2",
@@ -71,6 +71,13 @@ pub const UGEN_NAMES: &[&str] = &[
     // Analysis feedback
     "send_reply",
 ];
+
+/// Rate for a smoothing UGen (lag, ramp, slew): follow the input. These read
+/// their input as a full block, so an audio-rate one fed a control-rate param
+/// reads past the param's single value and outputs junk.
+fn smooth_rate(ctx: &BuildCtx, sig: Input) -> Rate {
+    if ctx.rate_of(&[sig]) == Rate::Audio { Rate::Audio } else { Rate::Control }
+}
 
 /// Build and encode a SynthDef directly to `scsyndef` binary bytes — no
 /// sclang, no scsynth involved. Walks the parsed `define` body and builds
@@ -425,10 +432,9 @@ fn emit_ugen_call(
             let bufnum = eval_arg_or(ctx, env, args, 1, buffers, sample_idx, 0.0)?;
             let phase = eval_arg_or(ctx, env, args, 2, buffers, sample_idx, 0.0)?;
             let loop_flag = eval_arg_or(ctx, env, args, 3, buffers, sample_idx, 1.0)?;
-            let mut inputs = sig;
-            inputs.push(bufnum);
-            inputs.push(phase);
-            inputs.push(loop_flag);
+            // BufWr's real input order: [bufnum, phase, loop, ...channels].
+            let mut inputs = vec![bufnum, phase, loop_flag];
+            inputs.extend(sig);
             Ok(ctx.node("BufWr", Rate::Audio, inputs, 0, 0))
         }
         "record_buf" => {
@@ -443,10 +449,12 @@ fn emit_ugen_call(
             let pre_level = eval_arg_or(ctx, env, args, 4, buffers, sample_idx, 0.0)?;
             let run = eval_arg_or(ctx, env, args, 5, buffers, sample_idx, 1.0)?;
             let loop_flag = eval_arg_or(ctx, env, args, 6, buffers, sample_idx, 1.0)?;
-            let mut inputs = sig;
-            inputs.extend([bufnum, offset, rec_level, pre_level, run, loop_flag]);
+            // RecordBuf's real input order:
+            // [bufnum, offset, recLevel, preLevel, run, loop, trigger, doneAction, ...channels].
+            let mut inputs = vec![bufnum, offset, rec_level, pre_level, run, loop_flag];
             inputs.push(konst(1.0)); // trigger
             inputs.push(konst(0.0)); // doneAction
+            inputs.extend(sig);
             Ok(ctx.node("RecordBuf", Rate::Audio, inputs, 1, 0))
         }
         "splay" => {
@@ -986,12 +994,12 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
         "lag" => {
             let sig = a(0, 0.0);
             let lagtime = a(1, 0.1);
-            vec![ctx.node1("Lag", Rate::Audio, vec![sig, lagtime], 0)]
+            vec![ctx.node1("Lag", smooth_rate(ctx, sig), vec![sig, lagtime], 0)]
         }
         "lag2" => {
             let sig = a(0, 0.0);
             let lagtime = a(1, 0.1);
-            vec![ctx.node1("Lag2", Rate::Audio, vec![sig, lagtime], 0)]
+            vec![ctx.node1("Lag2", smooth_rate(ctx, sig), vec![sig, lagtime], 0)]
         }
         "leak_dc" => {
             let sig = a(0, 0.0);
@@ -1018,7 +1026,7 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
         "ramp" => {
             let sig = a(0, 0.0);
             let lagtime = a(1, 0.1);
-            vec![ctx.node1("Ramp", Rate::Audio, vec![sig, lagtime], 0)]
+            vec![ctx.node1("Ramp", smooth_rate(ctx, sig), vec![sig, lagtime], 0)]
         }
         "hpz1" => vec![ctx.node1("HPZ1", Rate::Audio, vec![a(0, 0.0)], 0)],
         "lpz1" => vec![ctx.node1("LPZ1", Rate::Audio, vec![a(0, 0.0)], 0)],
@@ -1035,7 +1043,7 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let sig = a(0, 0.0);
             let up = a(1, 1.0);
             let dn = a(2, 1.0);
-            vec![ctx.node1("Slew", Rate::Audio, vec![sig, up, dn], 0)]
+            vec![ctx.node1("Slew", smooth_rate(ctx, sig), vec![sig, up, dn], 0)]
         }
 
         "delay_n" => {
@@ -1214,6 +1222,14 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             };
             vec![ctx.node1("Latch", Rate::Audio, vec![sig, trig], 0)]
         }
+        // 1 for one block whenever the input changes, else 0. Lets `set()` on
+        // a plain param act as a trigger (e.g. phasor's reset).
+        "changed" => {
+            let sig = a(0, 0.0);
+            let diff = ctx.node1("HPZ1", smooth_rate(ctx, sig), vec![sig], 0);
+            let mag = ctx.unop(unop::ABS, diff);
+            vec![ctx.binop(binop::GT, mag, konst(0.0))]
+        }
         "gate" => {
             let sig = a(0, 0.0);
             let trig = a(1, 0.0);
@@ -1291,7 +1307,9 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let rate = a(1, 1.0);
             let start = a(2, 0.0);
             let end = a(3, 44100.0);
-            vec![ctx.node1("Phasor", Rate::Audio, vec![trig, rate, start, end, konst(0.0)], 0)]
+            // Position the phasor jumps to when `trig` fires.
+            let reset_pos = a(4, 0.0);
+            vec![ctx.node1("Phasor", Rate::Audio, vec![trig, rate, start, end, reset_pos], 0)]
         }
         "buf_rd" => {
             let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);

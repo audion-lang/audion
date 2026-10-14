@@ -1,0 +1,1260 @@
+// mlr.au — live sample cutting, tempo-locked, on a grid
+//
+// After mlr by Brian Crabtree (tehn) and the monome community:
+//   https://github.com/monome-community/mlr
+// This is an Audion re-take on the idea, not a port of their code. Thanks to
+// everyone who built and kept mlr alive.
+//
+// Run:   audion run --ui examples/advanced/mlr.au
+//
+// ── How it plays ────────────────────────────────────────────────────────────
+// 8 rows, each holds one sound file. A row's file is cut into SEGMENTS by
+// markers you place on the waveform. Each segment gets a number of STEPS, and
+// is stretched to fill exactly those steps, so a long note can take 8 steps and
+// a short one 2. All segments together make the row's loop (max 16 steps).
+//
+// Grid (top):
+//   click a cell ........ jump there on the next step (starts a stopped row)
+//   drag cell A → B ..... loop between A and B
+//   right-click a row ... clear its loop
+//   row label ........... select the row (editor + settings on the right)
+//   M ................... mute     ■ ... stop row     G1-4 ... cycle group
+//   group strip ......... stop all rows in that group
+//
+// Editor (bottom, selected row):
+//   click waveform ...... add marker          drag marker ... move it
+//   right-click marker .. delete it
+//   segment strip ....... left half = fewer steps, right half = more
+//                         (0 steps = segment is skipped)
+//
+// Play:   loop       = play on, wrap at the loop end
+//         pingpong   = bounce between the loop ends
+//         random-all = every step jumps to any cell in the loop
+//         random-4   = every step: up to 2 cells left/right, or the same cell again
+//         random-2   = every step: 1 cell left/right, or the same cell again
+//
+// Modes:  vari    = speed and pitch move together (classic mlr)
+//         stretch = pitch stays put, however much a segment is stretched
+//
+// Mixer: 4 groups, each with volume, reverb send, delay send and an output
+// pair (1/2 … 63/64). Reverb and delay have their own output pairs. Every
+// output pair ends in main volume + a limiter.
+//
+// A new file gets the step length + step count that plays it at about its own
+// speed; change either to squeeze or stretch it.
+//
+// Presets are saved next to this script as <name>__mlr.json.
+
+bpm(120);
+latency(60);    // ms ahead the engine runs; low so pad presses feel direct
+
+// ── Settings ────────────────────────────────────────────────────────────────
+
+let N_ROWS    = 8;
+let MAX_STEPS = 16;
+let PEAKS     = 880;                       // waveform resolution (= editor width)
+let STEP_LENS  = [0.125, 0.25, 0.5, 1, 2, 4];             // in beats
+let STEP_NAMES = ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
+let SPEEDS      = [0.25, 0.5, 1, 2, 4];
+let SPEED_NAMES = ["÷4", "÷2", "×1", "×2", "×4"];
+// How a row moves on after each step.
+let PLAY_LOOP = 0;
+let PLAY_PINGPONG = 1;
+let PLAY_RAND_ALL = 2;
+let PLAY_RAND_4 = 3;
+let PLAY_RAND_2 = 4;
+let PLAY_NAMES = ["loop", "pingpong", "random-all", "random-4", "random-2"];
+let PLAY_TAGS  = ["", "<>", "?", "?4", "?2"];      // shown on the row label
+let DLY_BEATS = [0.25, 0.5, 0.75, 1, 1.5, 2];
+let DLY_NAMES = ["1/16", "1/8", "3/16", "1/4", "3/8", "1/2"];
+
+// Private audio buses: 4 stereo groups, reverb and delay sends, then one
+// stereo bus per output pair (feeds that pair's limiter stage).
+let BUS_GROUP = 300;
+let BUS_REV   = 312;
+let BUS_DLY   = 314;
+let BUS_OUT   = 400;
+let N_OUTS    = 32;                        // stereo pairs: scsynth runs with 64 outputs
+let OUT_NAMES = [];
+for (let i = 0; i < N_OUTS; i += 1) { push(OUT_NAMES, "" + (2 * i + 1) + "/" + (2 * i + 2)); }
+
+// Pad press kinds.
+let JUMP = 1;
+let STOP = 2;
+
+let GROUP_COLORS = [[230, 120, 60], [80, 170, 230], [120, 210, 110], [210, 110, 200]];
+
+// ── Synths ──────────────────────────────────────────────────────────────────
+// Two read heads (a/b) on the same buffer. Every jump moves the silent head
+// and crossfades to it, so cuts don't click. `changed(j)` fires a head's
+// phasor reset whenever its jump counter changes.
+
+define mlr_voice_s(buf, frames, rate, ja, pa, jb, pb, xf, ratio, shift_on, amp, bus) {
+    let r   = rate * buf_rate_scale(buf);
+    let x   = lag(xf, 0.006);
+    let sa  = buf_rd(2, buf, phasor(changed(ja), r, 0, frames, pa));
+    let sb  = buf_rd(2, buf, phasor(changed(jb), r, 0, frames, pb));
+    let sig = sa * (1 - x) + sb * x;
+    let ps  = pitch_shift(sig, 0.1, ratio);
+    let on  = lag(shift_on, 0.02);
+    out(bus, (sig * (1 - on) + ps * on) * lag(amp, 0.02));
+}
+
+define mlr_voice_m(buf, frames, rate, ja, pa, jb, pb, xf, ratio, shift_on, amp, bus) {
+    let r   = rate * buf_rate_scale(buf);
+    let x   = lag(xf, 0.006);
+    let sa  = buf_rd(1, buf, phasor(changed(ja), r, 0, frames, pa));
+    let sb  = buf_rd(1, buf, phasor(changed(jb), r, 0, frames, pb));
+    let sig = sa * (1 - x) + sb * x;
+    let ps  = pitch_shift(sig, 0.1, ratio);
+    let on  = lag(shift_on, 0.02);
+    out(bus, pan(0, (sig * (1 - on) + ps * on) * lag(amp, 0.02)));
+}
+
+define mlr_group(inb, amp, rev, dly, outb, revb, dlyb) {
+    let sig = in(inb, 2) * lag(amp, 0.05);
+    out(outb, sig);
+    out(revb, sig * lag(rev, 0.05));
+    out(dlyb, sig * lag(dly, 0.05));
+}
+
+define mlr_reverb(inb, outb, room) {
+    out(outb, reverb(in(inb, 2), 1, room, 0.5));
+}
+
+define mlr_delay(inb, outb, time, decay) {
+    out(outb, comb_c(in(inb, 2), 2, lag(time, 0.1), decay));
+}
+
+// One per output pair: main volume, then a limiter so nothing can blow up.
+define mlr_out(inb, hw, amp) {
+    out(hw, limiter(in(inb, 2) * lag(amp, 0.05), 0.95, 0.01));
+}
+
+// ── State ───────────────────────────────────────────────────────────────────
+// One flat array per field, indexed by row. Each field has one writer:
+// the UI thread owns settings, a row's thread owns its playback state.
+
+fn filled(n, v) {
+    let a = [];
+    for (let i = 0; i < n; i += 1) { push(a, v); }
+    return a;
+}
+
+// sound file
+let r_file   = filled(N_ROWS, "");
+let r_buf    = filled(N_ROWS, -1);
+let r_node   = filled(N_ROWS, -1);
+let r_frames = filled(N_ROWS, 0);
+let r_sr     = filled(N_ROWS, 44100);
+let r_peaks  = filled(N_ROWS, []);
+// segments: marks = start frame of each segment (first is always 0),
+// steps = steps given to each segment
+let r_marks  = filled(N_ROWS, [0]);
+let r_steps  = filled(N_ROWS, [MAX_STEPS]);
+// derived from the segments, for drawing (UI thread)
+let r_total  = filled(N_ROWS, 0);
+let r_mini   = filled(N_ROWS, []);         // 3 waveform bars per cell
+let r_cellseg = filled(N_ROWS, []);        // segment index of each cell
+// row settings (UI thread)
+let r_len_i   = filled(N_ROWS, 1);         // index into STEP_LENS
+let r_speed_i = filled(N_ROWS, 2);         // index into SPEEDS
+let r_pitch   = filled(N_ROWS, 0);         // semitones
+let r_rev     = filled(N_ROWS, false);
+let r_play    = filled(N_ROWS, PLAY_LOOP);
+let r_mode    = filled(N_ROWS, 0);         // 0 vari, 1 stretch
+let r_grp     = filled(N_ROWS, 0);
+let r_mute    = filled(N_ROWS, false);
+let r_vol     = filled(N_ROWS, 0.8);
+let r_lo      = filled(N_ROWS, -1);        // loop range in steps, -1 = none
+let r_hi      = filled(N_ROWS, -1);
+// playback (row threads)
+let r_playing = filled(N_ROWS, false);
+let r_ph      = filled(N_ROWS, -1);        // playhead in steps
+let r_cell    = filled(N_ROWS, -1);        // cell being played
+let r_pf      = filled(N_ROWS, 0);         // playhead in frames
+// pad presses, UI → row thread: write kind + step, then bump seq
+let p_seq  = filled(N_ROWS, 0);
+let p_kind = filled(N_ROWS, 0);
+let p_step = filled(N_ROWS, 0);
+
+// pattern recorders: events are [beat, row, kind, step]
+let pat_rec    = [false, false];
+let pat_play   = [false, false];
+let pat_start  = [0, 0];                   // beat recording started
+let pat_len    = [0, 0];                   // beats
+let pat_pstart = [0, 0];                   // beat playback started
+let pat_ev0 = [];
+let pat_ev1 = [];
+
+// mixer
+let g_vol = [0.8, 0.8, 0.8, 0.8];
+let g_rev = [0, 0, 0, 0];
+let g_dly = [0, 0, 0, 0];
+let g_out = [0, 0, 0, 0];                  // output pair per group
+let g_node = [];
+let rev_out = 0;
+let dly_out = 0;
+let out_nodes = [];
+let main_vol = 0.8;
+let rev_room = 0.6;
+let dly_i = 1;
+let dly_fb = 0.4;
+let rev_node = -1;
+let dly_node = -1;
+
+// ── Segments ────────────────────────────────────────────────────────────────
+// A segment is [f0, f1, steps, first_step, mark_index]; 0-step segments are
+// left out. Total steps are capped at MAX_STEPS.
+
+fn seg_table(marks, steps, frames) {
+    let segs = [];
+    let cs = 0;
+    let n = count(marks);
+    for (let k = 0; k < n; k += 1) {
+        let f0 = marks[k];
+        let f1 = frames;
+        if (k + 1 < n) { f1 = marks[k + 1]; }
+        let s = math_min(steps[k], MAX_STEPS - cs);
+        if (s > 0 && f1 > f0) {
+            push(segs, [f0, f1, s, cs, k]);
+            cs += s;
+        }
+    }
+    return ["segs" => segs, "total" => cs];
+}
+
+// Segment holding step position p. Moving backwards (d < 0) a position on a
+// boundary belongs to the segment below it.
+fn seg_at(segs, p, d) {
+    let n = count(segs);
+    for (let k = 0; k < n; k += 1) {
+        let lo = segs[k][3];
+        let hi = lo + segs[k][2];
+        if (d > 0 && p >= lo && p < hi) { return k; }
+        if (d < 0 && p > lo && p <= hi) { return k; }
+    }
+    if (d > 0) { return n - 1; }
+    return 0;
+}
+
+fn frame_at(seg, p) {
+    return seg[0] + (p - seg[3]) / seg[2] * (seg[1] - seg[0]);
+}
+
+// [rate, pitch-shift ratio, shift on 0/1] for playing `seg` stretched to its
+// steps. rate is relative to the file's own speed.
+fn voice_params(r, seg, step_secs, spd, d) {
+    let natural = (seg[1] - seg[0]) / (seg[2] * step_secs) / r_sr[r];
+    let rr = natural * spd;
+    let ratio = math_pow(2, r_pitch[r] / 12);
+    if (r_mode[r] == 1) { ratio = ratio / rr; }
+    ratio = math_clamp(ratio, 0.05, 4);
+    let on = 0;
+    if (math_abs(ratio - 1) > 0.001) { on = 1; }
+    return [rr * d, ratio, on];
+}
+
+// ── Row engine ──────────────────────────────────────────────────────────────
+
+fn record_press(t, r, kind, step) {
+    if (pat_rec[0]) { push(pat_ev0, [t, r, kind, step]); }
+    if (pat_rec[1]) { push(pat_ev1, [t, r, kind, step]); }
+}
+
+// The last pattern event for row r inside [t, t + span), or nil.
+fn pattern_event(r, t, span) {
+    let found = nil;
+    for (let k = 0; k < 2; k += 1) {
+        let len = pat_len[k];
+        if (!pat_play[k] || pat_rec[k] || len <= 0 || t < pat_pstart[k]) { continue; }
+        let phase = math_fmod(t - pat_pstart[k], len);
+        let evs = pat_ev0;
+        if (k == 1) { evs = pat_ev1; }
+        let n = count(evs);
+        for (let i = 0; i < n; i += 1) {
+            let e = evs[i];
+            if (e[1] != r) { continue; }
+            let rel = math_fmod(math_max(0, e[0] - pat_start[k]), len);
+            let hit = rel >= phase && rel < phase + span;
+            if (phase + span > len && rel < phase + span - len) { hit = true; }
+            if (hit) { found = [e[2], e[3]]; }
+        }
+    }
+    return found;
+}
+
+// Next cell for the random play modes. `last` is the cell just played;
+// picks wrap around inside the loop range [lo, hi).
+fn random_cell(play, last, lo, hi) {
+    let n = hi - lo;
+    let c = lo + rand(0, n);
+    if (play == PLAY_RAND_4) { c = last + rand(0, 5) - 2; }
+    if (play == PLAY_RAND_2) { c = last + rand(0, 3) - 1; }
+    return lo + ((c - lo) % n + n) % n;
+}
+
+fn row_loop(r) {
+    let t = 0;                  // beats since start, same in every engine thread
+    let p = 0;                  // position in steps
+    let seen = p_seq[r];
+    let last_node = -1;
+    let head = 0;
+    let jn = 0;
+    let was_playing = false;
+    let bounce = 1;             // pingpong: -1 while running against the row's direction
+    let last = 0;               // cell played in the previous step
+    loop {
+        let dur = STEP_LENS[r_len_i[r]];
+        let rem = dur - math_fmod(t, dur);
+        let node = r_node[r];
+        if (node != last_node) {
+            last_node = node;
+            was_playing = false;
+            r_playing[r] = false;
+        }
+        let tab = seg_table(r_marks[r], r_steps[r], r_frames[r]);
+        let segs = tab["segs"];
+        let total = tab["total"];
+        if (node < 0 || total == 0) {
+            r_ph[r] = -1;
+            wait(rem);
+            t += rem;
+            continue;
+        }
+
+        let lo = 0;
+        let hi = total;          // exclusive
+        if (r_lo[r] >= 0 && r_lo[r] <= r_hi[r] && r_hi[r] < total) {
+            lo = r_lo[r];
+            hi = r_hi[r] + 1;
+        }
+        let play = r_play[r];
+        if (play != PLAY_PINGPONG) { bounce = 1; }
+        let d = bounce;
+        if (r_rev[r]) { d = -bounce; }
+
+        // presses: pattern first, a live press wins
+        let kind = 0;
+        let step = 0;
+        let pe = pattern_event(r, t, rem);
+        if (pe != nil) { kind = pe[0]; step = pe[1]; }
+        if (p_seq[r] != seen) {
+            seen = p_seq[r];
+            kind = p_kind[r];
+            step = p_step[r];
+            record_press(t, r, kind, step);
+        }
+        let need_jump = false;
+        if (kind == STOP) { r_playing[r] = false; }
+        if (kind == JUMP && step < total) {
+            r_playing[r] = true;
+            p = step;
+            if (d < 0) { p = step + 1; }
+            need_jump = true;
+        }
+
+        if (!r_playing[r]) {
+            if (was_playing) { set(node, amp: 0); }
+            was_playing = false;
+            r_ph[r] = -1;
+            wait(rem);
+            t += rem;
+            continue;
+        }
+        if (!was_playing) { need_jump = true; }
+        was_playing = true;
+        // a step that ended exactly on a loop end: pingpong turns around
+        if (play == PLAY_PINGPONG && ((d > 0 && p >= hi - 0.000001) || (d < 0 && p <= lo + 0.000001))) {
+            bounce = -bounce;
+            d = -d;
+        }
+        if ((d > 0 && (p < lo || p >= hi)) || (d < 0 && (p <= lo || p > hi))) {
+            p = lo;
+            if (d < 0) { p = hi; }
+            need_jump = true;
+        }
+        // random modes pick this step's cell (a press this step wins)
+        if (play >= PLAY_RAND_ALL && kind != JUMP && hi - lo > 1) {
+            let c = random_cell(play, last, lo, hi);
+            p = c;
+            if (d < 0) { p = c + 1; }
+            need_jump = true;
+        }
+        last = math_floor(p);
+        if (d < 0) { last = math_ceil(p) - 1; }
+
+        let spd = SPEEDS[r_speed_i[r]];
+        let step_secs = dur * 60 / bpm();
+        let amp = r_vol[r];
+        if (r_mute[r]) { amp = 0; }
+        let bus = BUS_GROUP + 2 * r_grp[r];
+
+        // play through this step, re-aiming at every segment or loop edge
+        let left = rem;
+        while (left > 0.000001) {
+            let seg = segs[seg_at(segs, p, d)];
+            let vp = voice_params(r, seg, step_secs, spd, d);
+            let frame = frame_at(seg, p);
+            if (need_jump) {
+                head = 1 - head;
+                jn += 1;
+                if (head == 0) { set(node, ja: jn, pa: frame, xf: 0); }
+                else           { set(node, jb: jn, pb: frame, xf: 1); }
+                need_jump = false;
+            }
+            set(node, rate: vp[0], ratio: vp[1], shift_on: vp[2], amp: amp, bus: bus);
+            r_ph[r] = p;
+            r_pf[r] = frame;
+            r_cell[r] = math_floor(p + 0.000001 * d);
+            if (d < 0) { r_cell[r] = math_ceil(p - 0.000001) - 1; }
+
+            let edge = math_min(seg[3] + seg[2], hi);
+            if (d < 0) { edge = math_max(seg[3], lo); }
+            let dt = math_abs(edge - p) / spd * dur;
+            if (dt >= left - 0.000001) {
+                p += d * spd * left / dur;
+                wait(left);
+                t += left;
+                left = 0;
+            } else {
+                wait(dt);
+                t += dt;
+                left -= dt;
+                p = edge;
+                if ((d > 0 && p >= hi) || (d < 0 && p <= lo)) {
+                    if (play == PLAY_PINGPONG) {
+                        bounce = -bounce;
+                        d = -d;
+                    } else {
+                        p = lo;
+                        if (d < 0) { p = hi; }
+                    }
+                }
+                need_jump = true;
+            }
+        }
+    }
+}
+
+// Pattern recorders: notes when recording starts/stops and when playback starts.
+fn pattern_clock() {
+    let t = 0;
+    let was_rec = [false, false];
+    let was_play = [false, false];
+    loop {
+        for (let k = 0; k < 2; k += 1) {
+            let rec = pat_rec[k];
+            let play = pat_play[k];
+            if (rec && !was_rec[k]) { pat_start[k] = t; }
+            if (!rec && was_rec[k]) {
+                pat_len[k] = math_max(1, math_ceil(t - pat_start[k]));
+                pat_pstart[k] = pat_start[k];
+            } else if (play && !was_play[k] && !rec) {
+                pat_pstart[k] = math_ceil(t);
+            }
+            was_rec[k] = rec;
+            was_play[k] = play;
+        }
+        wait(0.125);
+        t += 0.125;
+    }
+}
+
+fn start_row(r) {
+    thread mlr_row { row_loop(r); }
+}
+
+// ── Rows: load, rebuild ─────────────────────────────────────────────────────
+
+let status_text = "";
+
+fn file_name(path) {
+    let parts = str_explode("/", path);
+    return parts[count(parts) - 1];
+}
+
+// Recompute total steps, cell → segment and the small waveform bars.
+fn rebuild_row(r) {
+    let frames = r_frames[r];
+    let tab = seg_table(r_marks[r], r_steps[r], frames);
+    let segs = tab["segs"];
+    let total = tab["total"];
+    let peaks = r_peaks[r];
+    let top = 0.0001;
+    for (let i = 0; i < count(peaks); i += 1) { top = math_max(top, peaks[i]); }
+    let mini = [];
+    let cellseg = [];
+    for (let c = 0; c < total; c += 1) {
+        push(cellseg, segs[seg_at(segs, c, 1)][4]);
+        for (let j = 0; j < 3; j += 1) {
+            let pa = c + j / 3;
+            let pb = c + (j + 1) / 3;
+            let fa = frame_at(segs[seg_at(segs, pa, 1)], pa);
+            let fb = frame_at(segs[seg_at(segs, pb, -1)], pb);
+            let ia = math_floor(fa / frames * PEAKS);
+            let ib = math_max(ia, math_floor(fb / frames * PEAKS) - 1);
+            let m = 0;
+            for (let i = ia; i <= ib && i < PEAKS; i += 1) { m = math_max(m, peaks[i]); }
+            push(mini, m / top);
+        }
+    }
+    r_total[r] = total;
+    r_mini[r] = mini;
+    r_cellseg[r] = cellseg;
+}
+
+fn unload_row(r) {
+    let old_node = r_node[r];
+    let old_buf = r_buf[r];
+    r_node[r] = -1;
+    r_file[r] = "";
+    r_total[r] = 0;
+    if (old_node >= 0) { free(old_node); }
+    if (old_buf >= 0) {
+        sleep_ms(latency() + 100);    // let the free land before the buffer goes
+        buffer_free(old_buf);
+    }
+    r_buf[r] = -1;
+}
+
+fn load_row(r, path) {
+    unload_row(r);
+    let buf = buffer_load(path);
+    let info = buffer_query(buf);
+    if (info == nil || info[0] <= 0) {
+        status_text = "could not load " + file_name(path);
+        return false;
+    }
+    let peaks = [];
+    try { peaks = buffer_peaks(buf, PEAKS); }
+    catch (e) { peaks = filled(PEAKS, 0); }
+    r_buf[r] = buf;
+    r_frames[r] = info[0];
+    r_sr[r] = info[2];
+    r_peaks[r] = peaks;
+    // Pick step length + steps so the file plays at about its own speed:
+    // the shortest step length whose 16 steps cover the file.
+    let beats = info[0] / info[2] * bpm() / 60;
+    let li = count(STEP_LENS) - 1;
+    for (let i = count(STEP_LENS) - 1; i >= 0; i -= 1) {
+        if (beats / STEP_LENS[i] <= MAX_STEPS) { li = i; }
+    }
+    r_len_i[r] = li;
+    r_marks[r] = [0];
+    r_steps[r] = [math_clamp(math_round(beats / STEP_LENS[li]), 1, MAX_STEPS)];
+    if (r == sel) { w_step.set(li); }
+    r_lo[r] = -1;
+    r_hi[r] = -1;
+    r_file[r] = path;
+    rebuild_row(r);
+    let def = "mlr_voice_s";
+    if (info[1] == 1) { def = "mlr_voice_m"; }
+    r_node[r] = synth(def, buf: buf, frames: info[0], rate: 1, ratio: 1,
+                      shift_on: 0, amp: 0, bus: BUS_GROUP + 2 * r_grp[r]);
+    status_text = "row " + (r + 1) + ": " + file_name(path);
+    return true;
+}
+
+fn press(r, kind, step) {
+    p_kind[r] = kind;
+    p_step[r] = step;
+    p_seq[r] += 1;
+}
+
+// ── Mixer ───────────────────────────────────────────────────────────────────
+
+fn dly_params() {
+    let secs = math_min(2, DLY_BEATS[dly_i] * 60 / bpm());
+    let fb = math_clamp(dly_fb, 0.01, 0.95);
+    return [secs, secs * math_log(0.001) / math_log(fb)];
+}
+
+// synth() adds to the head of the node list, so create in reverse signal
+// order: output stages, effects, groups (rows are added later, in front).
+fn mixer_start() {
+    for (let i = 0; i < N_OUTS; i += 1) {
+        push(out_nodes, synth("mlr_out", inb: BUS_OUT + 2 * i, hw: 2 * i, amp: main_vol));
+    }
+    rev_node = synth("mlr_reverb", inb: BUS_REV, outb: BUS_OUT + 2 * rev_out, room: rev_room);
+    let dp = dly_params();
+    dly_node = synth("mlr_delay", inb: BUS_DLY, outb: BUS_OUT + 2 * dly_out, time: dp[0], decay: dp[1]);
+    for (let g = 0; g < 4; g += 1) {
+        push(g_node, synth("mlr_group", inb: BUS_GROUP + 2 * g, amp: g_vol[g], rev: g_rev[g],
+                           dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g], revb: BUS_REV, dlyb: BUS_DLY));
+    }
+}
+
+fn mixer_update() {
+    for (let g = 0; g < 4; g += 1) {
+        set(g_node[g], amp: g_vol[g], rev: g_rev[g], dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g]);
+    }
+    set(rev_node, room: rev_room, outb: BUS_OUT + 2 * rev_out);
+    let dp = dly_params();
+    set(dly_node, time: dp[0], decay: dp[1], outb: BUS_OUT + 2 * dly_out);
+}
+
+fn main_update() {
+    for (let i = 0; i < N_OUTS; i += 1) { set(out_nodes[i], amp: main_vol); }
+}
+
+// ── UI ──────────────────────────────────────────────────────────────────────
+
+let ui = ui_desktop();
+ui.window("mlr", 1250, 900);
+
+let CW = 900;
+let CH = 650;
+let cv = ui.widgets.canvas("grid", CW, CH);
+
+// grid geometry
+let GX = 84;          // first cell x
+let GY = 10;
+let CELL = 44;
+let ROW_H = 40;
+let ROW_STEP = 44;
+let MX = 796;         // mute box x
+let SX = 828;         // stop box x
+let GBX = 860;        // group box x
+let BOX = 28;
+let STRIP_Y = GY + N_ROWS * ROW_STEP + 6;
+// editor geometry
+let EX = 10;
+let EW = 880;
+let EY = 420;
+let EH = 150;
+let SEG_Y = EY + EH + 6;
+let SEG_H = 26;
+
+// selected-row settings
+let w_row   = ui.widgets.text_label("row_title", "row 1");
+let w_file  = ui.widgets.file_picker("file", "wav", "aif", "aiff", "flac", "mp3", "ogg");
+let w_step  = ui.widgets.dropdown("step", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar");
+let w_speed = ui.widgets.dropdown("speed", "÷4", "÷2", "×1", "×2", "×4");
+let w_pitch = ui.widgets.slider("pitch");
+w_pitch.min(-24);
+w_pitch.max(24);
+let w_dir   = ui.widgets.dropdown("dir", "forward", "reverse");
+let w_play  = ui.widgets.dropdown("play", "-");
+w_play.set_options(PLAY_NAMES);
+let w_mode  = ui.widgets.dropdown("mode", "vari", "stretch");
+let w_group = ui.widgets.dropdown("group", "G1", "G2", "G3", "G4");
+let w_vol   = ui.widgets.slider("vol");
+
+// patterns
+let w_p1_rec  = ui.widgets.toggle("p1_rec");
+let w_p1_play = ui.widgets.toggle("p1_play");
+let w_p2_rec  = ui.widgets.toggle("p2_rec");
+let w_p2_play = ui.widgets.toggle("p2_play");
+
+// presets
+let w_name    = ui.widgets.text_input("preset_name");
+let w_save    = ui.widgets.button("save");
+let w_presets = ui.widgets.dropdown("presets", "-");
+let w_load    = ui.widgets.button("load");
+let w_status  = ui.widgets.text_label("status", "");
+
+// mixer
+let w_g1_vol = ui.widgets.knob("g1_vol");
+let w_g1_rev = ui.widgets.knob("g1_rev");
+let w_g1_dly = ui.widgets.knob("g1_dly");
+let w_g2_vol = ui.widgets.knob("g2_vol");
+let w_g2_rev = ui.widgets.knob("g2_rev");
+let w_g2_dly = ui.widgets.knob("g2_dly");
+let w_g3_vol = ui.widgets.knob("g3_vol");
+let w_g3_rev = ui.widgets.knob("g3_rev");
+let w_g3_dly = ui.widgets.knob("g3_dly");
+let w_g4_vol = ui.widgets.knob("g4_vol");
+let w_g4_rev = ui.widgets.knob("g4_rev");
+let w_g4_dly = ui.widgets.knob("g4_dly");
+let w_g1_out = ui.widgets.dropdown("g1_out", "-");
+let w_g2_out = ui.widgets.dropdown("g2_out", "-");
+let w_g3_out = ui.widgets.dropdown("g3_out", "-");
+let w_g4_out = ui.widgets.dropdown("g4_out", "-");
+let w_rev_out = ui.widgets.dropdown("rev_out", "-");
+let w_dly_out = ui.widgets.dropdown("dly_out", "-");
+w_g1_out.set_options(OUT_NAMES);
+w_g2_out.set_options(OUT_NAMES);
+w_g3_out.set_options(OUT_NAMES);
+w_g4_out.set_options(OUT_NAMES);
+w_rev_out.set_options(OUT_NAMES);
+w_dly_out.set_options(OUT_NAMES);
+let w_main   = ui.widgets.slider("main");
+let w_bpm    = ui.widgets.number("bpm");
+w_bpm.min(40);
+w_bpm.max(240);
+let w_room   = ui.widgets.knob("rev_room");
+let w_dtime  = ui.widgets.dropdown("dly_time", "1/16", "1/8", "3/16", "1/4", "3/8", "1/2");
+let w_dfb    = ui.widgets.knob("dly_fb");
+w_dfb.max(0.95);
+
+let sel = 0;
+let drag_row = -1;        // row a cell drag started in
+let drag_cell = -1;
+let drag_mark = -1;       // marker being dragged in the editor
+let preset_names = [];
+
+fn sync_row_widgets() {
+    w_row.set("row " + (sel + 1));
+    w_file.set(r_file[sel]);
+    w_step.set(r_len_i[sel]);
+    w_speed.set(r_speed_i[sel]);
+    w_pitch.set(r_pitch[sel]);
+    w_dir.set(0);
+    if (r_rev[sel]) { w_dir.set(1); }
+    w_play.set(r_play[sel]);
+    w_mode.set(r_mode[sel]);
+    w_group.set(r_grp[sel]);
+    w_vol.set(r_vol[sel]);
+}
+
+fn sync_mixer_widgets() {
+    w_g1_vol.set(g_vol[0]); w_g1_rev.set(g_rev[0]); w_g1_dly.set(g_dly[0]);
+    w_g2_vol.set(g_vol[1]); w_g2_rev.set(g_rev[1]); w_g2_dly.set(g_dly[1]);
+    w_g3_vol.set(g_vol[2]); w_g3_rev.set(g_rev[2]); w_g3_dly.set(g_dly[2]);
+    w_g4_vol.set(g_vol[3]); w_g4_rev.set(g_rev[3]); w_g4_dly.set(g_dly[3]);
+    w_g1_out.set(g_out[0]); w_g2_out.set(g_out[1]);
+    w_g3_out.set(g_out[2]); w_g4_out.set(g_out[3]);
+    w_rev_out.set(rev_out); w_dly_out.set(dly_out);
+    w_main.set(main_vol);
+    w_bpm.set(bpm());
+    w_room.set(rev_room);
+    w_dtime.set(dly_i);
+    w_dfb.set(dly_fb);
+}
+
+// ── UI: grid + editor input ─────────────────────────────────────────────────
+
+fn cell_at(x) {
+    return math_floor((x - GX) / CELL);
+}
+
+fn grid_down(r, x, button) {
+    let c = cell_at(x);
+    if (x >= GX && c < MAX_STEPS) {
+        if (button == 1) {
+            r_lo[r] = -1;
+            r_hi[r] = -1;
+            return;
+        }
+        if (c >= r_total[r]) { return; }
+        if (r_lo[r] >= 0 && (c < r_lo[r] || c > r_hi[r])) {
+            r_lo[r] = -1;
+            r_hi[r] = -1;
+        }
+        press(r, JUMP, c);
+        drag_row = r;
+        drag_cell = c;
+        return;
+    }
+    if (button != 0) { return; }
+    if (x < GX - 4) {
+        sel = r;
+        sync_row_widgets();
+    } else if (x >= MX && x < MX + BOX) {
+        r_mute[r] = !r_mute[r];
+    } else if (x >= SX && x < SX + BOX) {
+        press(r, STOP, 0);
+    } else if (x >= GBX && x < GBX + BOX) {
+        r_grp[r] = (r_grp[r] + 1) % 4;
+        if (r == sel) { w_group.set(r_grp[r]); }
+    }
+}
+
+fn grid_up(x) {
+    if (drag_row < 0) { return; }
+    let r = drag_row;
+    let c = math_clamp(cell_at(x), 0, r_total[r] - 1);
+    if (c != drag_cell) {
+        r_lo[r] = math_min(c, drag_cell);
+        r_hi[r] = math_max(c, drag_cell);
+    }
+    drag_row = -1;
+}
+
+fn x_to_frame(x) {
+    return math_clamp((x - EX) / EW, 0, 1) * r_frames[sel];
+}
+
+fn frame_to_x(f) {
+    return EX + f / r_frames[sel] * EW;
+}
+
+// Marker index (>0) within 6 px of x, or -1.
+fn mark_near(x) {
+    let marks = r_marks[sel];
+    for (let k = 1; k < count(marks); k += 1) {
+        if (math_abs(frame_to_x(marks[k]) - x) <= 6) { return k; }
+    }
+    return -1;
+}
+
+fn add_mark(x) {
+    let f = math_round(x_to_frame(x));
+    let marks = r_marks[sel];
+    let steps = r_steps[sel];
+    let n = count(marks);
+    let k = 0;                                  // segment f falls in
+    while (k + 1 < n && marks[k + 1] <= f) { k += 1; }
+    let f1 = r_frames[sel];
+    if (k + 1 < n) { f1 = marks[k + 1]; }
+    if (f - marks[k] < 64 || f1 - f < 64) { return; }
+    // split the segment's steps by length, keep the total ≤ MAX_STEPS
+    let s = steps[k];
+    let sa = math_max(1, math_round(s * (f - marks[k]) / (f1 - marks[k])));
+    let sb = math_max(1, s - sa);
+    let used = 0;
+    for (let i = 0; i < n; i += 1) { used += steps[i]; }
+    if (used - s + sa + sb > MAX_STEPS) { sb = math_max(0, MAX_STEPS - (used - s + sa)); }
+    let nm = [];
+    let ns = [];
+    for (let i = 0; i < n; i += 1) {
+        push(nm, marks[i]);
+        if (i == k) { push(ns, sa); push(nm, f); push(ns, sb); }
+        else { push(ns, steps[i]); }
+    }
+    r_marks[sel] = nm;
+    r_steps[sel] = ns;
+    rebuild_row(sel);
+}
+
+fn delete_mark(k) {
+    let marks = r_marks[sel];
+    let steps = r_steps[sel];
+    let nm = [];
+    let ns = [];
+    for (let i = 0; i < count(marks); i += 1) {
+        if (i == k) { continue; }
+        push(nm, marks[i]);
+        if (i == k - 1) { push(ns, steps[i] + steps[k]); }
+        else { push(ns, steps[i]); }
+    }
+    let used = 0;
+    for (let i = 0; i < count(ns); i += 1) { used += ns[i]; }
+    if (used > MAX_STEPS) { ns[k - 1] = ns[k - 1] - (used - MAX_STEPS); }
+    r_marks[sel] = nm;
+    r_steps[sel] = ns;
+    rebuild_row(sel);
+}
+
+fn move_mark(k, x) {
+    let marks = r_marks[sel];
+    let lo = marks[k - 1] + 64;
+    let hi = r_frames[sel] - 64;
+    if (k + 1 < count(marks)) { hi = marks[k + 1] - 64; }
+    marks[k] = math_clamp(math_round(x_to_frame(x)), lo, hi);
+    r_marks[sel] = marks;
+    rebuild_row(sel);
+}
+
+// Left half of a segment in the strip = one step less, right half = one more.
+fn seg_strip_click(x) {
+    let f = x_to_frame(x);
+    let marks = r_marks[sel];
+    let steps = r_steps[sel];
+    let n = count(marks);
+    let k = 0;
+    while (k + 1 < n && marks[k + 1] <= f) { k += 1; }
+    let f1 = r_frames[sel];
+    if (k + 1 < n) { f1 = marks[k + 1]; }
+    let used = 0;
+    for (let i = 0; i < n; i += 1) { used += steps[i]; }
+    if (x < (frame_to_x(marks[k]) + frame_to_x(f1)) / 2) {
+        steps[k] = math_max(0, steps[k] - 1);
+    } else if (used < MAX_STEPS) {
+        steps[k] = steps[k] + 1;
+    }
+    r_steps[sel] = steps;
+    rebuild_row(sel);
+}
+
+fn editor_down(x, y, button) {
+    if (r_node[sel] < 0) { return; }
+    if (y >= SEG_Y && y < SEG_Y + SEG_H) {
+        if (button == 0) { seg_strip_click(x); }
+        return;
+    }
+    let k = mark_near(x);
+    if (button == 1) {
+        if (k > 0) { delete_mark(k); }
+        return;
+    }
+    if (k > 0) { drag_mark = k; }
+    else { add_mark(x); }
+}
+
+fn handle_mouse() {
+    let evs = cv.events();
+    for (let i = 0; i < count(evs); i += 1) {
+        let e = evs[i];
+        let x = e["x"];
+        let y = e["y"];
+        if (!e["down"]) {
+            if (e["button"] == 0) {
+                grid_up(x);
+                drag_mark = -1;
+            }
+            continue;
+        }
+        if (y >= GY && y < GY + N_ROWS * ROW_STEP) {
+            let r = math_floor((y - GY) / ROW_STEP);
+            if (y - GY - r * ROW_STEP < ROW_H) { grid_down(r, x, e["button"]); }
+        } else if (y >= STRIP_Y && y < STRIP_Y + 26 && e["button"] == 0) {
+            let g = math_floor((x - GX) / 120);
+            if (x >= GX && g < 4) {
+                for (let r = 0; r < N_ROWS; r += 1) {
+                    if (r_grp[r] == g) { press(r, STOP, 0); }
+                }
+            }
+        } else if (y >= EY && y < SEG_Y + SEG_H) {
+            editor_down(x, y, e["button"]);
+        }
+    }
+    if (drag_mark > 0 && cv.mouse_down()) { move_mark(drag_mark, cv.mouse_x()); }
+}
+
+// ── UI: widgets ─────────────────────────────────────────────────────────────
+
+fn refresh_presets() {
+    let files = dir_scan(os_script_dir());
+    preset_names = [];
+    if (files) {
+        for (let i = 0; i < count(files); i += 1) {
+            let f = files[i];
+            if (str_ends_with("__mlr.json", f)) {
+                push(preset_names, str_substr(f, 0, str_length(f) - 10));
+            }
+        }
+    }
+    if (count(preset_names) == 0) { w_presets.set_options(["-"]); }
+    else { w_presets.set_options(preset_names); }
+}
+
+fn preset_path(name) {
+    return os_script_dir() + "/" + name + "__mlr.json";
+}
+
+fn save_preset(name) {
+    let rows = [];
+    for (let r = 0; r < N_ROWS; r += 1) {
+        push(rows, [
+            "file" => r_file[r], "marks" => r_marks[r], "steps" => r_steps[r],
+            "step_len" => r_len_i[r], "speed" => r_speed_i[r], "pitch" => r_pitch[r],
+            "reverse" => r_rev[r], "play" => r_play[r], "mode" => r_mode[r], "group" => r_grp[r],
+            "mute" => r_mute[r], "vol" => r_vol[r], "lo" => r_lo[r], "hi" => r_hi[r],
+        ]);
+    }
+    let pats = [];
+    for (let k = 0; k < 2; k += 1) {
+        let evs = pat_ev0;
+        if (k == 1) { evs = pat_ev1; }
+        let rel = [];
+        for (let i = 0; i < count(evs); i += 1) {
+            let e = evs[i];
+            push(rel, [math_max(0, e[0] - pat_start[k]), e[1], e[2], e[3]]);
+        }
+        push(pats, ["len" => pat_len[k], "events" => rel]);
+    }
+    let data = [
+        "version" => 1, "bpm" => bpm(),
+        "groups" => [g_vol, g_rev, g_dly], "group_outs" => g_out,
+        "rev_out" => rev_out, "dly_out" => dly_out,
+        "main" => main_vol, "rev_room" => rev_room, "dly_time" => dly_i, "dly_fb" => dly_fb,
+        "rows" => rows, "patterns" => pats,
+    ];
+    file_write(preset_path(name), json_encode(data));
+    status_text = "saved " + name;
+    refresh_presets();
+}
+
+fn load_preset(name) {
+    let text = file_read(preset_path(name));
+    if (!text) { status_text = "can't read " + name; return; }
+    let data = json_decode(text);
+    bpm(data["bpm"]);
+    g_vol = data["groups"][0];
+    g_rev = data["groups"][1];
+    g_dly = data["groups"][2];
+    main_vol = data["main"];
+    rev_room = data["rev_room"];
+    dly_i = data["dly_time"];
+    dly_fb = data["dly_fb"];
+    if (has_key(data, "group_outs")) {
+        g_out = data["group_outs"];
+        rev_out = data["rev_out"];
+        dly_out = data["dly_out"];
+    }
+    mixer_update();
+    main_update();
+    let missing = 0;
+    for (let r = 0; r < N_ROWS; r += 1) {
+        let row = data["rows"][r];
+        r_len_i[r] = row["step_len"];
+        r_speed_i[r] = row["speed"];
+        r_pitch[r] = row["pitch"];
+        r_rev[r] = row["reverse"];
+        r_play[r] = PLAY_LOOP;
+        if (has_key(row, "play")) { r_play[r] = row["play"]; }
+        r_mode[r] = row["mode"];
+        r_grp[r] = row["group"];
+        r_mute[r] = row["mute"];
+        r_vol[r] = row["vol"];
+        if (row["file"] == "") { unload_row(r); continue; }
+        if (!file_exists(row["file"]) || !load_row(r, row["file"])) {
+            unload_row(r);
+            missing += 1;
+            continue;
+        }
+        r_marks[r] = row["marks"];
+        r_steps[r] = row["steps"];
+        r_lo[r] = row["lo"];
+        r_hi[r] = row["hi"];
+        rebuild_row(r);
+    }
+    for (let k = 0; k < 2; k += 1) {
+        pat_rec[k] = false;
+        pat_play[k] = false;
+        pat_start[k] = 0;
+        pat_len[k] = data["patterns"][k]["len"];
+    }
+    pat_ev0 = data["patterns"][0]["events"];
+    pat_ev1 = data["patterns"][1]["events"];
+    w_p1_rec.set(false); w_p1_play.set(false);
+    w_p2_rec.set(false); w_p2_play.set(false);
+    sync_row_widgets();
+    sync_mixer_widgets();
+    status_text = "loaded " + name;
+    if (missing > 0) { status_text += " (" + missing + " files missing)"; }
+}
+
+fn pattern_rec_toggle(k, on) {
+    if (on) {
+        pat_play[k] = false;
+        if (k == 0) { w_p1_play.set(false); pat_ev0 = []; }
+        else        { w_p2_play.set(false); pat_ev1 = []; }
+        pat_len[k] = 0;
+        pat_rec[k] = true;
+    } else {
+        // play first, then stop recording: playback picks up seamlessly
+        pat_play[k] = true;
+        if (k == 0) { w_p1_play.set(true); } else { w_p2_play.set(true); }
+        pat_rec[k] = false;
+    }
+}
+
+fn handle_widgets() {
+    if (w_file.has_changed() && w_file.value() != "") { load_row(sel, w_file.value()); }
+    if (w_step.has_changed())  { r_len_i[sel] = int(w_step.value()); }
+    if (w_speed.has_changed()) { r_speed_i[sel] = int(w_speed.value()); }
+    if (w_pitch.has_changed()) { r_pitch[sel] = math_round(w_pitch.value()); }
+    if (w_dir.has_changed())   { r_rev[sel] = int(w_dir.value()) == 1; }
+    if (w_play.has_changed())  { r_play[sel] = int(w_play.value()); }
+    if (w_mode.has_changed())  { r_mode[sel] = int(w_mode.value()); }
+    if (w_group.has_changed()) { r_grp[sel] = int(w_group.value()); }
+    if (w_vol.has_changed())   { r_vol[sel] = w_vol.value(); }
+
+    if (w_p1_rec.has_changed())  { pattern_rec_toggle(0, w_p1_rec.value()); }
+    if (w_p2_rec.has_changed())  { pattern_rec_toggle(1, w_p2_rec.value()); }
+    if (w_p1_play.has_changed()) { pat_play[0] = w_p1_play.value(); }
+    if (w_p2_play.has_changed()) { pat_play[1] = w_p2_play.value(); }
+
+    if (w_save.has_changed()) {
+        let name = str_trim(w_name.value());
+        if (name == "") { status_text = "type a preset name first"; }
+        else { save_preset(name); }
+    }
+    if (w_load.has_changed() && count(preset_names) > 0) {
+        load_preset(preset_names[int(w_presets.value())]);
+    }
+
+    let mix = false;
+    if (w_g1_vol.has_changed()) { g_vol[0] = w_g1_vol.value(); mix = true; }
+    if (w_g1_rev.has_changed()) { g_rev[0] = w_g1_rev.value(); mix = true; }
+    if (w_g1_dly.has_changed()) { g_dly[0] = w_g1_dly.value(); mix = true; }
+    if (w_g2_vol.has_changed()) { g_vol[1] = w_g2_vol.value(); mix = true; }
+    if (w_g2_rev.has_changed()) { g_rev[1] = w_g2_rev.value(); mix = true; }
+    if (w_g2_dly.has_changed()) { g_dly[1] = w_g2_dly.value(); mix = true; }
+    if (w_g3_vol.has_changed()) { g_vol[2] = w_g3_vol.value(); mix = true; }
+    if (w_g3_rev.has_changed()) { g_rev[2] = w_g3_rev.value(); mix = true; }
+    if (w_g3_dly.has_changed()) { g_dly[2] = w_g3_dly.value(); mix = true; }
+    if (w_g4_vol.has_changed()) { g_vol[3] = w_g4_vol.value(); mix = true; }
+    if (w_g4_rev.has_changed()) { g_rev[3] = w_g4_rev.value(); mix = true; }
+    if (w_g4_dly.has_changed()) { g_dly[3] = w_g4_dly.value(); mix = true; }
+    if (w_g1_out.has_changed()) { g_out[0] = int(w_g1_out.value()); mix = true; }
+    if (w_g2_out.has_changed()) { g_out[1] = int(w_g2_out.value()); mix = true; }
+    if (w_g3_out.has_changed()) { g_out[2] = int(w_g3_out.value()); mix = true; }
+    if (w_g4_out.has_changed()) { g_out[3] = int(w_g4_out.value()); mix = true; }
+    if (w_rev_out.has_changed()) { rev_out = int(w_rev_out.value()); mix = true; }
+    if (w_dly_out.has_changed()) { dly_out = int(w_dly_out.value()); mix = true; }
+    if (w_main.has_changed())   { main_vol = w_main.value(); main_update(); }
+    if (w_room.has_changed())   { rev_room = w_room.value(); mix = true; }
+    if (w_dtime.has_changed())  { dly_i = int(w_dtime.value()); mix = true; }
+    if (w_dfb.has_changed())    { dly_fb = w_dfb.value(); mix = true; }
+    if (w_bpm.has_changed())    { bpm(w_bpm.value()); mix = true; }
+    if (mix) { mixer_update(); }
+}
+
+// ── UI: drawing ─────────────────────────────────────────────────────────────
+
+fn draw_row(r) {
+    let y = GY + r * ROW_STEP;
+    let gc = GROUP_COLORS[r_grp[r]];
+    let total = r_total[r];
+
+    // label
+    if (r == sel) { cv.rect(4, y, GX - 10, ROW_H, 60, 60, 72); }
+    else { cv.rect(4, y, GX - 10, ROW_H, 30, 30, 36); }
+    cv.rect(4, y, 4, ROW_H, gc[0], gc[1], gc[2]);
+    cv.text(14, y + 4, "" + (r + 1), 14, 230, 230, 230);
+    cv.text(GX - 30, y + 4, PLAY_TAGS[r_play[r]], 11, 200, 200, 120);
+    if (r_file[r] != "") { cv.text(14, y + 23, str_substr(file_name(r_file[r]), 0, 9), 10, 150, 150, 160); }
+
+    // cells
+    let cur = r_cell[r];
+    if (r_ph[r] < 0) { cur = -1; }
+    let mini = r_mini[r];
+    let cellseg = r_cellseg[r];
+    let in_range = r_lo[r] >= 0;
+    for (let c = 0; c < MAX_STEPS; c += 1) {
+        let x = GX + c * CELL;
+        if (c >= total) {
+            cv.rect(x, y, CELL - 3, ROW_H, 20, 20, 24);
+            continue;
+        }
+        let shade = 38;
+        if (cellseg[c] % 2 == 1) { shade = 52; }
+        let cr = shade;
+        let cg = shade;
+        let cb = shade + 10;
+        if (in_range && c >= r_lo[r] && c <= r_hi[r]) { cr += 18; cg += 18; cb += 4; }
+        if (c == cur && r_playing[r]) { cr = 235; cg = 190; cb = 70; }
+        cv.rect(x, y, CELL - 3, ROW_H, cr, cg, cb);
+        if (c > 0 && cellseg[c] != cellseg[c - 1]) { cv.rect(x - 3, y, 3, ROW_H, gc[0], gc[1], gc[2]); }
+        let mid = y + ROW_H / 2;
+        for (let j = 0; j < 3; j += 1) {
+            let h = mini[c * 3 + j] * (ROW_H / 2 - 4);
+            let lx = x + 8 + j * 13;
+            cv.line(lx, mid - h, lx, mid + h, 140, 150, 170, 3);
+        }
+    }
+
+    // mute, stop, group
+    if (r_mute[r]) { cv.rect(MX, y, BOX, ROW_H, 200, 60, 60); }
+    else { cv.rect(MX, y, BOX, ROW_H, 40, 40, 46); }
+    cv.text(MX + 8, y + 12, "M", 13, 230, 230, 230);
+    if (r_playing[r]) { cv.rect(SX, y, BOX, ROW_H, 60, 160, 90); }
+    else { cv.rect(SX, y, BOX, ROW_H, 40, 40, 46); }
+    cv.rect(SX + 9, y + 15, 10, 10, 230, 230, 230);
+    cv.rect(GBX, y, BOX, ROW_H, gc[0], gc[1], gc[2]);
+    cv.text(GBX + 5, y + 12, "G" + (r_grp[r] + 1), 12, 20, 20, 20);
+}
+
+fn draw_strip() {
+    for (let g = 0; g < 4; g += 1) {
+        let gc = GROUP_COLORS[g];
+        let x = GX + g * 120;
+        cv.rect(x, STRIP_Y, 112, 26, 34, 34, 40);
+        cv.rect(x, STRIP_Y, 4, 26, gc[0], gc[1], gc[2]);
+        cv.text(x + 12, STRIP_Y + 6, "stop G" + (g + 1), 12, 220, 220, 220);
+    }
+    let info = "";
+    for (let k = 0; k < 2; k += 1) {
+        let s = "off";
+        if (pat_rec[k]) { s = "rec"; }
+        else if (pat_play[k] && pat_len[k] > 0) { s = "play " + pat_len[k] + "b"; }
+        info += "  P" + (k + 1) + ": " + s;
+    }
+    cv.text(GX + 4 * 120 + 10, STRIP_Y + 6, info, 12, 200, 200, 120);
+}
+
+fn draw_editor() {
+    cv.rect(EX, EY, EW, EH, 18, 18, 22);
+    cv.rect(EX, SEG_Y, EW, SEG_H, 26, 26, 32);
+    if (r_node[sel] < 0) {
+        cv.text(EX + 12, EY + 12, "row " + (sel + 1) + ": pick a file on the right", 14, 160, 160, 170);
+        return;
+    }
+    let frames = r_frames[sel];
+    let marks = r_marks[sel];
+    let steps = r_steps[sel];
+    let peaks = r_peaks[sel];
+    let n = count(marks);
+    let gc = GROUP_COLORS[r_grp[sel]];
+
+    // segment backgrounds + step counts
+    for (let k = 0; k < n; k += 1) {
+        let x0 = frame_to_x(marks[k]);
+        let x1 = EX + EW;
+        if (k + 1 < n) { x1 = frame_to_x(marks[k + 1]); }
+        let shade = 24;
+        if (k % 2 == 1) { shade = 34; }
+        if (steps[k] == 0) { shade = 10; }
+        cv.rect(x0, EY, x1 - x0, EH, shade, shade, shade + 8);
+        let cx = (x0 + x1) / 2;
+        if (x1 - x0 > 54) {
+            cv.text(x0 + 6, SEG_Y + 5, "−", 14, 200, 120, 120);
+            cv.text(x1 - 16, SEG_Y + 5, "+", 14, 120, 200, 120);
+        }
+        cv.text(cx - 6, SEG_Y + 5, "" + steps[k], 13, 230, 230, 230);
+    }
+
+    // waveform
+    let mid = EY + EH / 2;
+    let scale = EH / 2 - 6;
+    let top = 0.0001;
+    for (let i = 0; i < count(peaks); i += 1) { top = math_max(top, peaks[i]); }
+    for (let i = 0; i < count(peaks); i += 2) {
+        let h = math_max(peaks[i], peaks[i + 1]) / top * scale;
+        let x = EX + i * EW / PEAKS;
+        cv.line(x, mid - h, x, mid + h, 130, 160, 200, 2);
+    }
+
+    // markers
+    for (let k = 1; k < n; k += 1) {
+        let x = frame_to_x(marks[k]);
+        let w = 1;
+        if (k == drag_mark) { w = 3; }
+        cv.line(x, EY, x, SEG_Y + SEG_H, gc[0], gc[1], gc[2], w);
+        cv.rect(x - 4, EY, 8, 10, gc[0], gc[1], gc[2]);
+    }
+
+    // playhead
+    if (r_playing[sel]) {
+        let x = frame_to_x(r_pf[sel]);
+        cv.line(x, EY, x, EY + EH, 235, 190, 70, 2);
+    }
+    let total = r_total[sel];
+    cv.text(EX, SEG_Y + SEG_H + 8, file_name(r_file[sel]) + "   " + total + " steps × "
+        + STEP_NAMES[r_len_i[sel]] + "   " + math_round(frames / r_sr[sel] * 100) / 100 + " s", 12, 170, 170, 180);
+}
+
+fn draw() {
+    cv.fill(12, 12, 15);
+    for (let r = 0; r < N_ROWS; r += 1) { draw_row(r); }
+    draw_strip();
+    draw_editor();
+    cv.clear();    // publish this frame
+}
+
+// ── Start ───────────────────────────────────────────────────────────────────
+
+fn main() {
+    mixer_start();
+    sync_row_widgets();
+    sync_mixer_widgets();
+    w_name.set("my_session");
+    refresh_presets();
+
+    for (let r = 0; r < N_ROWS; r += 1) { start_row(r); }
+    thread mlr_patterns { pattern_clock(); }
+
+    thread mlr_ui {
+        loop {
+            handle_mouse();
+            handle_widgets();
+            if (w_status.value() != status_text) { w_status.set(status_text); }
+            draw();
+            wait_ms(33);
+        }
+    }
+}

@@ -636,3 +636,104 @@ fn test_collect_sample_paths_in_block() {
     let paths = collect_sample_paths(&body);
     assert_eq!(paths, vec!["kick.wav"]);
 }
+
+fn call(name: &str, args: Vec<UGenExpr>) -> UGenExpr {
+    UGenExpr::UGenCall { name: name.to_string(), args, named_args: na() }
+}
+
+fn param(name: &str) -> UGenExpr {
+    UGenExpr::Param(name.to_string())
+}
+
+#[test]
+fn test_phasor_four_args_resets_to_zero() {
+    let body = call("phasor", vec![
+        UGenExpr::Number(0.0), UGenExpr::Number(1.0),
+        UGenExpr::Number(0.0), UGenExpr::Number(1000.0),
+    ]);
+    let bytes = build_synthdef("test", &[], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let ph = def.ugens.iter().find(|u| u.name == "Phasor").unwrap();
+    assert_eq!(ph.num_inputs, 5, "Phasor(trig, rate, start, end, resetPos)");
+    assert_eq!(ph.inputs[4], None, "resetPos should be a constant");
+}
+
+#[test]
+fn test_phasor_reset_pos_arg() {
+    let body = call("phasor", vec![
+        param("jump"), UGenExpr::Number(1.0),
+        UGenExpr::Number(0.0), UGenExpr::Number(1000.0), param("pos"),
+    ]);
+    let bytes = build_synthdef("test", &["jump".to_string(), "pos".to_string()], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let ph = def.ugens.iter().find(|u| u.name == "Phasor").unwrap();
+    let control = def.ugens.iter().position(|u| u.name == "Control").unwrap() as i32;
+    let pos_index = def.params.iter().find(|p| p.name == "pos").unwrap().index;
+    assert_eq!(ph.inputs[4], Some((control, pos_index)), "resetPos should come from the `pos` param");
+}
+
+#[test]
+fn test_changed() {
+    let body = call("changed", vec![param("jump")]);
+    let bytes = build_synthdef("test", &["jump".to_string()], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let hpz = def.ugens.iter().find(|u| u.name == "HPZ1").unwrap();
+    assert_eq!(hpz.rate, 1, "control-rate input → control-rate HPZ1");
+    let abs = def.ugens.iter().find(|u| u.name == "UnaryOpUGen").unwrap();
+    assert_eq!(abs.special_index, 5, "abs");
+    let gt = def.ugens.iter().find(|u| u.name == "BinaryOpUGen").unwrap();
+    assert_eq!(gt.special_index, 9, "> (GT)");
+}
+
+#[test]
+fn test_buf_wr_input_order() {
+    // buf_wr(sig, buf, phase) → BufWr(bufnum, phase, loop, ...channels)
+    let body = call("buf_wr", vec![
+        call("sine", vec![UGenExpr::Number(440.0)]),
+        param("buf"), param("phase"),
+    ]);
+    let bytes = build_synthdef("test", &["buf".to_string(), "phase".to_string()], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let control = def.ugens.iter().position(|u| u.name == "Control").unwrap() as i32;
+    let sine = def.ugens.iter().position(|u| u.name == "SinOsc").unwrap() as i32;
+    let wr = def.ugens.iter().find(|u| u.name == "BufWr").unwrap();
+    assert_eq!(wr.num_inputs, 4);
+    assert_eq!(wr.inputs[0], Some((control, 0)), "bufnum first");
+    assert_eq!(wr.inputs[1], Some((control, 1)), "phase second");
+    assert_eq!(wr.inputs[2], None, "loop is a constant");
+    assert_eq!(wr.inputs[3], Some((sine, 0)), "signal last");
+}
+
+#[test]
+fn test_record_buf_input_order() {
+    // record_buf(sig, buf) → RecordBuf(bufnum, offset, recLevel, preLevel, run, loop, trigger, doneAction, ...channels)
+    let body = call("record_buf", vec![
+        call("sine", vec![UGenExpr::Number(440.0)]),
+        param("buf"),
+    ]);
+    let bytes = build_synthdef("test", &["buf".to_string()], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let control = def.ugens.iter().position(|u| u.name == "Control").unwrap() as i32;
+    let sine = def.ugens.iter().position(|u| u.name == "SinOsc").unwrap() as i32;
+    let rec = def.ugens.iter().find(|u| u.name == "RecordBuf").unwrap();
+    assert_eq!(rec.num_inputs, 9);
+    assert_eq!(rec.inputs[0], Some((control, 0)), "bufnum first");
+    assert!(rec.inputs[1..8].iter().all(|i| i.is_none()), "offset..doneAction are constants");
+    assert_eq!(rec.inputs[8], Some((sine, 0)), "signal last");
+}
+
+#[test]
+fn test_smoothers_follow_input_rate() {
+    for (fname, ugen) in [("lag", "Lag"), ("lag2", "Lag2"), ("ramp", "Ramp"), ("slew", "Slew")] {
+        // on a param → control rate
+        let body = call(fname, vec![param("amp")]);
+        let bytes = build_synthdef("test", &["amp".to_string()], &body, &[]).unwrap();
+        let def = parse_synthdef(&bytes);
+        assert_eq!(def.ugens.iter().find(|u| u.name == ugen).unwrap().rate, 1, "{} on a param", fname);
+        // on an audio signal → audio rate
+        let body = call(fname, vec![call("sine", vec![UGenExpr::Number(440.0)])]);
+        let bytes = build_synthdef("test", &[], &body, &[]).unwrap();
+        let def = parse_synthdef(&bytes);
+        assert_eq!(def.ugens.iter().find(|u| u.name == ugen).unwrap().rate, 2, "{} on audio", fname);
+    }
+}

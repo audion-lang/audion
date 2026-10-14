@@ -240,6 +240,45 @@ impl OscClient {
         buf_id
     }
 
+    /// Write a whole buffer to `path` as a 32-bit float WAV and wait (up to
+    /// 10s) for scsynth's `/done /b_write`. Returns false on timeout.
+    pub fn buffer_write_float(&self, buf_id: i32, path: &str) -> bool {
+        self.send(
+            "/b_write",
+            vec![
+                OscType::Int(buf_id),
+                OscType::String(path.to_string()),
+                OscType::String("wav".to_string()),
+                OscType::String("float".to_string()),
+                OscType::Int(-1), // num frames (-1 = all)
+                OscType::Int(0),  // start frame
+                OscType::Int(0),  // close the file when done
+            ],
+        );
+        let _ = self.socket.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let mut buf = [0u8; 1024];
+        let mut ok = false;
+        loop {
+            match self.socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
+                        if msg.addr == "/done" {
+                            if let Some(rosc::OscType::String(cmd)) = msg.args.first() {
+                                if cmd == "/b_write" {
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = self.socket.set_read_timeout(None);
+        ok
+    }
+
     /// Allocate an empty buffer with the given number of frames and channels.
     /// Returns the buffer ID.
     pub fn buffer_alloc(&self, num_frames: i32, num_channels: i32) -> i32 {

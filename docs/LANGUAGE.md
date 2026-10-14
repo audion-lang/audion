@@ -150,11 +150,19 @@ let a = [1, 2, 3];
 a[0] = 99;           // update existing key
 a["new"] = "hello";  // add new key
 a[1] += 10;          // compound assignment
+
+// Nested arrays are written in place, at any depth
+let b = [];
+b["q"] = [];
+b["q"]["w"] = 1;
+b["q"]["e"] = [0, 0];
+b["q"]["e"][1] += 5;
+push(b["q"]["e"], 9);
 ```
 
 ### Copy Semantics
 
-Arrays are **deep copied** on assignment. Modifying a copy does not affect the original. Array inserts are O(1), removal is O(n).
+Arrays are **deep copied** when stored: `let`, `=`, `a[k] = ...`, `a.k = ...`, `a[] = ...`, `push()` and array literals all store a copy. Modifying a copy does not affect the original. Function arguments are copies too: a function can change its parameter freely, the caller's array stays as it was (return the changed array to pass it back). Reading `a[k]` does not copy, which is what lets nested writes like `a["q"]["w"] = 1` reach the stored array. Array inserts are O(1), removal is O(n).
 
 ```c
 let a = [1, 2, 3];
@@ -461,7 +469,7 @@ c1.get();           // 1
 
 ### Copy Semantics
 
-Objects are **deep copied** on assignment (same as arrays). The copy gets its own independent state, and methods inside the copy are remapped to point at the copy's environment:
+Objects are **deep copied** on assignment and when passed to a function (same as arrays). The copy gets its own independent state, and methods inside the copy are remapped to point at the copy's environment:
 
 ```c
 let c = make_counter();
@@ -1854,6 +1862,7 @@ thread listener {
 | `buffer_free(buf_id)` | Free a buffer on scsynth | nil |
 | `buffer_alloc(frames, channels?)` | Allocate an empty buffer (channels defaults to 1) | buffer ID (number) |
 | `buffer_read(buf_id, path)` | Read a sound file into an existing buffer | nil |
+| `buffer_peaks(buf_id, n)` | `n` peak values (largest absolute sample per slice, all channels) for drawing a waveform. Works for any format scsynth can load (wav, aiff, flac, mp3, ...) | array of numbers |
 
 `buffer_load()` is the simplest way to load a sample - it allocates and reads in one step. Pass the returned buffer ID to synths via the `bufnum` named argument, and swap samples live with `set()`.
 
@@ -2179,6 +2188,26 @@ define string(freq, amp, gate) {
     out(0, sample("violin.wav", root: 60, loop: 1, loop_start: 44100, loop_end: 132300)
         * env(gate, 0.1, 1, 0.8) * amp);
 }
+```
+
+**Manual playheads** — `phasor()` + `buf_rd()` for full control of the read position:
+
+| UGen | Description |
+|------|-------------|
+| `phasor(trig, rate, start, end)` | Ramp from `start` to `end`, wrapping; jumps to 0 when `trig` goes from ≤0 to >0 |
+| `phasor(trig, rate, start, end, reset_pos)` | Same, but jumps to `reset_pos` |
+| `buf_rd(channels, buf, phase)` | Read `buf` at frame `phase` (`channels` must be a number) |
+| `changed(x)` | 1 for one block whenever `x` changes, else 0 |
+
+`set()` only changes values, so it can't fire a trigger directly. Use `changed()` on a counter param to turn every `set()` into a trigger:
+
+```c
+define player(buf, frames, jump, pos) {
+    out(0, buf_rd(2, buf, phasor(changed(jump), buf_rate_scale(buf), 0, frames, pos)));
+}
+let n = synth("player", buf: b, frames: 88200);
+set(n, jump: 1, pos: 22050);   // jump to frame 22050
+set(n, jump: 2, pos: 0);       // jump back to the start
 ```
 
 #### Filters

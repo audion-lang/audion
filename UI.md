@@ -131,7 +131,18 @@ c.line(x1, y1, x2, y2, r, g, b)        // line (default width 1)
 c.line(x1, y1, x2, y2, r, g, b, w)     // line with explicit width
 c.text(x, y, "string", size, r, g, b)  // text at position
 c.size(w, h)                            // resize the canvas
+
+// Mouse (canvas pixels):
+c.mouse_x(); c.mouse_y()                // pointer position over the canvas
+c.mouse_down()                          // left button held on the canvas
+c.mouse_right_down()                    // right button held on the canvas
+c.events()                              // presses/releases since the last call:
+                                        // [{down, button, x, y}, ...], button 0 = left, 1 = right
 ```
+
+Read clicks with `events()` rather than polling `mouse_down()`, a quick click can
+start and end between two polls. See `examples/advanced/mlr.au` for a full grid +
+waveform editor built this way.
 
 Custom widgets are Audion functions that create and manage a canvas — no Rust needed:
 ```au

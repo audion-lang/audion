@@ -1697,7 +1697,31 @@ fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex
         (d.cmds.clone(), override_w.unwrap_or(d.width), override_h.unwrap_or(d.height))
     };
 
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::click_and_drag());
+    {
+        let (pos, pressed, released) = ui.input(|i| (
+            i.pointer.interact_pos(),
+            [i.pointer.primary_pressed(), i.pointer.secondary_pressed()],
+            [i.pointer.primary_released(), i.pointer.secondary_released()],
+        ));
+        let mut d = data_arc.lock().unwrap();
+        let tracking = resp.hovered() || d.held[0] || d.held[1];
+        if let (Some(p), true) = (pos, tracking) {
+            d.mouse_x = p.x - rect.min.x;
+            d.mouse_y = p.y - rect.min.y;
+        }
+        let (x, y) = (d.mouse_x, d.mouse_y);
+        for b in 0..2 {
+            if pressed[b] && resp.hovered() {
+                d.held[b] = true;
+                d.push_event(super::CanvasEvent { down: true, button: b as u8, x, y });
+            }
+            if released[b] && d.held[b] {
+                d.held[b] = false;
+                d.push_event(super::CanvasEvent { down: false, button: b as u8, x, y });
+            }
+        }
+    }
     if !ui.is_rect_visible(rect) { return; }
 
     let painter = ui.painter_at(rect);

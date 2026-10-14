@@ -206,7 +206,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
-    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query",
+    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks",
     "buffer_stream_open", "buffer_stream_close",
     "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
@@ -371,6 +371,7 @@ pub fn call_builtin(
         "buffer_free" => builtin_buffer_free(args, osc),
         "buffer_alloc" => builtin_buffer_alloc(args, osc),
         "buffer_query" => builtin_buffer_query(args, osc),
+        "buffer_peaks" => builtin_buffer_peaks(args, osc),
         "buffer_read" => builtin_buffer_read(args, osc),
         "buffer_stream_open" => builtin_buffer_stream_open(args, osc),
         "buffer_stream_close" => builtin_buffer_stream_close(args, osc),
@@ -820,7 +821,7 @@ fn builtin_push(args: &[Value]) -> Result<Value> {
         });
     }
     let arr = require_array("push", &args[0])?;
-    let val = args[1].clone();
+    let val = args[1].deep_clone();
     let mut guard = arr.lock().unwrap();
     let new_len = guard.push_auto(val);
     Ok(Value::Number(new_len as f64))
@@ -1680,6 +1681,34 @@ fn builtin_buffer_query(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
         }
         None => Ok(Value::Nil),
     }
+}
+
+// buffer_peaks(buf_id, n) → array of n peak values (0..1+), for drawing a waveform.
+// scsynth writes the buffer to a temp float WAV (so any format scsynth can load
+// works), then we read it back and reduce it to n slices.
+fn builtin_buffer_peaks(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "buffer_peaks() requires 2 arguments: buffer_peaks(buf_id, n)".to_string(),
+        });
+    }
+    let buf_id = require_number("buffer_peaks", &args[0])? as i32;
+    let n = require_number("buffer_peaks", &args[1])?.max(0.0) as usize;
+    let tmp = std::env::temp_dir().join(format!("audion_peaks_{}_{}.wav", std::process::id(), buf_id));
+    let tmp_str = tmp.to_string_lossy().to_string();
+    if !osc.buffer_write_float(buf_id, &tmp_str) {
+        return Err(AudionError::RuntimeError {
+            msg: format!("buffer_peaks(): scsynth did not write buffer {}", buf_id),
+        });
+    }
+    let peaks = crate::sampler::float_wav_peaks(&tmp, n);
+    let _ = std::fs::remove_file(&tmp);
+    let peaks = peaks.map_err(|e| AudionError::RuntimeError { msg: format!("buffer_peaks(): {}", e) })?;
+    let mut arr = AudionArray::new();
+    for p in peaks {
+        arr.push_auto(Value::Number(p as f64));
+    }
+    Ok(Value::Array(Arc::new(Mutex::new(arr))))
 }
 
 // buffer_alloc(num_frames, num_channels) → buffer ID (number)

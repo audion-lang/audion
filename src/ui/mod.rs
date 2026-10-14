@@ -77,11 +77,40 @@ pub struct Canvas2dData {
     pub pending: Vec<DrawCmd>,
     pub width: f32,
     pub height: f32,
+    /// Pointer position in canvas pixels, updated by the UI thread while the
+    /// pointer is over the canvas or a button is held on it.
+    pub mouse_x: f32,
+    pub mouse_y: f32,
+    /// Button held on the canvas: [left, right].
+    pub held: [bool; 2],
+    /// Presses and releases since the script last called `events()`.
+    pub events: Vec<CanvasEvent>,
 }
+
+/// One mouse press or release on a canvas, in canvas pixels.
+#[derive(Clone, Debug)]
+pub struct CanvasEvent {
+    pub down: bool,
+    /// 0 = left, 1 = right.
+    pub button: u8,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Oldest events are dropped past this, so a script that never reads
+/// `events()` doesn't grow the queue forever.
+pub const CANVAS_EVENT_CAP: usize = 256;
 
 impl Canvas2dData {
     pub fn new(width: f32, height: f32) -> Self {
-        Self { cmds: Vec::new(), pending: Vec::new(), width, height }
+        Self { width, height, ..Default::default() }
+    }
+
+    pub fn push_event(&mut self, ev: CanvasEvent) {
+        if self.events.len() >= CANVAS_EVENT_CAP {
+            self.events.remove(0);
+        }
+        self.events.push(ev);
     }
 }
 

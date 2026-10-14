@@ -39,3 +39,58 @@ pub fn detect_channels(path: &Path) -> u32 {
     2
 }
 
+
+/// Read a 32-bit float WAV (what scsynth's `/b_write ... "wav" "float"`
+/// produces) and reduce it to `n` peak values, each the largest absolute
+/// sample over all channels in that slice of the file. Used to draw waveforms.
+pub fn float_wav_peaks(path: &Path, n: usize) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("not a WAV file".to_string());
+    }
+    let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+
+    let mut channels = 0usize;
+    let mut data: Option<&[u8]> = None;
+    let mut pos = 12;
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32_at(pos + 4) as usize;
+        let body = pos + 8;
+        let end = (body + size).min(bytes.len());
+        if id == b"fmt " && size >= 16 {
+            // 3 = IEEE float, 0xFFFE = extensible (float subformat in practice here).
+            let format = u16_at(body);
+            let bits = u16_at(body + 14);
+            if !(format == 3 || format == 0xFFFE) || bits != 32 {
+                return Err(format!("expected 32-bit float WAV, got format {} / {} bits", format, bits));
+            }
+            channels = u16_at(body + 2) as usize;
+        } else if id == b"data" {
+            data = Some(&bytes[body..end]);
+        }
+        pos = body + size + (size & 1); // chunks are word-aligned
+    }
+    let data = data.ok_or("WAV has no data chunk")?;
+    if channels == 0 {
+        return Err("WAV has no fmt chunk".to_string());
+    }
+
+    let frames = data.len() / (4 * channels);
+    let mut peaks = vec![0f32; n];
+    if frames == 0 || n == 0 {
+        return Ok(peaks);
+    }
+    for f in 0..frames {
+        let slot = f * n / frames;
+        for c in 0..channels {
+            let i = (f * channels + c) * 4;
+            let v = f32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]).abs();
+            if v > peaks[slot] {
+                peaks[slot] = v;
+            }
+        }
+    }
+    Ok(peaks)
+}

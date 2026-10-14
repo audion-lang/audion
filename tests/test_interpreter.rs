@@ -241,6 +241,118 @@ fn test_array_deep_clone() {
 }
 
 #[test]
+fn test_array_nested_write() {
+    assert_eq!(
+        eval("let a = []; a[\"q\"] = []; a[\"q\"][\"w\"] = 1; a[\"q\"][\"w\"];"),
+        Value::Number(1.0)
+    );
+}
+
+#[test]
+fn test_array_nested_write_three_levels() {
+    assert_eq!(
+        eval("let a = [[[0]]]; a[0][0][0] = 7; a[0][0][0] += 1; a[0][0][0];"),
+        Value::Number(8.0)
+    );
+}
+
+#[test]
+fn test_array_nested_push() {
+    assert_eq!(
+        eval("let a = [\"q\" => [1]]; push(a[\"q\"], 2); a[\"q\"][] = 3; count(a[\"q\"]);"),
+        Value::Number(3.0)
+    );
+}
+
+#[test]
+fn test_array_nested_write_in_function() {
+    assert_eq!(
+        eval("let rows = [[\"x\" => 0]]; fn bump(r) { rows[r][\"x\"] += 1; } bump(0); bump(0); rows[0][\"x\"];"),
+        Value::Number(2.0)
+    );
+}
+
+#[test]
+fn test_array_nested_member_write() {
+    assert_eq!(
+        eval("let a = [\"q\" => [\"w\" => 0]]; a.q.w = 5; a[\"q\"][\"w\"];"),
+        Value::Number(5.0)
+    );
+}
+
+#[test]
+fn test_array_let_from_nested_is_copy() {
+    assert_eq!(
+        eval("let a = [\"q\" => [1]]; let b = a[\"q\"]; b[0] = 99; a[\"q\"][0];"),
+        Value::Number(1.0)
+    );
+}
+
+#[test]
+fn test_array_index_assign_stores_copy() {
+    assert_eq!(
+        eval("let x = [1]; let a = []; a[\"q\"] = x; a[\"q\"][0] = 99; x[0];"),
+        Value::Number(1.0)
+    );
+}
+
+#[test]
+fn test_array_push_stores_copy() {
+    assert_eq!(
+        eval("let x = [1]; let a = []; push(a, x); a[0][0] = 99; x[0];"),
+        Value::Number(1.0)
+    );
+}
+
+#[test]
+fn test_array_literal_stores_copy() {
+    assert_eq!(
+        eval("let x = [1]; fn f(arr) { arr[0][0] = 99; } f([x]); x[0];"),
+        Value::Number(1.0)
+    );
+}
+
+#[test]
+fn test_fn_arg_array_is_copy() {
+    assert_eq!(
+        eval("fn abc(a) { a[0] = 1; push(a, 9); return a; } let flat = [4, 5, 6]; abc(flat); flat[0] + count(flat);"),
+        Value::Number(7.0)
+    );
+}
+
+#[test]
+fn test_fn_arg_nested_array_is_copy() {
+    assert_eq!(
+        eval("fn abc(a) { a[0] = 1; return a; } let t = [\"b\" => [4, 5, 6]]; abc(t[\"b\"]); t[\"b\"][0];"),
+        Value::Number(4.0)
+    );
+}
+
+#[test]
+fn test_fn_arg_named_array_is_copy() {
+    assert_eq!(
+        eval("fn abc(a) { a[0] = 1; return a; } let flat = [4]; abc(a: flat); flat[0];"),
+        Value::Number(4.0)
+    );
+}
+
+#[test]
+fn test_fn_arg_object_is_copy() {
+    assert_eq!(
+        eval("fn make() { let n = 0; let inc = fn() { n += 1; }; return this; } fn bump(c) { c.inc(); c.n = c.n + 10; } let c = make(); bump(c); c.n;"),
+        Value::Number(0.0)
+    );
+}
+
+#[test]
+fn test_fn_returns_edited_copy() {
+    assert_eq!(
+        eval("fn abc(a) { a[0] = 1; return a; } let t = [\"b\" => [4, 5, 6]]; let r = abc(t[\"b\"]); r[0] * 10 + t[\"b\"][0];"),
+        Value::Number(14.0)
+    );
+}
+
+#[test]
 fn test_array_count() {
     assert_eq!(
         eval("let a = [1, 2, 3]; count(a);"),

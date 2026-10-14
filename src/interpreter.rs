@@ -60,10 +60,26 @@ fn path_to_namespace_segments(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// Identity of the running audion binary (size + modified time), so the .adc
+/// cache drops entries compiled by an older build: a compiler fix must reach
+/// defines whose source didn't change.
+fn build_id() -> u64 {
+    static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        let mut hasher = DefaultHasher::new();
+        if let Some(meta) = std::env::current_exe().ok().and_then(|p| std::fs::metadata(p).ok()) {
+            meta.len().hash(&mut hasher);
+            if let Ok(t) = meta.modified() { t.hash(&mut hasher); }
+        }
+        hasher.finish()
+    })
+}
+
 /// Hash a SynthDef AST for caching purposes.
 /// Uses Debug representation to create a stable hash of the full AST.
 fn hash_synthdef(name: &str, params: &[String], body: &UGenExpr) -> u64 {
     let mut hasher = DefaultHasher::new();
+    build_id().hash(&mut hasher);
     name.hash(&mut hasher);
     for param in params {
         param.hash(&mut hasher);
@@ -2011,8 +2027,26 @@ impl Interpreter {
                         if let Some(w) = args.get(0).and_then(|v| v.as_number()) { data.width = w as f32; }
                         if let Some(h) = args.get(1).and_then(|v| v.as_number()) { data.height = h as f32; }
                     }
+                    // Mouse, in canvas pixels.
+                    "mouse_x" => return Ok(Value::Number(data.mouse_x as f64)),
+                    "mouse_y" => return Ok(Value::Number(data.mouse_y as f64)),
+                    "mouse_down" => return Ok(Value::Bool(data.held[0])),
+                    "mouse_right_down" => return Ok(Value::Bool(data.held[1])),
+                    // events() → [{down, button, x, y}, ...] since the last call; button 0 = left, 1 = right.
+                    "events" => {
+                        let mut list = AudionArray::new();
+                        for ev in data.events.drain(..) {
+                            let mut e = AudionArray::new();
+                            e.set(Value::String("down".into()), Value::Bool(ev.down));
+                            e.set(Value::String("button".into()), Value::Number(ev.button as f64));
+                            e.set(Value::String("x".into()), Value::Number(ev.x as f64));
+                            e.set(Value::String("y".into()), Value::Number(ev.y as f64));
+                            list.push_auto(Value::Array(Arc::new(Mutex::new(e))));
+                        }
+                        return Ok(Value::Array(Arc::new(Mutex::new(list))));
+                    }
                     _ => return Err(AudionError::RuntimeError {
-                        msg: format!("unknown canvas method '{}' — available: clear, fill, rect, rect_outline, circle, circle_outline, line, text, size", method),
+                        msg: format!("unknown canvas method '{}' — available: clear, fill, rect, rect_outline, circle, circle_outline, line, text, size, mouse_x, mouse_y, mouse_down, mouse_right_down, events", method),
                     }),
                 }
                 Ok(Value::Nil)
@@ -2308,7 +2342,7 @@ impl Interpreter {
             Expr::ArrayLit { elements } => {
                 let mut arr = AudionArray::new();
                 for (key_expr, val_expr) in elements {
-                    let val = self.eval_expr(val_expr)?;
+                    let val = self.eval_expr(val_expr)?.deep_clone();
                     if let Some(k) = key_expr {
                         let key = self.eval_expr(k)?;
                         arr.set(key, val);
@@ -2323,9 +2357,11 @@ impl Interpreter {
                 let idx = self.eval_expr(index)?;
                 match obj {
                     Value::Array(arr) => {
+                        // No copy: nested writes (`a["q"]["w"] = 1`) must reach
+                        // the stored array. Values are copied when stored instead.
                         let guard = arr.lock().unwrap();
                         match guard.get(&idx) {
-                            Some(v) => Ok(v.deep_clone()),
+                            Some(v) => Ok(v.clone()),
                             None => Ok(Value::Nil),
                         }
                     }
@@ -2341,7 +2377,7 @@ impl Interpreter {
             } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
-                let val = self.eval_expr(value)?;
+                let val = self.eval_expr(value)?.deep_clone();
                 match obj {
                     Value::Array(arr) => {
                         let mut guard = arr.lock().unwrap();
@@ -2355,7 +2391,7 @@ impl Interpreter {
             }
             Expr::ArrayPushAssign { object, value } => {
                 let obj = self.eval_expr(object)?;
-                let val = self.eval_expr(value)?;
+                let val = self.eval_expr(value)?.deep_clone();
                 match obj {
                     Value::Array(arr) => {
                         let mut guard = arr.lock().unwrap();
@@ -2418,7 +2454,7 @@ impl Interpreter {
                         let guard = arr.lock().unwrap();
                         let key = Value::String(field.clone());
                         match guard.get(&key) {
-                            Some(v) => Ok(v.deep_clone()),
+                            Some(v) => Ok(v.clone()),
                             None => Ok(Value::Nil),
                         }
                     }
@@ -2440,7 +2476,7 @@ impl Interpreter {
             }
             Expr::MemberAssign { object, field, value } => {
                 let obj = self.eval_expr(object)?;
-                let val = self.eval_expr(value)?;
+                let val = self.eval_expr(value)?.deep_clone();
                 match obj {
                     Value::Object(env) => {
                         let mut e = env.lock().unwrap();
@@ -2603,6 +2639,9 @@ impl Interpreter {
                 });
             }
         }
+        // Every argument is a copy (arrays and objects deep-copied), so a
+        // function can never change what the caller passed in.
+        let arg = |v: &Value| v.deep_clone();
         let mut result: Vec<(String, Value)> = Vec::with_capacity(params.len());
         for (i, param) in params.iter().enumerate() {
             if i < positional.len() {
@@ -2615,9 +2654,9 @@ impl Interpreter {
                         ),
                     });
                 }
-                result.push((param.name.clone(), positional[i].clone()));
+                result.push((param.name.clone(), arg(&positional[i])));
             } else if let Some((_, val)) = named.iter().find(|(n, _)| n == &param.name) {
-                result.push((param.name.clone(), val.clone()));
+                result.push((param.name.clone(), arg(val)));
             } else if let Some(default_expr) = &param.default {
                 let val = self.eval_expr(&default_expr.clone())?;
                 result.push((param.name.clone(), val));

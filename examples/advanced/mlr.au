@@ -17,9 +17,13 @@
 //   click a cell ........ jump there on the next step (starts a stopped row)
 //   drag cell A → B ..... loop between A and B
 //   right-click a row ... clear its loop
-//   row label ........... select the row (editor + settings on the right)
+//   row label ........... select the row (editor + settings on the right);
+//                         drag it onto another row's label to swap the two rows
+//   Cmd+Z / Cmd+Shift+Z . undo / redo (50 steps)
 //   M ................... mute     ■ ... stop row     G1-4 ... cycle group
 //   group strip ......... stop all rows in that group
+//   reset track ......... blank the selected row (click twice: "sure?")
+//   reset session ....... start over like a fresh app (click twice)
 //
 // Editor (bottom, selected row):
 //   green / red marker .. start / end: only the part between them plays
@@ -27,6 +31,8 @@
 //   right-click marker .. delete it
 //   slice (button) ...... a marker on every detected hit, snapped to steps
 //   small yellow ticks .. detected hits
+//   blue line ........... volume over the file: click the line to add a point,
+//                         drag a point anywhere, right-click a point to remove it
 //   segment strip ....... left half = fewer steps, right half = more
 //                         (0 steps = segment is skipped)
 //
@@ -62,7 +68,9 @@
 //   drive ............... up to +30 dB into the drive type: clean, analog clip,
 //                         soft sine, digital clip, waveshaper; a limiter after
 //
-// Presets are saved next to this script as <name>__mlr.json.
+// Presets are saved next to this script as <name>__mlr.json. Loading one while
+// rows play keeps those tracks playing (pink stop button): the pink stop
+// stops it, launching a cell swaps in the new session's track (green again).
 
 bpm(120);
 latency(60);    // ms ahead the engine runs; low so pad presses feel direct
@@ -71,6 +79,7 @@ latency(60);    // ms ahead the engine runs; low so pad presses feel direct
 
 let N_ROWS    = 8;
 let MAX_STEPS = 16;
+let VOL_N     = 2048;                      // volume curve resolution over the file
 let PEAKS     = 880;                       // waveform resolution (= editor width)
 let STEP_LENS  = [0.125, 0.25, 0.5, 1, 2, 4];             // in beats
 let STEP_NAMES = ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
@@ -108,14 +117,30 @@ fn is_grain(mode) {
 let FILTER_NAMES = ["off", "lowpass", "highpass", "bandpass"];
 let DRIVE_NAMES  = ["clean", "analog clip", "soft sine", "digital clip", "waveshaper"];
 let DRIVE_MAX_DB = 30;
-let DLY_BEATS = [0.25, 0.5, 0.75, 1, 1.5, 2];
-let DLY_NAMES = ["1/16", "1/8", "3/16", "1/4", "3/8", "1/2"];
+// Delay times in beats: 1/512 note (a comb/flange) up to 4 bars (drones).
+// "3/16" etc. are dotted values. Presets store the name.
+let DLY_NAMES = ["1/512", "1/256", "1/128", "1/64", "1/32", "1/16", "3/32", "1/8", "3/16",
+                 "1/4", "3/8", "1/2", "3/4", "1 bar", "2 bars", "4 bars"];
+let DLY_BEATS = [0.0078125, 0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.375, 0.5, 0.75,
+                 1, 1.5, 2, 3, 4, 8, 16];
+let DLY_NAMES_V1 = ["1/16", "1/8", "3/16", "1/4", "3/8", "1/2"];   // old presets stored an index into this
+let DLY_MAX_SECS = 32;                     // delay line length
+let DLY_FRAMES = DLY_MAX_SECS * 48000;     // per delay buffer (enough up to 48 kHz)
+let DLY_DEFAULT = 7;                       // "1/8"
+let REV_NAMES = ["freeverb", "gigaverb"];
 
 // Private audio buses: 4 stereo groups, reverb and delay sends, then one
 // stereo bus per output pair (feeds that pair's limiter stage).
+// Mixers: each session (preset) plays through its own mixer — 4 groups,
+// reverb, delay, main volume — so tracks still playing from the previous
+// session (ghosts) keep their own sends and levels while the new one loads.
+let N_MIX = 3;
+// Private audio buses, per mixer m: 4 stereo groups at BUS_GROUP + 16m,
+// reverb / delay sends at BUS_REV / BUS_DLY + 4m; output pairs (shared by
+// all mixers) from BUS_OUT.
 let BUS_GROUP = 300;
-let BUS_REV   = 312;
-let BUS_DLY   = 314;
+let BUS_REV   = 360;
+let BUS_DLY   = 362;
 let BUS_OUT   = 400;
 let N_OUTS    = 32;                        // stereo pairs: scsynth runs with 64 outputs
 let OUT_NAMES = [];
@@ -141,6 +166,8 @@ let C_ACCENT = [0, 230, 160];      // playhead, start marker, active things
 let C_WAVE   = [70, 190, 150];
 let C_INFO   = [240, 180, 60];     // tags, hit ticks, pattern state
 let C_WARN   = [255, 70, 70];      // mute, end marker
+let C_VOL    = [60, 140, 255];     // volume curve
+let C_GHOST  = [255, 90, 200];     // row still playing the previous session's track
 let GROUP_COLORS = [[255, 140, 40], [60, 170, 255], [140, 230, 80], [230, 90, 230]];
 
 // ── Synths ──────────────────────────────────────────────────────────────────
@@ -156,22 +183,26 @@ let GROUP_COLORS = [[255, 140, 40], [60, 170, 255], [140, 230, 80], [230, 90, 23
 // Two families: mlr_voice_* (read heads: vari, stretch, beats, tape) and
 // mlr_warp_* (grains: warp, cloud), each stereo (_s) and mono (_m). `glide`
 // smooths speed changes (tape). b_on/b_hold fade a beats cell out when its
-// own audio runs out.
+// own audio runs out. vbuf holds the row's volume curve (vn values spread
+// over the whole file), read at the playhead's position in the file.
 //
 // Drive pushes the level up to +30 dB (d_gain) into one shape: clean,
 // tanh, soft sine, hard clip or fold (d_* switches, set from the script),
 // then a 5 ms lookahead limiter. Every row always runs the limiter, so all
 // rows share the same 5 ms delay and stay in time with each other.
 
-define mlr_voice_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+define mlr_voice_s(buf, frames, vbuf, vn, rate, glide, ja, pa, jb, pb, xf, amp, bus,
                     gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
                     f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
                     d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
                     ratio, shift_on) {
     let r    = lag(rate, glide) * buf_rate_scale(buf);
     let x    = lag(xf, 0.006);
-    let sa   = buf_rd(2, buf, phasor(changed(ja), r, 0, frames, pa));
-    let sb   = buf_rd(2, buf, phasor(changed(jb), r, 0, frames, pb));
+    let pha  = phasor(changed(ja), r, 0, frames, pa);
+    let phb  = phasor(changed(jb), r, 0, frames, pb);
+    // each head × the volume curve at its own spot in the file
+    let sa   = buf_rd(2, buf, pha) * buf_rd(1, vbuf, pha / frames * (vn - 1), 2);
+    let sb   = buf_rd(2, buf, phb) * buf_rd(1, vbuf, phb / frames * (vn - 1), 2);
     let sig  = sa * (1 - x) + sb * x;
     let ps   = pitch_shift(sig, 0.1, ratio);
     let on   = lag(shift_on, 0.02);
@@ -197,15 +228,18 @@ define mlr_voice_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     out(bus, y);
 }
 
-define mlr_voice_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+define mlr_voice_m(buf, frames, vbuf, vn, rate, glide, ja, pa, jb, pb, xf, amp, bus,
                     gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
                     f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
                     d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
                     ratio, shift_on) {
     let r    = lag(rate, glide) * buf_rate_scale(buf);
     let x    = lag(xf, 0.006);
-    let sa   = buf_rd(1, buf, phasor(changed(ja), r, 0, frames, pa));
-    let sb   = buf_rd(1, buf, phasor(changed(jb), r, 0, frames, pb));
+    let pha  = phasor(changed(ja), r, 0, frames, pa);
+    let phb  = phasor(changed(jb), r, 0, frames, pb);
+    // each head × the volume curve at its own spot in the file
+    let sa   = buf_rd(1, buf, pha) * buf_rd(1, vbuf, pha / frames * (vn - 1), 2);
+    let sb   = buf_rd(1, buf, phb) * buf_rd(1, vbuf, phb / frames * (vn - 1), 2);
     let sig  = sa * (1 - x) + sb * x;
     let ps   = pitch_shift(sig, 0.1, ratio);
     let on   = lag(shift_on, 0.02);
@@ -231,7 +265,7 @@ define mlr_voice_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     out(bus, pan(0, y));
 }
 
-define mlr_warp_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+define mlr_warp_s(buf, frames, vbuf, vn, rate, glide, ja, pa, jb, pb, xf, amp, bus,
                     gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
                     f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
                     d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
@@ -241,8 +275,9 @@ define mlr_warp_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     let pha  = phasor(changed(ja), r, 0, frames, pa);
     let phb  = phasor(changed(jb), r, 0, frames, pb);
     let sel  = x > 0.5;                       // grains follow the live head
-    let ptr  = (pha * (1 - sel) + phb * sel) / frames + white() * w_spray;
-    let dry  = warp(2, buf, ptr, w_freq, w_size, 8, w_rand);
+    let base = (pha * (1 - sel) + phb * sel) / frames;
+    let ptr  = base + white() * w_spray;
+    let dry  = warp(2, buf, ptr, w_freq, w_size, 8, w_rand) * buf_rd(1, vbuf, base * (vn - 1), 2);
     // gate: opens on every cell (gt changes), closes after gh seconds
     let trig = changed(gt);
     let since = sweep(trig, 1);
@@ -264,7 +299,7 @@ define mlr_warp_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     out(bus, y);
 }
 
-define mlr_warp_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+define mlr_warp_m(buf, frames, vbuf, vn, rate, glide, ja, pa, jb, pb, xf, amp, bus,
                     gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
                     f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
                     d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
@@ -274,8 +309,9 @@ define mlr_warp_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     let pha  = phasor(changed(ja), r, 0, frames, pa);
     let phb  = phasor(changed(jb), r, 0, frames, pb);
     let sel  = x > 0.5;                       // grains follow the live head
-    let ptr  = (pha * (1 - sel) + phb * sel) / frames + white() * w_spray;
-    let dry  = warp(1, buf, ptr, w_freq, w_size, 8, w_rand);
+    let base = (pha * (1 - sel) + phb * sel) / frames;
+    let ptr  = base + white() * w_spray;
+    let dry  = warp(1, buf, ptr, w_freq, w_size, 8, w_rand) * buf_rd(1, vbuf, base * (vn - 1), 2);
     // gate: opens on every cell (gt changes), closes after gh seconds
     let trig = changed(gt);
     let since = sweep(trig, 1);
@@ -297,29 +333,47 @@ define mlr_warp_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
     out(bus, pan(0, y));
 }
 
-define mlr_group(inb, amp, rev, dly, outb, revb, dlyb) {
-    let sig = in(inb, 2) * lag(amp, 0.05);
+define mlr_group(inb, amp, main, rev, dly, outb, revb, dlyb) {
+    let sig = in(inb, 2) * lag(amp, 0.05) * lag(main, 0.05);
     out(outb, sig);
     out(revb, sig * lag(rev, 0.05));
     out(dlyb, sig * lag(dly, 0.05));
 }
 
-define mlr_reverb(inb, outb, room) {
-    out(outb, reverb(in(inb, 2), 1, room, 0.5));
+// freeverb (room 0..1) or gigaverb (gv_time seconds), picked by fv / gv
+// (0/1), then a lowpass on the return.
+define mlr_reverb(inb, outb, room, gv_time, fv, gv, lpf_hz) {
+    let sig = in(inb, 2);
+    let free = reverb(sig, 1, room, 0.5);
+    // GVerb: mono in, stereo out. Room 60, max room 61: GVerb sizes its
+    // real-time memory from the max room.
+    let giga = gverb_stereo((sig[0] + sig[1]) * 0.5, 60, gv_time, 0.5, 0.5, 15, 0, 0.5, 0.5, 61);
+    let wet = free * fv + giga * (0.5 * gv);
+    out(outb, lpf(wet, lag(lpf_hz, 0.05)));
 }
 
-define mlr_delay(inb, outb, time, decay) {
-    out(outb, comb_c(in(inb, 2), 2, lag(time, 0.1), decay));
+// The delay lines live in two buffers (normal memory): scsynth's real-time
+// pool (8 MB by default) can't hold 32 s, and a failed allocation there
+// leaves a broken synth that can crash the server.
+define mlr_delay(inb, outb, time, decay, buf_l, buf_r) {
+    let sig = in(inb, 2);
+    let t = lag(time, 0.1);
+    out(outb, array(BufCombC(buf_l, sig[0], t, decay), BufCombC(buf_r, sig[1], t, decay)));
 }
 
-// One per output pair: main volume, then a limiter so nothing can blow up.
-define mlr_out(inb, hw, amp) {
-    out(hw, limiter(in(inb, 2) * lag(amp, 0.05), 0.95, 0.01));
+// One per output pair, shared by all mixers: a limiter so nothing can blow up.
+define mlr_out(inb, hw) {
+    out(hw, limiter(in(inb, 2), 0.95, 0.01));
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
 // One flat array per field, indexed by row. Each field has one writer:
 // the UI thread owns settings, a row's thread owns its playback state.
+
+// Every row has two slots of track data: its own (index r, what you see and
+// edit) and a ghost (r + N_ROWS): the previous session's track, still playing
+// after a preset load until it's stopped or the row's own track is launched.
+let N_SLOTS = 2 * N_ROWS;
 
 fn filled(n, v) {
     let a = [];
@@ -328,55 +382,62 @@ fn filled(n, v) {
 }
 
 // sound file
-let r_file   = filled(N_ROWS, "");
-let r_buf    = filled(N_ROWS, -1);
-let r_node   = filled(N_ROWS, -1);
-let r_frames = filled(N_ROWS, 0);
-let r_sr     = filled(N_ROWS, 44100);
-let r_peaks  = filled(N_ROWS, []);
-let r_onsets = filled(N_ROWS, []);         // frames of detected hits
-let r_fbpm   = filled(N_ROWS, 0);          // the file's own tempo, 0 = not beaty
+let r_file   = filled(N_SLOTS, "");
+let r_buf    = filled(N_SLOTS, -1);
+let r_node   = filled(N_SLOTS, -1);
+let r_frames = filled(N_SLOTS, 0);
+let r_sr     = filled(N_SLOTS, 44100);
+let r_peaks  = filled(N_SLOTS, []);
+let r_onsets = filled(N_SLOTS, []);         // frames of detected hits
+let r_fbpm   = filled(N_SLOTS, 0);          // the file's own tempo, 0 = not beaty
 // segments: marks = start frame of each segment (the first is the start
 // marker), steps = steps given to each segment; r_end = end marker
-let r_marks  = filled(N_ROWS, [0]);
-let r_steps  = filled(N_ROWS, [MAX_STEPS]);
-let r_end    = filled(N_ROWS, 0);
+let r_marks  = filled(N_SLOTS, [0]);
+let r_steps  = filled(N_SLOTS, [MAX_STEPS]);
+let r_end    = filled(N_SLOTS, 0);
+// volume curve: points [frame, level 0..1], kept sorted by frame; none = flat 1
+let r_vpts   = filled(N_SLOTS, []);
+let r_vbuf   = filled(N_SLOTS, -1);         // scsynth buffer holding the curve
 // derived from the segments, for drawing (UI thread)
-let r_total  = filled(N_ROWS, 0);
-let r_mini   = filled(N_ROWS, []);         // 3 waveform bars per cell
-let r_cellseg = filled(N_ROWS, []);        // segment index of each cell
+let r_total  = filled(N_SLOTS, 0);
+let r_mini   = filled(N_SLOTS, []);         // 3 waveform bars per cell
+let r_cellseg = filled(N_SLOTS, []);        // segment index of each cell
 // row settings (UI thread)
-let r_len_i   = filled(N_ROWS, 1);         // index into STEP_LENS
-let r_speed_i = filled(N_ROWS, 2);         // index into SPEEDS
-let r_pitch   = filled(N_ROWS, 0);         // semitones
-let r_rev     = filled(N_ROWS, false);
-let r_play    = filled(N_ROWS, PLAY_LOOP);
-let r_mode    = filled(N_ROWS, MODE_VARI); // index into MODE_NAMES
-let r_grain   = filled(N_ROWS, 0.5);       // warp/cloud grain size, knob 0..1
-let r_spray   = filled(N_ROWS, 0.3);       // cloud spray, knob 0..1
-let r_chans   = filled(N_ROWS, 2);
+let r_len_i   = filled(N_SLOTS, 1);         // index into STEP_LENS
+let r_speed_i = filled(N_SLOTS, 2);         // index into SPEEDS
+let r_pitch   = filled(N_SLOTS, 0);         // semitones
+let r_rev     = filled(N_SLOTS, false);
+let r_play    = filled(N_SLOTS, PLAY_LOOP);
+let r_mode    = filled(N_SLOTS, MODE_VARI); // index into MODE_NAMES
+let r_grain   = filled(N_SLOTS, 0.5);       // warp/cloud grain size, knob 0..1
+let r_spray   = filled(N_SLOTS, 0.3);       // cloud spray, knob 0..1
+let r_chans   = filled(N_SLOTS, 2);
 let r_keep    = filled(N_ROWS, false);     // UI swapped the synth: keep playing
-let r_grp     = filled(N_ROWS, 0);
-let r_mute    = filled(N_ROWS, false);
-let r_vol     = filled(N_ROWS, 0.8);
+let r_hand    = filled(N_ROWS, -1);        // rows swapped: play on from this position
+let r_grp     = filled(N_SLOTS, 0);
+let r_mix     = filled(N_SLOTS, 0);        // which mixer the track plays through
+let r_mute    = filled(N_SLOTS, false);
+let r_vol     = filled(N_SLOTS, 0.8);
 // envelopes + filter, knob positions 0..1 (see env_params)
-let r_aon     = filled(N_ROWS, false);     // amp envelope on
-let r_aenv    = filled(N_ROWS, [0.1, 0.5, 1, 0.3]);    // attack, decay, sustain, release
-let r_fenv    = filled(N_ROWS, [0.1, 0.5, 0, 0.3]);
-let r_ftype   = filled(N_ROWS, 0);         // index into FILTER_NAMES
-let r_fcut    = filled(N_ROWS, 0.8);
-let r_fres    = filled(N_ROWS, 0.2);
-let r_famt    = filled(N_ROWS, 0.5);       // 0.5 = no envelope movement
-let r_drive   = filled(N_ROWS, 0);         // knob 0..1 = 0..DRIVE_MAX_DB dB
-let r_dtype   = filled(N_ROWS, 0);         // index into DRIVE_NAMES
-let r_lo      = filled(N_ROWS, -1);        // loop range in steps, -1 = none
-let r_hi      = filled(N_ROWS, -1);
+let r_aon     = filled(N_SLOTS, false);     // amp envelope on
+let r_aenv    = filled(N_SLOTS, [0.1, 0.5, 1, 0.3]);    // attack, decay, sustain, release
+let r_fenv    = filled(N_SLOTS, [0.1, 0.5, 0, 0.3]);
+let r_ftype   = filled(N_SLOTS, 0);         // index into FILTER_NAMES
+let r_fcut    = filled(N_SLOTS, 0.8);
+let r_fres    = filled(N_SLOTS, 0.2);
+let r_famt    = filled(N_SLOTS, 0.5);       // 0.5 = no envelope movement
+let r_drive   = filled(N_SLOTS, 0);         // knob 0..1 = 0..DRIVE_MAX_DB dB
+let r_dtype   = filled(N_SLOTS, 0);         // index into DRIVE_NAMES
+let r_lo      = filled(N_SLOTS, -1);        // loop range in steps, -1 = none
+let r_hi      = filled(N_SLOTS, -1);
 // playback (row threads)
 let r_playing = filled(N_ROWS, false);
 let r_ph      = filled(N_ROWS, -1);        // playhead in steps
 let r_cell    = filled(N_ROWS, -1);        // cell being played
 let r_pf      = filled(N_ROWS, 0);         // playhead in frames
 // pad presses, UI → row thread: write kind + step, then bump seq
+let ps     = [];                           // slot each row plays: r, or its ghost r + N_ROWS
+for (let i = 0; i < N_ROWS; i += 1) { push(ps, i); }
 let p_seq  = filled(N_ROWS, 0);
 let p_kind = filled(N_ROWS, 0);
 let p_step = filled(N_ROWS, 0);
@@ -395,16 +456,21 @@ let g_vol = [0.8, 0.8, 0.8, 0.8];
 let g_rev = [0, 0, 0, 0];
 let g_dly = [0, 0, 0, 0];
 let g_out = [0, 0, 0, 0];                  // output pair per group
-let g_node = [];
+let mix_groups = [];                       // per mixer: its 4 group synths
+let mix_rev = [];                          // per mixer: reverb synth
+let mix_dly = [];                          // per mixer: delay synth
+let mix_used = [];                         // per mixer: load count when it was last picked
+let cur_mix = 0;                           // mixer of the current session (the widgets edit it)
+let loads = 0;
 let rev_out = 0;
 let dly_out = 0;
 let out_nodes = [];
 let main_vol = 0.8;
 let rev_room = 0.6;
-let dly_i = 1;
+let dly_i = DLY_DEFAULT;
+let rev_type = 0;                          // index into REV_NAMES
+let rev_lpf = 1;                           // knob 0..1 = 200 Hz .. 20 kHz
 let dly_fb = 0.4;
-let rev_node = -1;
-let dly_node = -1;
 
 // ── Segments ────────────────────────────────────────────────────────────────
 // A segment is [f0, f1, steps, first_step, mark_index]; 0-step segments are
@@ -490,9 +556,10 @@ fn voice_def(r) {
 fn swap_voice(r) {
     let old = r_node[r];
     if (old < 0) { return; }
-    let node = synth(voice_def(r), buf: r_buf[r], frames: r_frames[r], rate: 1, ratio: 1, shift_on: 0,
-                     amp: 0, bus: BUS_GROUP + 2 * r_grp[r], d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
-    r_keep[r] = true;
+    let node = synth(voice_def(r), buf: r_buf[r], frames: r_frames[r], vbuf: r_vbuf[r], vn: VOL_N,
+                     rate: 1, ratio: 1, shift_on: 0,
+                     amp: 0, bus: row_bus(r), d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
+    if (ps[r] == r) { r_keep[r] = true; }
     r_node[r] = node;
     free(old);
 }
@@ -585,17 +652,30 @@ fn row_loop(r) {
     let env_cell = -1;          // cell the envelopes last restarted for
     let tape_off = -1;          // tape: beat at which the slowed-down row goes silent
     loop {
-        let dur = STEP_LENS[r_len_i[r]];
+        // a live press on a row still playing the previous session's track
+        // (its ghost): stop the ghost; a jump launches the row's own track
+        if (ps[r] != r && p_seq[r] != seen) {
+            let g = ps[r];
+            if (p_kind[r] == JUMP && r_node[r] >= 0) { r_keep[r] = true; }   // empty row: just stop
+            ps[r] = r;
+            free_ghost(g);
+        }
+        let s = ps[r];               // the slot this row plays: its own, or its ghost
+        let dur = STEP_LENS[r_len_i[s]];
         let rem = dur - math_fmod(t, dur);
-        let node = r_node[r];
+        let node = r_node[s];
         if (node != last_node) {
             last_node = node;
             was_playing = false;           // forces a jump on the new synth
             env_cell = -1;
             if (r_keep[r]) { r_keep[r] = false; }
             else { r_playing[r] = false; }
+            if (r_hand[r] >= 0) {
+                p = r_hand[r];
+                r_hand[r] = -1;
+            }
         }
-        let tab = seg_table(r_marks[r], r_steps[r], r_end[r]);
+        let tab = seg_table(r_marks[s], r_steps[s], r_end[s]);
         let segs = tab["segs"];
         let total = tab["total"];
         if (node < 0 || total == 0) {
@@ -607,14 +687,14 @@ fn row_loop(r) {
 
         let lo = 0;
         let hi = total;          // exclusive
-        if (r_lo[r] >= 0 && r_lo[r] <= r_hi[r] && r_hi[r] < total) {
-            lo = r_lo[r];
-            hi = r_hi[r] + 1;
+        if (r_lo[s] >= 0 && r_lo[s] <= r_hi[s] && r_hi[s] < total) {
+            lo = r_lo[s];
+            hi = r_hi[s] + 1;
         }
-        let play = r_play[r];
+        let play = r_play[s];
         if (play != PLAY_PINGPONG) { bounce = 1; }
         let d = bounce;
-        if (r_rev[r]) { d = -bounce; }
+        if (r_rev[s]) { d = -bounce; }
 
         // presses: pattern first, a live press wins
         let kind = 0;
@@ -645,7 +725,7 @@ fn row_loop(r) {
 
         if (!r_playing[r]) {
             if (was_playing) {
-                if (r_mode[r] == MODE_TAPE) {
+                if (r_mode[s] == MODE_TAPE) {
                     // tape stop: slow down to a halt, silence once it's stopped
                     set(node, rate: 0, glide: TAPE_STOP);
                     tape_off = t + TAPE_STOP * bpm() / 60;
@@ -697,11 +777,11 @@ fn row_loop(r) {
         last = math_floor(p);
         if (d < 0) { last = math_ceil(p) - 1; }
 
-        let spd = SPEEDS[r_speed_i[r]];
+        let spd = SPEEDS[r_speed_i[s]];
         let step_secs = dur * 60 / bpm();
-        let amp = r_vol[r];
-        if (r_mute[r]) { amp = 0; }
-        let bus = BUS_GROUP + 2 * r_grp[r];
+        let amp = r_vol[s];
+        if (r_mute[s]) { amp = 0; }
+        let bus = row_bus(s);
 
         // how long one cell plays at this speed: the envelope's time
         let cell_secs = step_secs / spd;
@@ -710,12 +790,12 @@ fn row_loop(r) {
         let left = rem;
         while (left > 0.000001) {
             let seg = segs[seg_at(segs, p, d)];
-            let vp = voice_params(r, seg, step_secs, spd, d);
+            let vp = voice_params(s, seg, step_secs, spd, d);
             let frame = frame_at(seg, p);
             let cell = math_floor(p + 0.000001);
             if (d < 0) { cell = math_ceil(p - 0.000001) - 1; }
             // beats: every cell restarts at its own start
-            if (r_mode[r] == MODE_BEATS && cell != env_cell) { need_jump = true; }
+            if (r_mode[s] == MODE_BEATS && cell != env_cell) { need_jump = true; }
             let jumped = need_jump;
             if (need_jump) {
                 head = 1 - head;
@@ -733,10 +813,10 @@ fn row_loop(r) {
 
             // one envelope per cell: entering a new cell, or any jump (incl. a repeat)
             if (jumped || cell != env_cell) {
-                let ep = env_params(r, cell_secs);
+                let ep = env_params(s, cell_secs);
                 // beats: the cell's own audio lasts this long at its natural speed
-                let b_on = bool_num(r_mode[r] == MODE_BEATS);
-                let b_hold = (seg[1] - seg[0]) / seg[2] / (r_sr[r] * math_abs(vp["rate"]));
+                let b_on = bool_num(r_mode[s] == MODE_BEATS);
+                let b_hold = (seg[1] - seg[0]) / seg[2] / (r_sr[s] * math_abs(vp["rate"]));
                 gt += 1;
                 set(node, gt: gt, gh: ep["gh"], b_on: b_on, b_hold: b_hold, a_on: ep["a_on"],
                     a_atk: ep["a_atk"], a_dec: ep["a_dec"], a_sus: ep["a_sus"], a_rel: ep["a_rel"],
@@ -833,6 +913,48 @@ fn file_name(path) {
     return parts[count(parts) - 1];
 }
 
+// Level of the volume curve at `frame`: straight lines between points,
+// flat before the first and after the last; no points = 1.
+fn vol_at(pts, frame) {
+    let n = count(pts);
+    if (n == 0) { return 1; }
+    if (frame <= pts[0][0]) { return pts[0][1]; }
+    for (let i = 1; i < n; i += 1) {
+        if (frame <= pts[i][0]) {
+            let a = pts[i - 1];
+            let b = pts[i];
+            return a[1] + (b[1] - a[1]) * (frame - a[0]) / math_max(1, b[0] - a[0]);
+        }
+    }
+    return pts[n - 1][1];
+}
+
+// Send row r's volume curve to its scsynth buffer.
+fn vol_sync(r) {
+    if (r_vbuf[r] < 0) { return; }
+    let pts = r_vpts[r];
+    let frames = r_frames[r];
+    let curve = [];
+    let k = 0;                       // walk the points once instead of searching each time
+    let n = count(pts);
+    for (let i = 0; i < VOL_N; i += 1) {
+        let f = i / (VOL_N - 1) * frames;
+        while (k < n && pts[k][0] < f) { k += 1; }
+        let v = 1;
+        if (n > 0) {
+            if (k == 0) { v = pts[0][1]; }
+            else if (k == n) { v = pts[n - 1][1]; }
+            else {
+                let a = pts[k - 1];
+                let b = pts[k];
+                v = a[1] + (b[1] - a[1]) * (f - a[0]) / math_max(1, b[0] - a[0]);
+            }
+        }
+        push(curve, v);
+    }
+    buffer_set(r_vbuf[r], curve);
+}
+
 // Recompute total steps, cell → segment and the small waveform bars.
 fn rebuild_row(r) {
     let frames = r_frames[r];
@@ -878,11 +1000,15 @@ fn unload_row(r) {
     r_onsets[r] = [];
     r_fbpm[r] = 0;
     r_peaks[r] = [];
+    r_vpts[r] = [];
+    let old_vbuf = r_vbuf[r];
+    r_vbuf[r] = -1;
     if (old_node >= 0) { free(old_node); }
     if (old_buf >= 0) {
         sleep_ms(latency() + 100);    // let the free land before the buffer goes
         buffer_free(old_buf);
     }
+    if (old_vbuf >= 0) { buffer_free(old_vbuf); }
     r_buf[r] = -1;
 }
 
@@ -936,8 +1062,11 @@ fn load_row(r, path) {
     r_file[r] = path;
     rebuild_row(r);
     r_chans[r] = info[1];
-    r_node[r] = synth(voice_def(r), buf: buf, frames: info[0], rate: 1, ratio: 1, shift_on: 0,
-                      amp: 0, bus: BUS_GROUP + 2 * r_grp[r], d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
+    r_vbuf[r] = buffer_alloc(VOL_N, 1);
+    vol_sync(r);
+    r_node[r] = synth(voice_def(r), buf: buf, frames: info[0], vbuf: r_vbuf[r], vn: VOL_N,
+                      rate: 1, ratio: 1, shift_on: 0,
+                      amp: 0, bus: row_bus(r), d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
     status_text = "row " + (r + 1) + ": " + file_name(path);
     if (r_fbpm[r] > 0) {
         status_text += "  (" + found["beats"] + " beats, " + math_round(r_fbpm[r] * 10) / 10 + " bpm)";
@@ -953,38 +1082,86 @@ fn press(r, kind, step) {
 
 // ── Mixer ───────────────────────────────────────────────────────────────────
 
+// Reverb synth params: "size" is freeverb's room, or gigaverb's time (0.3-30 s).
+fn rev_params() {
+    return ["gv_time" => 0.3 * math_pow(100, rev_room), "fv" => bool_num(rev_type == 0),
+            "gv" => bool_num(rev_type == 1), "lpf_hz" => 200 * math_pow(100, rev_lpf)];
+}
+
 fn dly_params() {
-    let secs = math_min(2, DLY_BEATS[dly_i] * 60 / bpm());
+    let secs = math_min(DLY_MAX_SECS, DLY_BEATS[dly_i] * 60 / bpm());
     let fb = math_clamp(dly_fb, 0.01, 0.95);
     return [secs, secs * math_log(0.001) / math_log(fb)];
 }
 
+// Group input bus of slot s's track: its group, in its mixer.
+fn row_bus(s) {
+    return BUS_GROUP + 16 * r_mix[s] + 2 * r_grp[s];
+}
+
 // synth() adds to the head of the node list, so create in reverse signal
-// order: output stages, effects, groups (rows are added later, in front).
+// order: output stages, then per mixer effects and groups (rows are added
+// later, in front). Every mixer starts with the same settings.
 fn mixer_start() {
     for (let i = 0; i < N_OUTS; i += 1) {
-        push(out_nodes, synth("mlr_out", inb: BUS_OUT + 2 * i, hw: 2 * i, amp: main_vol));
+        push(out_nodes, synth("mlr_out", inb: BUS_OUT + 2 * i, hw: 2 * i));
     }
-    rev_node = synth("mlr_reverb", inb: BUS_REV, outb: BUS_OUT + 2 * rev_out, room: rev_room);
     let dp = dly_params();
-    dly_node = synth("mlr_delay", inb: BUS_DLY, outb: BUS_OUT + 2 * dly_out, time: dp[0], decay: dp[1]);
-    for (let g = 0; g < 4; g += 1) {
-        push(g_node, synth("mlr_group", inb: BUS_GROUP + 2 * g, amp: g_vol[g], rev: g_rev[g],
-                           dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g], revb: BUS_REV, dlyb: BUS_DLY));
+    for (let m = 0; m < N_MIX; m += 1) {
+        let rp = rev_params();
+        push(mix_rev, synth("mlr_reverb", inb: BUS_REV + 4 * m, outb: BUS_OUT + 2 * rev_out, room: rev_room,
+                            gv_time: rp["gv_time"], fv: rp["fv"], gv: rp["gv"], lpf_hz: rp["lpf_hz"]));
+        let dl = buffer_alloc(DLY_FRAMES, 1);
+        let dr = buffer_alloc(DLY_FRAMES, 1);
+        push(mix_dly, synth("mlr_delay", inb: BUS_DLY + 4 * m, outb: BUS_OUT + 2 * dly_out, time: dp[0], decay: dp[1],
+                            buf_l: dl, buf_r: dr));
+        let gs = [];
+        for (let g = 0; g < 4; g += 1) {
+            push(gs, synth("mlr_group", inb: BUS_GROUP + 16 * m + 2 * g, amp: g_vol[g], main: main_vol,
+                           rev: g_rev[g], dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g],
+                           revb: BUS_REV + 4 * m, dlyb: BUS_DLY + 4 * m));
+        }
+        push(mix_groups, gs);
+        push(mix_used, 0);
     }
 }
 
+// Apply the mixer settings to the current session's mixer only.
 fn mixer_update() {
+    let gs = mix_groups[cur_mix];
     for (let g = 0; g < 4; g += 1) {
-        set(g_node[g], amp: g_vol[g], rev: g_rev[g], dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g]);
+        set(gs[g], amp: g_vol[g], rev: g_rev[g], dly: g_dly[g], outb: BUS_OUT + 2 * g_out[g]);
     }
-    set(rev_node, room: rev_room, outb: BUS_OUT + 2 * rev_out);
+    let rp = rev_params();
+    set(mix_rev[cur_mix], room: rev_room, outb: BUS_OUT + 2 * rev_out,
+        gv_time: rp["gv_time"], fv: rp["fv"], gv: rp["gv"], lpf_hz: rp["lpf_hz"]);
     let dp = dly_params();
-    set(dly_node, time: dp[0], decay: dp[1], outb: BUS_OUT + 2 * dly_out);
+    set(mix_dly[cur_mix], time: dp[0], decay: dp[1], outb: BUS_OUT + 2 * dly_out);
+}
+
+// Mixer for a session being loaded: the current one if no playing track uses
+// it, else a free one; if all are busy, the one picked longest ago.
+fn pick_mixer() {
+    let busy = filled(N_MIX, false);
+    for (let r = 0; r < N_ROWS; r += 1) {
+        if (r_playing[r]) { busy[r_mix[ps[r]]] = true; }
+    }
+    if (!busy[cur_mix]) { return cur_mix; }
+    let best = -1;
+    for (let m = 0; m < N_MIX; m += 1) {
+        if (!busy[m] && (best < 0 || mix_used[m] < mix_used[best])) { best = m; }
+    }
+    if (best >= 0) { return best; }
+    best = 0;
+    for (let m = 1; m < N_MIX; m += 1) {
+        if (mix_used[m] < mix_used[best]) { best = m; }
+    }
+    return best;
 }
 
 fn main_update() {
-    for (let i = 0; i < N_OUTS; i += 1) { set(out_nodes[i], amp: main_vol); }
+    let gs = mix_groups[cur_mix];
+    for (let g = 0; g < 4; g += 1) { set(gs[g], main: main_vol); }
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
@@ -1007,6 +1184,15 @@ let SX = 828;         // stop box x
 let GBX = 860;        // group box x
 let BOX = 28;
 let STRIP_Y = GY + N_ROWS * ROW_STEP + 6;
+// strip: [reset track][reset session][stop G1..G4]  pattern info
+let RT_X = 4;           // reset track button
+let RT_W = 96;
+let RS_X = 104;         // reset session button
+let RS_W = 104;
+let GS_X = 214;         // first group stop button
+let GS_STEP = 106;
+let GS_W = 100;
+let CONFIRM_MS = 2000;  // resets need a second click within this
 // editor geometry
 let EX = 10;
 let EW = 880;
@@ -1093,19 +1279,25 @@ w_rev_out.set_options(OUT_NAMES);
 w_dly_out.set_options(OUT_NAMES);
 let w_main   = ui.widgets.slider("main");
 let w_bpm    = ui.widgets.number("bpm");
-w_bpm.min(40);
-w_bpm.max(240);
+w_bpm.min(2);
+w_bpm.max(999);
 let w_room   = ui.widgets.knob("rev_room");
-let w_dtime  = ui.widgets.dropdown("dly_time", "1/16", "1/8", "3/16", "1/4", "3/8", "1/2");
+let w_dtime  = ui.widgets.dropdown("dly_time", "-");
+w_dtime.set_options(DLY_NAMES);
+let w_rtype  = ui.widgets.dropdown("rev_type", "-");
+w_rtype.set_options(REV_NAMES);
+let w_rlpf   = ui.widgets.knob("rev_lpf");
 let w_dfb    = ui.widgets.knob("dly_fb");
 w_dfb.max(0.95);
 
 let sel = 0;
 let drag_row = -1;        // row a cell drag started in
 let drag_cell = -1;
+let drag_label = -1;      // row whose label is being dragged
 let NO_MARK = -1;
 let END_MARK = -2;
 let drag_mark = NO_MARK;  // marker being dragged in the editor: index, END_MARK or NO_MARK
+let drag_vol = -1;        // volume point being dragged (index), -1 = none
 let preset_names = [];
 
 fn sync_row_widgets() {
@@ -1145,6 +1337,8 @@ fn sync_mixer_widgets() {
     w_bpm.set(bpm());
     w_room.set(rev_room);
     w_dtime.set(dly_i);
+    w_rtype.set(rev_type);
+    w_rlpf.set(rev_lpf);
     w_dfb.set(dly_fb);
 }
 
@@ -1158,6 +1352,7 @@ fn grid_down(r, x, button) {
     let c = cell_at(x);
     if (x >= GX && c < MAX_STEPS) {
         if (button == 1) {
+            push_undo("");
             r_lo[r] = -1;
             r_hi[r] = -1;
             return;
@@ -1176,13 +1371,113 @@ fn grid_down(r, x, button) {
     if (x < GX - 4) {
         sel = r;
         sync_row_widgets();
+        drag_label = r;                    // dropping it on another row swaps them
     } else if (x >= MX && x < MX + BOX) {
+        push_undo("");
         r_mute[r] = !r_mute[r];
     } else if (x >= SX && x < SX + BOX) {
         press(r, STOP, 0);
     } else if (x >= GBX && x < GBX + BOX) {
+        push_undo("");
         r_grp[r] = (r_grp[r] + 1) % 4;
         if (r == sel) { w_group.set(r_grp[r]); }
+    }
+}
+
+// Swap all track data of two slots.
+fn swap_slot(a, b) {
+    let t = nil;
+    t = r_file[a]; r_file[a] = r_file[b]; r_file[b] = t;
+    t = r_buf[a]; r_buf[a] = r_buf[b]; r_buf[b] = t;
+    t = r_node[a]; r_node[a] = r_node[b]; r_node[b] = t;
+    t = r_frames[a]; r_frames[a] = r_frames[b]; r_frames[b] = t;
+    t = r_sr[a]; r_sr[a] = r_sr[b]; r_sr[b] = t;
+    t = r_peaks[a]; r_peaks[a] = r_peaks[b]; r_peaks[b] = t;
+    t = r_onsets[a]; r_onsets[a] = r_onsets[b]; r_onsets[b] = t;
+    t = r_fbpm[a]; r_fbpm[a] = r_fbpm[b]; r_fbpm[b] = t;
+    t = r_marks[a]; r_marks[a] = r_marks[b]; r_marks[b] = t;
+    t = r_steps[a]; r_steps[a] = r_steps[b]; r_steps[b] = t;
+    t = r_end[a]; r_end[a] = r_end[b]; r_end[b] = t;
+    t = r_vpts[a]; r_vpts[a] = r_vpts[b]; r_vpts[b] = t;
+    t = r_vbuf[a]; r_vbuf[a] = r_vbuf[b]; r_vbuf[b] = t;
+    t = r_total[a]; r_total[a] = r_total[b]; r_total[b] = t;
+    t = r_mini[a]; r_mini[a] = r_mini[b]; r_mini[b] = t;
+    t = r_cellseg[a]; r_cellseg[a] = r_cellseg[b]; r_cellseg[b] = t;
+    t = r_len_i[a]; r_len_i[a] = r_len_i[b]; r_len_i[b] = t;
+    t = r_speed_i[a]; r_speed_i[a] = r_speed_i[b]; r_speed_i[b] = t;
+    t = r_pitch[a]; r_pitch[a] = r_pitch[b]; r_pitch[b] = t;
+    t = r_rev[a]; r_rev[a] = r_rev[b]; r_rev[b] = t;
+    t = r_play[a]; r_play[a] = r_play[b]; r_play[b] = t;
+    t = r_mode[a]; r_mode[a] = r_mode[b]; r_mode[b] = t;
+    t = r_grain[a]; r_grain[a] = r_grain[b]; r_grain[b] = t;
+    t = r_spray[a]; r_spray[a] = r_spray[b]; r_spray[b] = t;
+    t = r_chans[a]; r_chans[a] = r_chans[b]; r_chans[b] = t;
+    t = r_grp[a]; r_grp[a] = r_grp[b]; r_grp[b] = t;
+    t = r_mute[a]; r_mute[a] = r_mute[b]; r_mute[b] = t;
+    t = r_vol[a]; r_vol[a] = r_vol[b]; r_vol[b] = t;
+    t = r_aon[a]; r_aon[a] = r_aon[b]; r_aon[b] = t;
+    t = r_aenv[a]; r_aenv[a] = r_aenv[b]; r_aenv[b] = t;
+    t = r_fenv[a]; r_fenv[a] = r_fenv[b]; r_fenv[b] = t;
+    t = r_ftype[a]; r_ftype[a] = r_ftype[b]; r_ftype[b] = t;
+    t = r_fcut[a]; r_fcut[a] = r_fcut[b]; r_fcut[b] = t;
+    t = r_fres[a]; r_fres[a] = r_fres[b]; r_fres[b] = t;
+    t = r_famt[a]; r_famt[a] = r_famt[b]; r_famt[b] = t;
+    t = r_drive[a]; r_drive[a] = r_drive[b]; r_drive[b] = t;
+    t = r_dtype[a]; r_dtype[a] = r_dtype[b]; r_dtype[b] = t;
+    t = r_lo[a]; r_lo[a] = r_lo[b]; r_lo[b] = t;
+    t = r_hi[a]; r_hi[a] = r_hi[b]; r_hi[b] = t;
+    t = r_mix[a]; r_mix[a] = r_mix[b]; r_mix[b] = t;
+}
+
+// Rows a and b trade places: their tracks (and ghosts), playing state, and
+// their row numbers in recorded patterns. A playing track keeps its position.
+fn swap_rows(a, b) {
+    if (a == b) { return; }
+    let pa = r_ph[a];
+    let pb = r_ph[b];
+    let play_a = r_playing[a];
+    let play_b = r_playing[b];
+    swap_slot(a, b);
+    swap_slot(a + N_ROWS, b + N_ROWS);
+    // which slot each row plays, renamed for the swap
+    let ra = ps[a];
+    let rb = ps[b];
+    let rename = [a => b, b => a, a + N_ROWS => b + N_ROWS, b + N_ROWS => a + N_ROWS];
+    ps[a] = rename[rb];
+    ps[b] = rename[ra];
+    // the row threads pick up the other one's track where it was
+    r_playing[a] = play_b;
+    r_playing[b] = play_a;
+    r_keep[a] = play_b;
+    r_keep[b] = play_a;
+    r_hand[a] = -1;
+    r_hand[b] = -1;
+    if (play_b) { r_hand[a] = pb; }
+    if (play_a) { r_hand[b] = pa; }
+    // patterns press rows by number
+    for (let k = 0; k < 2; k += 1) {
+        let evs = pat_ev0;
+        if (k == 1) { evs = pat_ev1; }
+        for (let i = 0; i < count(evs); i += 1) {
+            if (evs[i][1] == a) { evs[i][1] = b; }
+            else if (evs[i][1] == b) { evs[i][1] = a; }
+        }
+        if (k == 0) { pat_ev0 = evs; } else { pat_ev1 = evs; }
+    }
+    if (sel == a) { sel = b; } else if (sel == b) { sel = a; }
+    sync_row_widgets();
+    status_text = "rows " + (a + 1) + " and " + (b + 1) + " swapped";
+}
+
+// Release after grabbing a row label: dropped on another row = swap.
+fn label_up(y) {
+    if (drag_label < 0) { return; }
+    let from = drag_label;
+    drag_label = -1;
+    let to = math_floor((y - GY) / ROW_STEP);
+    if (to >= 0 && to < N_ROWS && to != from) {
+        push_undo("");
+        swap_rows(from, to);
     }
 }
 
@@ -1191,6 +1486,7 @@ fn grid_up(x) {
     let r = drag_row;
     let c = math_clamp(cell_at(x), 0, r_total[r] - 1);
     if (c != drag_cell) {
+        push_undo("");
         r_lo[r] = math_min(c, drag_cell);
         r_hi[r] = math_max(c, drag_cell);
     }
@@ -1351,19 +1647,112 @@ fn seg_strip_click(x) {
     rebuild_row(sel);
 }
 
+// Volume curve geometry: level 1 at the top of the waveform, 0 at the bottom.
+fn vol_y(level) {
+    return EY + 6 + (1 - level) * (EH - 12);
+}
+
+fn y_vol(y) {
+    return math_clamp(1 - (y - EY - 6) / (EH - 12), 0, 1);
+}
+
+// Index of the volume point within 7 px of (x, y), or -1.
+fn vol_point_near(x, y) {
+    let pts = r_vpts[sel];
+    for (let i = 0; i < count(pts); i += 1) {
+        if (math_abs(frame_to_x(pts[i][0]) - x) <= 7 && math_abs(vol_y(pts[i][1]) - y) <= 7) { return i; }
+    }
+    return -1;
+}
+
+// New point on the curve at x, kept in frame order; returns its index.
+fn vol_add(x, y) {
+    let f = math_round(x_to_frame(x));
+    let pts = r_vpts[sel];
+    let out = [];
+    let at = -1;
+    for (let i = 0; i < count(pts); i += 1) {
+        if (at < 0 && f < pts[i][0]) { at = count(out); push(out, [f, y_vol(y)]); }
+        push(out, pts[i]);
+    }
+    if (at < 0) { at = count(out); push(out, [f, y_vol(y)]); }
+    r_vpts[sel] = out;
+    vol_sync(sel);
+    return at;
+}
+
+fn vol_remove(i) {
+    let pts = r_vpts[sel];
+    let out = [];
+    for (let k = 0; k < count(pts); k += 1) {
+        if (k != i) { push(out, pts[k]); }
+    }
+    r_vpts[sel] = out;
+    vol_sync(sel);
+}
+
+// Move a point; it stays between its neighbours so the order never flips.
+fn vol_drag(i, x, y) {
+    let pts = r_vpts[sel];
+    let lo = 0;
+    let hi = r_frames[sel];
+    if (i > 0) { lo = pts[i - 1][0] + 1; }
+    if (i + 1 < count(pts)) { hi = pts[i + 1][0] - 1; }
+    r_vpts[sel][i][0] = math_clamp(math_round(x_to_frame(x)), lo, hi);
+    r_vpts[sel][i][1] = y_vol(y);
+    vol_sync(sel);
+}
+
 fn editor_down(x, y, button) {
     if (r_node[sel] < 0) { return; }
     if (y >= SEG_Y && y < SEG_Y + SEG_H) {
-        if (button == 0) { seg_strip_click(x); }
+        if (button == 0) {
+            push_undo("");
+            seg_strip_click(x);
+        }
         return;
+    }
+    // volume curve first: its points, then the line itself
+    if (y < EY + EH) {
+        let vp = vol_point_near(x, y);
+        if (vp >= 0) {
+            push_undo("");
+            if (button == 1) { vol_remove(vp); }
+            else { drag_vol = vp; }
+            return;
+        }
+        let fx = x_to_frame(x);
+        if (button == 0 && math_abs(vol_y(vol_at(r_vpts[sel], fx)) - y) <= 6) {
+            push_undo("");
+            drag_vol = vol_add(x, y);
+            return;
+        }
     }
     let k = mark_near(x);
     if (button == 1) {
-        if (k > 0) { delete_mark(k); }
+        if (k > 0) {
+            push_undo("");
+            delete_mark(k);
+        }
         return;
     }
+    push_undo("");
     if (k != NO_MARK) { drag_mark = k; }
     else { add_mark(x); }
+}
+
+// Second click on the same reset button within CONFIRM_MS: go. First: arm it.
+let armed = "";
+let armed_at = 0;
+fn confirmed(what) {
+    let now = timestamp_ms();
+    if (armed == what && now - armed_at < CONFIRM_MS) {
+        armed = "";
+        return true;
+    }
+    armed = what;
+    armed_at = now;
+    return false;
 }
 
 fn handle_mouse() {
@@ -1372,10 +1761,18 @@ fn handle_mouse() {
         let e = evs[i];
         let x = e["x"];
         let y = e["y"];
+        if (e["key"] != nil) {
+            if (e["key"] == "Z" && e["cmd"]) {
+                if (e["shift"]) { redo(); } else { undo(); }
+            }
+            continue;
+        }
         if (!e["down"]) {
             if (e["button"] == 0) {
+                label_up(y);
                 grid_up(x);
                 drag_mark = NO_MARK;
+                drag_vol = -1;
             }
             continue;
         }
@@ -1383,10 +1780,22 @@ fn handle_mouse() {
             let r = math_floor((y - GY) / ROW_STEP);
             if (y - GY - r * ROW_STEP < ROW_H) { grid_down(r, x, e["button"]); }
         } else if (y >= STRIP_Y && y < STRIP_Y + 26 && e["button"] == 0) {
-            let g = math_floor((x - GX) / 120);
-            if (x >= GX && g < 4) {
-                for (let r = 0; r < N_ROWS; r += 1) {
-                    if (r_grp[r] == g) { press(r, STOP, 0); }
+            if (x >= RT_X && x < RT_X + RT_W) {
+                if (confirmed("track")) {
+                    push_undo("");
+                    reset_track(sel);
+                }
+            } else if (x >= RS_X && x < RS_X + RS_W) {
+                if (confirmed("session")) {
+                    push_undo("");
+                    reset_session();
+                }
+            } else {
+                let g = math_floor((x - GS_X) / GS_STEP);
+                if (x >= GS_X && g < 4 && x - GS_X - g * GS_STEP < GS_W) {
+                    for (let r = 0; r < N_ROWS; r += 1) {
+                        if (r_grp[r] == g) { press(r, STOP, 0); }
+                    }
                 }
             }
         } else if (y >= EY && y < SEG_Y + SEG_H) {
@@ -1394,6 +1803,7 @@ fn handle_mouse() {
         }
     }
     if (drag_mark != NO_MARK && cv.mouse_down()) { move_mark(drag_mark, cv.mouse_x()); }
+    if (drag_vol >= 0 && cv.mouse_down()) { vol_drag(drag_vol, cv.mouse_x(), cv.mouse_y()); }
 }
 
 // ── UI: widgets ─────────────────────────────────────────────────────────────
@@ -1417,7 +1827,8 @@ fn preset_path(name) {
     return os_script_dir() + "/" + name + "__mlr.json";
 }
 
-fn save_preset(name) {
+// Everything a preset holds, as a value (also what undo snapshots).
+fn session_data() {
     let rows = [];
     for (let r = 0; r < N_ROWS; r += 1) {
         push(rows, [
@@ -1428,7 +1839,7 @@ fn save_preset(name) {
             "end" => r_end[r], "amp_env_on" => r_aon[r], "amp_env" => r_aenv[r], "flt_env" => r_fenv[r],
             "flt_type" => r_ftype[r], "flt_freq" => r_fcut[r], "flt_res" => r_fres[r], "flt_amt" => r_famt[r],
             "drive" => r_drive[r], "drive_type" => DRIVE_NAMES[r_dtype[r]],
-            "grain" => r_grain[r], "spray" => r_spray[r],
+            "grain" => r_grain[r], "spray" => r_spray[r], "vol_pts" => r_vpts[r],
         ]);
     }
     let pats = [];
@@ -1442,16 +1853,34 @@ fn save_preset(name) {
         }
         push(pats, ["len" => pat_len[k], "events" => rel]);
     }
-    let data = [
+    return [
         "version" => 1, "bpm" => bpm(),
         "groups" => [g_vol, g_rev, g_dly], "group_outs" => g_out,
         "rev_out" => rev_out, "dly_out" => dly_out,
-        "main" => main_vol, "rev_room" => rev_room, "dly_time" => dly_i, "dly_fb" => dly_fb,
+        "main" => main_vol, "rev_room" => rev_room, "dly_time" => DLY_NAMES[dly_i], "dly_fb" => dly_fb,
+        "rev_type" => REV_NAMES[rev_type], "rev_lpf" => rev_lpf,
         "rows" => rows, "patterns" => pats,
     ];
-    file_write(preset_path(name), json_encode(data));
+}
+
+fn save_preset(name) {
+    file_write(preset_path(name), json_encode(session_data()));
     status_text = "saved " + name;
     refresh_presets();
+}
+
+// Position of `name` in `names`, or `fallback`.
+fn name_index(names, name, fallback) {
+    for (let i = 0; i < count(names); i += 1) {
+        if (names[i] == name) { return i; }
+    }
+    return fallback;
+}
+
+// Delay time of a preset: stored by name, or by index in older presets.
+fn dly_index(v) {
+    if (v == "" + v) { return name_index(DLY_NAMES, v, DLY_DEFAULT); }
+    return name_index(DLY_NAMES, DLY_NAMES_V1[v], DLY_DEFAULT);
 }
 
 // Play mode of a saved row: stored by name, or by index in older presets.
@@ -1471,17 +1900,93 @@ fn play_index(row) {
     return PLAY_LOOP;
 }
 
-fn load_preset(name) {
-    let text = file_read(preset_path(name));
-    if (!text) { status_text = "can't read " + name; return; }
-    let data = json_decode(text);
+// Before loading a session: a row that's playing its own track hands it to its
+// ghost slot and keeps playing it (same synth, same thread, no gap).
+fn ghost_if_playing(r) {
+    if (!r_playing[r] || ps[r] != r || r_node[r] < 0) { return; }
+    let g = r + N_ROWS;
+    r_file[g] = r_file[r];
+    r_buf[g] = r_buf[r];
+    r_node[g] = r_node[r];
+    r_frames[g] = r_frames[r];
+    r_sr[g] = r_sr[r];
+    r_peaks[g] = r_peaks[r];
+    r_onsets[g] = r_onsets[r];
+    r_fbpm[g] = r_fbpm[r];
+    r_marks[g] = r_marks[r];
+    r_steps[g] = r_steps[r];
+    r_end[g] = r_end[r];
+    r_vpts[g] = r_vpts[r];
+    r_vbuf[g] = r_vbuf[r];
+    r_total[g] = r_total[r];
+    r_mini[g] = r_mini[r];
+    r_cellseg[g] = r_cellseg[r];
+    r_len_i[g] = r_len_i[r];
+    r_speed_i[g] = r_speed_i[r];
+    r_pitch[g] = r_pitch[r];
+    r_rev[g] = r_rev[r];
+    r_play[g] = r_play[r];
+    r_mode[g] = r_mode[r];
+    r_grain[g] = r_grain[r];
+    r_spray[g] = r_spray[r];
+    r_chans[g] = r_chans[r];
+    r_grp[g] = r_grp[r];
+    r_mute[g] = r_mute[r];
+    r_vol[g] = r_vol[r];
+    r_aon[g] = r_aon[r];
+    r_aenv[g] = r_aenv[r];
+    r_fenv[g] = r_fenv[r];
+    r_ftype[g] = r_ftype[r];
+    r_fcut[g] = r_fcut[r];
+    r_fres[g] = r_fres[r];
+    r_famt[g] = r_famt[r];
+    r_drive[g] = r_drive[r];
+    r_dtype[g] = r_dtype[r];
+    r_lo[g] = r_lo[r];
+    r_hi[g] = r_hi[r];
+    r_mix[g] = r_mix[r];
+    ps[r] = g;                 // the row thread follows the ghost from here
+    r_node[r] = -1;            // the synth + buffers now belong to the ghost
+    r_buf[r] = -1;
+    r_vbuf[r] = -1;
+}
+
+// Fade a ghost out and free its synth and buffers.
+fn free_ghost(g) {
+    let node = r_node[g];
+    let b = r_buf[g];
+    let vb = r_vbuf[g];
+    r_node[g] = -1;
+    r_buf[g] = -1;
+    r_vbuf[g] = -1;
+    r_file[g] = "";
+    thread mlr_ghost_free {
+        if (node >= 0) {
+            set(node, amp: 0);
+            wait_ms(40);
+            free(node);
+        }
+        sleep_ms(latency() + 200);     // the free has landed: buffers can go
+        if (b >= 0) { buffer_free(b); }
+        if (vb >= 0) { buffer_free(vb); }
+    }
+}
+
+// Mixer settings + bpm of a session onto the current mixer.
+fn apply_mixer(data) {
     bpm(data["bpm"]);
     g_vol = data["groups"][0];
     g_rev = data["groups"][1];
     g_dly = data["groups"][2];
     main_vol = data["main"];
     rev_room = data["rev_room"];
-    dly_i = data["dly_time"];
+    dly_i = dly_index(data["dly_time"]);
+    rev_type = 0;
+    rev_lpf = 1;
+    if (has_key(data, "rev_type")) {
+        rev_type = name_index(REV_NAMES, data["rev_type"], 0);
+        rev_lpf = data["rev_lpf"];
+    }
     dly_fb = data["dly_fb"];
     if (has_key(data, "group_outs")) {
         g_out = data["group_outs"];
@@ -1490,62 +1995,87 @@ fn load_preset(name) {
     }
     mixer_update();
     main_update();
+}
+
+// One saved row onto row r. reload: always load the file fresh (preset load);
+// otherwise keep it when it's the same file (undo). Returns false when the
+// file is missing.
+fn apply_row(r, row, reload) {
+    let was_grain = is_grain(r_mode[r]);
+    // settings that don't depend on the file (kept even if it's missing)
+    r_speed_i[r] = row["speed"];
+    r_pitch[r] = row["pitch"];
+    r_rev[r] = row["reverse"];
+    r_play[r] = play_index(row);
+    r_mode[r] = row["mode"];
+    r_grp[r] = row["group"];
+    r_mute[r] = row["mute"];
+    r_vol[r] = row["vol"];
+    r_aon[r] = false;
+    r_aenv[r] = [0.1, 0.5, 1, 0.3];
+    r_fenv[r] = [0.1, 0.5, 0, 0.3];
+    r_ftype[r] = 0;
+    r_fcut[r] = 0.8;
+    r_fres[r] = 0.2;
+    r_famt[r] = 0.5;
+    r_drive[r] = 0;
+    r_dtype[r] = 0;
+    r_grain[r] = 0.5;
+    r_spray[r] = 0.3;
+    if (has_key(row, "grain")) {
+        r_grain[r] = row["grain"];
+        r_spray[r] = row["spray"];
+    }
+    if (has_key(row, "drive")) {
+        r_drive[r] = row["drive"];
+        r_dtype[r] = name_index(DRIVE_NAMES, row["drive_type"], 0);
+    }
+    if (has_key(row, "amp_env")) {
+        r_aon[r] = row["amp_env_on"];
+        r_aenv[r] = row["amp_env"];
+        r_fenv[r] = row["flt_env"];
+        r_ftype[r] = row["flt_type"];
+        r_fcut[r] = row["flt_freq"];
+        r_fres[r] = row["flt_res"];
+        r_famt[r] = row["flt_amt"];
+    }
+    let keep = !reload && row["file"] != "" && row["file"] == r_file[r] && r_node[r] >= 0;
+    if (keep) {
+        if (is_grain(r_mode[r]) != was_grain) { swap_voice(r); }
+    } else if (row["file"] == "" || !file_exists(row["file"]) || !load_row(r, row["file"])) {
+        unload_row(r);
+        r_len_i[r] = row["step_len"];
+        return row["file"] == "";
+    }
+    // tied to the file; after load_row, which sets its own for a fresh file
+    r_len_i[r] = row["step_len"];
+    r_marks[r] = row["marks"];
+    r_steps[r] = row["steps"];
+    if (has_key(row, "end")) { r_end[r] = row["end"]; }
+    r_vpts[r] = [];
+    if (has_key(row, "vol_pts")) { r_vpts[r] = row["vol_pts"]; }
+    vol_sync(r);
+    r_lo[r] = row["lo"];
+    r_hi[r] = row["hi"];
+    rebuild_row(r);
+    return true;
+}
+
+fn load_preset(name) {
+    let text = file_read(preset_path(name));
+    if (!text) { status_text = "can't read " + name; return; }
+    let data = json_decode(text);
+    // playing tracks become ghosts and keep playing through their own mixer;
+    // the new session gets a free mixer before any of its settings apply
+    for (let r = 0; r < N_ROWS; r += 1) { ghost_if_playing(r); }
+    cur_mix = pick_mixer();
+    loads += 1;
+    mix_used[cur_mix] = loads;
+    for (let r = 0; r < N_ROWS; r += 1) { r_mix[r] = cur_mix; }
+    apply_mixer(data);
     let missing = 0;
     for (let r = 0; r < N_ROWS; r += 1) {
-        let row = data["rows"][r];
-        // settings that don't depend on the file (kept even if it's missing)
-        r_speed_i[r] = row["speed"];
-        r_pitch[r] = row["pitch"];
-        r_rev[r] = row["reverse"];
-        r_play[r] = play_index(row);
-        r_mode[r] = row["mode"];
-        r_grp[r] = row["group"];
-        r_mute[r] = row["mute"];
-        r_vol[r] = row["vol"];
-        r_aon[r] = false;
-        r_aenv[r] = [0.1, 0.5, 1, 0.3];
-        r_fenv[r] = [0.1, 0.5, 0, 0.3];
-        r_ftype[r] = 0;
-        r_fcut[r] = 0.8;
-        r_fres[r] = 0.2;
-        r_famt[r] = 0.5;
-        r_drive[r] = 0;
-        r_dtype[r] = 0;
-        r_grain[r] = 0.5;
-        r_spray[r] = 0.3;
-        if (has_key(row, "grain")) {
-            r_grain[r] = row["grain"];
-            r_spray[r] = row["spray"];
-        }
-        if (has_key(row, "drive")) {
-            r_drive[r] = row["drive"];
-            for (let i = 0; i < count(DRIVE_NAMES); i += 1) {
-                if (DRIVE_NAMES[i] == row["drive_type"]) { r_dtype[r] = i; }
-            }
-        }
-        if (has_key(row, "amp_env")) {
-            r_aon[r] = row["amp_env_on"];
-            r_aenv[r] = row["amp_env"];
-            r_fenv[r] = row["flt_env"];
-            r_ftype[r] = row["flt_type"];
-            r_fcut[r] = row["flt_freq"];
-            r_fres[r] = row["flt_res"];
-            r_famt[r] = row["flt_amt"];
-        }
-        if (row["file"] == "" || !file_exists(row["file"]) || !load_row(r, row["file"])) {
-            unload_row(r);
-            r_len_i[r] = row["step_len"];
-            if (row["file"] != "") { missing += 1; }
-            continue;
-        }
-        // tied to the file; after load_row, which sets its own for a fresh file
-        r_len_i[r] = row["step_len"];
-        r_marks[r] = row["marks"];
-        r_steps[r] = row["steps"];
-        if (has_key(row, "end")) { r_end[r] = row["end"]; }
-        r_lo[r] = row["lo"];
-        r_hi[r] = row["hi"];
-        rebuild_row(r);
+        if (!apply_row(r, data["rows"][r], true)) { missing += 1; }
     }
     for (let k = 0; k < 2; k += 1) {
         pat_rec[k] = false;
@@ -1560,7 +2090,114 @@ fn load_preset(name) {
     sync_row_widgets();
     sync_mixer_widgets();
     status_text = "loaded " + name;
+    w_name.set(name);                          // save goes back to the same preset
     if (missing > 0) { status_text += " (" + missing + " files missing)"; }
+}
+
+// ── Undo / redo ─────────────────────────────────────────────────────────────
+// A snapshot of the session (session_data) before every edit, 50 deep.
+// Repeated changes of the same widget within UNDO_MERGE_MS are one step, so a
+// knob turn undoes in one go. Playing, stopping and patterns aren't edits.
+
+let MAX_UNDO = 50;
+let UNDO_MERGE_MS = 1500;
+let undo_stack = [];
+let redo_stack = [];
+let undo_tag = "";
+let undo_at = 0;
+
+// Call before an edit. tag: the widget's name to merge repeats, "" = always a new step.
+fn push_undo(tag) {
+    let now = timestamp_ms();
+    if (tag != "" && tag == undo_tag && now - undo_at < UNDO_MERGE_MS) {
+        undo_at = now;
+        return;
+    }
+    undo_tag = tag;
+    undo_at = now;
+    push(undo_stack, session_data());
+    if (count(undo_stack) > MAX_UNDO) {
+        let keep = [];
+        for (let i = 1; i < count(undo_stack); i += 1) { push(keep, undo_stack[i]); }
+        undo_stack = keep;
+    }
+    redo_stack = [];
+}
+
+// Put a snapshot back in place: same files stay loaded, nothing becomes a ghost.
+fn restore_session(data) {
+    apply_mixer(data);
+    for (let r = 0; r < N_ROWS; r += 1) { apply_row(r, data["rows"][r], false); }
+    sync_row_widgets();
+    sync_mixer_widgets();
+}
+
+fn undo() {
+    if (count(undo_stack) == 0) { status_text = "nothing to undo"; return; }
+    push(redo_stack, session_data());
+    restore_session(pop(undo_stack));
+    undo_tag = "";
+    status_text = "undo (" + count(undo_stack) + " left)";
+}
+
+fn redo() {
+    if (count(redo_stack) == 0) { status_text = "nothing to redo"; return; }
+    push(undo_stack, session_data());
+    restore_session(pop(redo_stack));
+    undo_tag = "";
+    status_text = "redo (" + count(redo_stack) + " left)";
+}
+
+// Every track setting back to how a fresh row starts (file etc. are cleared
+// by unload_row).
+fn row_defaults(r) {
+    r_marks[r] = [0]; r_steps[r] = [MAX_STEPS]; r_end[r] = 0; r_vpts[r] = [];
+    r_total[r] = 0; r_mini[r] = []; r_cellseg[r] = [];
+    r_len_i[r] = 1; r_speed_i[r] = 2; r_pitch[r] = 0; r_rev[r] = false; r_play[r] = PLAY_LOOP;
+    r_mode[r] = MODE_VARI; r_grain[r] = 0.5; r_spray[r] = 0.3; r_chans[r] = 2;
+    r_grp[r] = 0; r_mute[r] = false; r_vol[r] = 0.8;
+    r_aon[r] = false; r_aenv[r] = [0.1, 0.5, 1, 0.3]; r_fenv[r] = [0.1, 0.5, 0, 0.3];
+    r_ftype[r] = 0; r_fcut[r] = 0.8; r_fres[r] = 0.2; r_famt[r] = 0.5;
+    r_drive[r] = 0; r_dtype[r] = 0; r_lo[r] = -1; r_hi[r] = -1;
+}
+
+// Blank track: stop it (and a ghost on it), remove the file, defaults.
+fn reset_track(r) {
+    press(r, STOP, 0);
+    unload_row(r);
+    row_defaults(r);
+    if (r == sel) { sync_row_widgets(); }
+    status_text = "row " + (r + 1) + " reset";
+}
+
+// Like starting the app: all rows blank, patterns cleared, every mixer and the bpm at defaults.
+fn reset_session() {
+    for (let r = 0; r < N_ROWS; r += 1) { press(r, STOP, 0); }
+    for (let r = 0; r < N_ROWS; r += 1) {
+        unload_row(r);
+        row_defaults(r);
+    }
+    for (let k = 0; k < 2; k += 1) {
+        pat_rec[k] = false; pat_play[k] = false; pat_len[k] = 0; pat_start[k] = 0;
+    }
+    pat_ev0 = []; pat_ev1 = [];
+    w_p1_rec.set(false); w_p1_play.set(false); w_p2_rec.set(false); w_p2_play.set(false);
+    g_vol = [0.8, 0.8, 0.8, 0.8]; g_rev = [0, 0, 0, 0]; g_dly = [0, 0, 0, 0]; g_out = [0, 0, 0, 0];
+    rev_out = 0; dly_out = 0; main_vol = 0.8; rev_room = 0.6; rev_type = 0; rev_lpf = 1;
+    dly_i = DLY_DEFAULT; dly_fb = 0.4;
+    bpm(120);
+    for (let m = 0; m < N_MIX; m += 1) {
+        cur_mix = m;
+        mixer_update();
+        main_update();
+    }
+    cur_mix = 0;
+    for (let r = 0; r < N_SLOTS; r += 1) { r_mix[r] = 0; }
+    sel = 0;
+    sync_row_widgets();
+    sync_mixer_widgets();
+    w_name.set("my_session");
+    status_text = "session reset";
 }
 
 fn pattern_rec_toggle(k, on) {
@@ -1579,47 +2216,47 @@ fn pattern_rec_toggle(k, on) {
 }
 
 fn handle_widgets() {
-    if (w_file.has_changed() && w_file.value() != "") { load_row(sel, w_file.value()); }
-    if (w_step.has_changed())  {
+    if (w_file.has_changed() && w_file.value() != "") { push_undo(""); load_row(sel, w_file.value()); }
+    if (w_step.has_changed())  { push_undo("step");
         r_len_i[sel] = int(w_step.value());
         fit_steps(sel);
         rebuild_row(sel);
     }
-    if (w_speed.has_changed()) { r_speed_i[sel] = int(w_speed.value()); }
-    if (w_pitch.has_changed()) { r_pitch[sel] = math_round(w_pitch.value()); }
-    if (w_dir.has_changed())   { r_rev[sel] = int(w_dir.value()) == 1; }
-    if (w_play.has_changed())  { r_play[sel] = int(w_play.value()); }
-    if (w_mode.has_changed())  {
+    if (w_speed.has_changed()) { push_undo("speed"); r_speed_i[sel] = int(w_speed.value()); }
+    if (w_pitch.has_changed()) { push_undo("pitch"); r_pitch[sel] = math_round(w_pitch.value()); }
+    if (w_dir.has_changed())   { push_undo("dir"); r_rev[sel] = int(w_dir.value()) == 1; }
+    if (w_play.has_changed())  { push_undo("play"); r_play[sel] = int(w_play.value()); }
+    if (w_mode.has_changed())  { push_undo("mode");
         let was_grain = is_grain(r_mode[sel]);
         r_mode[sel] = int(w_mode.value());
         if (is_grain(r_mode[sel]) != was_grain) { swap_voice(sel); }
     }
-    if (w_grain.has_changed()) { r_grain[sel] = w_grain.value(); }
-    if (w_spray.has_changed()) { r_spray[sel] = w_spray.value(); }
-    if (w_group.has_changed()) { r_grp[sel] = int(w_group.value()); }
-    if (w_vol.has_changed())   { r_vol[sel] = w_vol.value(); }
-    if (w_slice.has_changed() && r_node[sel] >= 0) { slice_row(sel); }
-    if (w_amp_on.has_changed()) { r_aon[sel] = w_amp_on.value(); }
+    if (w_grain.has_changed()) { push_undo("grain"); r_grain[sel] = w_grain.value(); }
+    if (w_spray.has_changed()) { push_undo("spray"); r_spray[sel] = w_spray.value(); }
+    if (w_group.has_changed()) { push_undo("group"); r_grp[sel] = int(w_group.value()); }
+    if (w_vol.has_changed())   { push_undo("vol"); r_vol[sel] = w_vol.value(); }
+    if (w_slice.has_changed() && r_node[sel] >= 0) { push_undo(""); slice_row(sel); }
+    if (w_amp_on.has_changed()) { push_undo("amp_on"); r_aon[sel] = w_amp_on.value(); }
     // moving an amp knob switches the amp envelope on
     let amp_moved = false;
-    if (w_aa.has_changed()) { r_aenv[sel][0] = w_aa.value(); amp_moved = true; }
-    if (w_ad.has_changed()) { r_aenv[sel][1] = w_ad.value(); amp_moved = true; }
-    if (w_as.has_changed()) { r_aenv[sel][2] = w_as.value(); amp_moved = true; }
-    if (w_ar.has_changed()) { r_aenv[sel][3] = w_ar.value(); amp_moved = true; }
+    if (w_aa.has_changed()) { push_undo("aa"); r_aenv[sel][0] = w_aa.value(); amp_moved = true; }
+    if (w_ad.has_changed()) { push_undo("ad"); r_aenv[sel][1] = w_ad.value(); amp_moved = true; }
+    if (w_as.has_changed()) { push_undo("as"); r_aenv[sel][2] = w_as.value(); amp_moved = true; }
+    if (w_ar.has_changed()) { push_undo("ar"); r_aenv[sel][3] = w_ar.value(); amp_moved = true; }
     if (amp_moved && !r_aon[sel]) {
         r_aon[sel] = true;
         w_amp_on.set(true);
     }
-    if (w_fa.has_changed()) { r_fenv[sel][0] = w_fa.value(); }
-    if (w_fd.has_changed()) { r_fenv[sel][1] = w_fd.value(); }
-    if (w_fs.has_changed()) { r_fenv[sel][2] = w_fs.value(); }
-    if (w_fr.has_changed()) { r_fenv[sel][3] = w_fr.value(); }
-    if (w_ftype.has_changed()) { r_ftype[sel] = int(w_ftype.value()); }
-    if (w_fcut.has_changed()) { r_fcut[sel] = w_fcut.value(); }
-    if (w_fres.has_changed()) { r_fres[sel] = w_fres.value(); }
-    if (w_famt.has_changed()) { r_famt[sel] = w_famt.value(); }
-    if (w_drive.has_changed()) { r_drive[sel] = w_drive.value(); }
-    if (w_dtype.has_changed()) { r_dtype[sel] = int(w_dtype.value()); }
+    if (w_fa.has_changed()) { push_undo("fa"); r_fenv[sel][0] = w_fa.value(); }
+    if (w_fd.has_changed()) { push_undo("fd"); r_fenv[sel][1] = w_fd.value(); }
+    if (w_fs.has_changed()) { push_undo("fs"); r_fenv[sel][2] = w_fs.value(); }
+    if (w_fr.has_changed()) { push_undo("fr"); r_fenv[sel][3] = w_fr.value(); }
+    if (w_ftype.has_changed()) { push_undo("ftype"); r_ftype[sel] = int(w_ftype.value()); }
+    if (w_fcut.has_changed()) { push_undo("fcut"); r_fcut[sel] = w_fcut.value(); }
+    if (w_fres.has_changed()) { push_undo("fres"); r_fres[sel] = w_fres.value(); }
+    if (w_famt.has_changed()) { push_undo("famt"); r_famt[sel] = w_famt.value(); }
+    if (w_drive.has_changed()) { push_undo("drive"); r_drive[sel] = w_drive.value(); }
+    if (w_dtype.has_changed()) { push_undo("dtype"); r_dtype[sel] = int(w_dtype.value()); }
 
     if (w_p1_rec.has_changed())  { pattern_rec_toggle(0, w_p1_rec.value()); }
     if (w_p2_rec.has_changed())  { pattern_rec_toggle(1, w_p2_rec.value()); }
@@ -1632,33 +2269,36 @@ fn handle_widgets() {
         else { save_preset(name); }
     }
     if (w_load.has_changed() && count(preset_names) > 0) {
+        push_undo("");
         load_preset(preset_names[int(w_presets.value())]);
     }
 
     let mix = false;
-    if (w_g1_vol.has_changed()) { g_vol[0] = w_g1_vol.value(); mix = true; }
-    if (w_g1_rev.has_changed()) { g_rev[0] = w_g1_rev.value(); mix = true; }
-    if (w_g1_dly.has_changed()) { g_dly[0] = w_g1_dly.value(); mix = true; }
-    if (w_g2_vol.has_changed()) { g_vol[1] = w_g2_vol.value(); mix = true; }
-    if (w_g2_rev.has_changed()) { g_rev[1] = w_g2_rev.value(); mix = true; }
-    if (w_g2_dly.has_changed()) { g_dly[1] = w_g2_dly.value(); mix = true; }
-    if (w_g3_vol.has_changed()) { g_vol[2] = w_g3_vol.value(); mix = true; }
-    if (w_g3_rev.has_changed()) { g_rev[2] = w_g3_rev.value(); mix = true; }
-    if (w_g3_dly.has_changed()) { g_dly[2] = w_g3_dly.value(); mix = true; }
-    if (w_g4_vol.has_changed()) { g_vol[3] = w_g4_vol.value(); mix = true; }
-    if (w_g4_rev.has_changed()) { g_rev[3] = w_g4_rev.value(); mix = true; }
-    if (w_g4_dly.has_changed()) { g_dly[3] = w_g4_dly.value(); mix = true; }
-    if (w_g1_out.has_changed()) { g_out[0] = int(w_g1_out.value()); mix = true; }
-    if (w_g2_out.has_changed()) { g_out[1] = int(w_g2_out.value()); mix = true; }
-    if (w_g3_out.has_changed()) { g_out[2] = int(w_g3_out.value()); mix = true; }
-    if (w_g4_out.has_changed()) { g_out[3] = int(w_g4_out.value()); mix = true; }
-    if (w_rev_out.has_changed()) { rev_out = int(w_rev_out.value()); mix = true; }
-    if (w_dly_out.has_changed()) { dly_out = int(w_dly_out.value()); mix = true; }
-    if (w_main.has_changed())   { main_vol = w_main.value(); main_update(); }
-    if (w_room.has_changed())   { rev_room = w_room.value(); mix = true; }
-    if (w_dtime.has_changed())  { dly_i = int(w_dtime.value()); mix = true; }
-    if (w_dfb.has_changed())    { dly_fb = w_dfb.value(); mix = true; }
-    if (w_bpm.has_changed())    { bpm(w_bpm.value()); mix = true; }
+    if (w_g1_vol.has_changed()) { push_undo("g1_vol"); g_vol[0] = w_g1_vol.value(); mix = true; }
+    if (w_g1_rev.has_changed()) { push_undo("g1_rev"); g_rev[0] = w_g1_rev.value(); mix = true; }
+    if (w_g1_dly.has_changed()) { push_undo("g1_dly"); g_dly[0] = w_g1_dly.value(); mix = true; }
+    if (w_g2_vol.has_changed()) { push_undo("g2_vol"); g_vol[1] = w_g2_vol.value(); mix = true; }
+    if (w_g2_rev.has_changed()) { push_undo("g2_rev"); g_rev[1] = w_g2_rev.value(); mix = true; }
+    if (w_g2_dly.has_changed()) { push_undo("g2_dly"); g_dly[1] = w_g2_dly.value(); mix = true; }
+    if (w_g3_vol.has_changed()) { push_undo("g3_vol"); g_vol[2] = w_g3_vol.value(); mix = true; }
+    if (w_g3_rev.has_changed()) { push_undo("g3_rev"); g_rev[2] = w_g3_rev.value(); mix = true; }
+    if (w_g3_dly.has_changed()) { push_undo("g3_dly"); g_dly[2] = w_g3_dly.value(); mix = true; }
+    if (w_g4_vol.has_changed()) { push_undo("g4_vol"); g_vol[3] = w_g4_vol.value(); mix = true; }
+    if (w_g4_rev.has_changed()) { push_undo("g4_rev"); g_rev[3] = w_g4_rev.value(); mix = true; }
+    if (w_g4_dly.has_changed()) { push_undo("g4_dly"); g_dly[3] = w_g4_dly.value(); mix = true; }
+    if (w_g1_out.has_changed()) { push_undo("g1_out"); g_out[0] = int(w_g1_out.value()); mix = true; }
+    if (w_g2_out.has_changed()) { push_undo("g2_out"); g_out[1] = int(w_g2_out.value()); mix = true; }
+    if (w_g3_out.has_changed()) { push_undo("g3_out"); g_out[2] = int(w_g3_out.value()); mix = true; }
+    if (w_g4_out.has_changed()) { push_undo("g4_out"); g_out[3] = int(w_g4_out.value()); mix = true; }
+    if (w_rev_out.has_changed()) { push_undo("rev_out"); rev_out = int(w_rev_out.value()); mix = true; }
+    if (w_dly_out.has_changed()) { push_undo("dly_out"); dly_out = int(w_dly_out.value()); mix = true; }
+    if (w_main.has_changed())   { push_undo("main"); main_vol = w_main.value(); main_update(); }
+    if (w_room.has_changed())   { push_undo("room"); rev_room = w_room.value(); mix = true; }
+    if (w_dtime.has_changed())  { push_undo("dtime"); dly_i = int(w_dtime.value()); mix = true; }
+    if (w_rtype.has_changed())  { push_undo("rtype"); rev_type = int(w_rtype.value()); mix = true; }
+    if (w_rlpf.has_changed())   { push_undo("rlpf"); rev_lpf = w_rlpf.value(); mix = true; }
+    if (w_dfb.has_changed())    { push_undo("dfb"); dly_fb = w_dfb.value(); mix = true; }
+    if (w_bpm.has_changed())    { push_undo("bpm"); bpm(w_bpm.value()); mix = true; }
     if (mix) { mixer_update(); }
 }
 
@@ -1670,6 +2310,8 @@ fn ln(x1, y1, x2, y2, c, w) { cv.line(x1, y1, x2, y2, c[0], c[1], c[2], w); }
 
 fn draw_row(r) {
     let y = GY + r * ROW_STEP;
+    let dragging_onto = drag_label >= 0 && drag_label != r && cv.mouse_down()
+        && math_floor((cv.mouse_y() - GY) / ROW_STEP) == r;
     let gc = GROUP_COLORS[r_grp[r]];
     let total = r_total[r];
 
@@ -1677,6 +2319,7 @@ fn draw_row(r) {
     if (r == sel) { box(4, y, GX - 10, ROW_H, C_CELL_B); }
     else { box(4, y, GX - 10, ROW_H, C_PANEL); }
     box(4, y, 3, ROW_H, gc);
+    if (dragging_onto) { box(4, y, GX - 10, ROW_H, C_INFO); }
     txt(14, y + 4, "" + (r + 1), 14, C_TEXT);
     txt(GX - 30, y + 4, PLAY_TAGS[r_play[r]], 11, C_INFO);
     if (r_file[r] != "") { txt(14, y + 23, str_substr(file_name(r_file[r]), 0, 9), 10, C_DIM); }
@@ -1697,7 +2340,11 @@ fn draw_row(r) {
         if (cellseg[c] % 2 == 1) { col = C_CELL_B; }
         if (in_range && c >= r_lo[r] && c <= r_hi[r]) { col = C_RANGE; }
         let bar = C_WAVE;
-        if (c == cur && r_playing[r]) { col = C_ACCENT; bar = C_BG; }
+        if (c == cur && r_playing[r]) {
+            col = C_ACCENT;
+            if (ps[r] != r) { col = C_GHOST; }
+            bar = C_BG;
+        }
         box(x, y, CELL - 3, ROW_H, col);
         if (c > 0 && cellseg[c] != cellseg[c - 1]) { box(x - 3, y, 3, ROW_H, gc); }
         let mid = y + ROW_H / 2;
@@ -1712,7 +2359,8 @@ fn draw_row(r) {
     if (r_mute[r]) { box(MX, y, BOX, ROW_H, C_WARN); }
     else { box(MX, y, BOX, ROW_H, C_PANEL); }
     txt(MX + 9, y + 12, "M", 13, C_TEXT);
-    if (r_playing[r]) { box(SX, y, BOX, ROW_H, C_ACCENT); box(SX + 9, y + 15, 10, 10, C_BG); }
+    if (r_playing[r] && ps[r] != r) { box(SX, y, BOX, ROW_H, C_GHOST); box(SX + 9, y + 15, 10, 10, C_BG); }
+    else if (r_playing[r]) { box(SX, y, BOX, ROW_H, C_ACCENT); box(SX + 9, y + 15, 10, 10, C_BG); }
     else { box(SX, y, BOX, ROW_H, C_PANEL); box(SX + 9, y + 15, 10, 10, C_DIM); }
     box(GBX, y, BOX, ROW_H, C_PANEL);
     box(GBX, y + ROW_H - 3, BOX, 3, gc);
@@ -1720,10 +2368,23 @@ fn draw_row(r) {
 }
 
 fn draw_strip() {
+    let armed_now = armed != "" && timestamp_ms() - armed_at < CONFIRM_MS;
+    let labels = [["track", RT_X, RT_W, "reset track"], ["session", RS_X, RS_W, "reset session"]];
+    for (let i = 0; i < 2; i += 1) {
+        let b = labels[i];
+        if (armed_now && armed == b[0]) {
+            box(b[1], STRIP_Y, b[2], 26, C_WARN);
+            txt(b[1] + 10, STRIP_Y + 6, "sure?", 12, C_BG);
+        } else {
+            box(b[1], STRIP_Y, b[2], 26, C_PANEL);
+            box(b[1], STRIP_Y, 3, 26, C_WARN);
+            txt(b[1] + 10, STRIP_Y + 6, b[3], 11, C_TEXT);
+        }
+    }
     for (let g = 0; g < 4; g += 1) {
         let gc = GROUP_COLORS[g];
-        let x = GX + g * 120;
-        box(x, STRIP_Y, 112, 26, C_PANEL);
+        let x = GS_X + g * GS_STEP;
+        box(x, STRIP_Y, GS_W, 26, C_PANEL);
         box(x, STRIP_Y, 3, 26, gc);
         txt(x + 12, STRIP_Y + 6, "stop G" + (g + 1), 12, C_TEXT);
     }
@@ -1734,7 +2395,7 @@ fn draw_strip() {
         else if (pat_play[k] && pat_len[k] > 0) { s = "play " + pat_len[k] + "b"; }
         info += "  P" + (k + 1) + ": " + s;
     }
-    txt(GX + 4 * 120 + 10, STRIP_Y + 6, info, 12, C_INFO);
+    txt(GS_X + 4 * GS_STEP, STRIP_Y + 6, info, 11, C_INFO);
 }
 
 fn beat_info(r) {
@@ -1813,8 +2474,27 @@ fn draw_editor() {
         box(x - 4, EY, 8, 10, gc);
     }
 
-    // playhead
-    if (r_playing[sel]) {
+    // volume curve: a fat line through the points, flat at the ends
+    let pts = r_vpts[sel];
+    let n_v = count(pts);
+    let lx = EX;
+    let ly = vol_y(vol_at(pts, 0));
+    for (let i = 0; i < n_v; i += 1) {
+        let px = frame_to_x(pts[i][0]);
+        let py = vol_y(pts[i][1]);
+        ln(lx, ly, px, py, C_VOL, 3);
+        lx = px;
+        ly = py;
+    }
+    ln(lx, ly, EX + EW, ly, C_VOL, 3);
+    for (let i = 0; i < n_v; i += 1) {
+        let c = C_VOL;
+        if (i == drag_vol) { c = C_TEXT; }
+        box(frame_to_x(pts[i][0]) - 4, vol_y(pts[i][1]) - 4, 8, 8, c);
+    }
+
+    // playhead (not for a ghost: it plays another file)
+    if (r_playing[sel] && ps[sel] == sel) {
         let x = frame_to_x(r_pf[sel]);
         ln(x, EY, x, EY + EH, C_TEXT, 1);
     }

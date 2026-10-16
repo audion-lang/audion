@@ -1860,7 +1860,8 @@ thread listener {
 |----------|-------------|---------|
 | `buffer_load(path)` | Allocate a buffer and read a sound file into it | buffer ID (number) |
 | `buffer_free(buf_id)` | Free a buffer on scsynth | nil |
-| `buffer_alloc(frames, channels?)` | Allocate an empty buffer (channels defaults to 1) | buffer ID (number) |
+| `buffer_alloc(frames, channels?)` | Allocate an empty buffer (channels defaults to 1). Waits until scsynth has it ready | buffer ID (number) |
+| `buffer_set(buf_id, [v, ...])` | Write values into a buffer from frame 0 (e.g. a curve a synth reads with `buf_rd`) | nil |
 | `buffer_read(buf_id, path)` | Read a sound file into an existing buffer | nil |
 | `buffer_beats(buf_id)` | Hits and beat count of the buffer: `["onsets" => [frame, ...], "beats" => n, "bpm" => x, "confidence" => c]`. `beats` is 0 when the sound isn't beaty. Works best on loops cut to whole beats | array |
 | `buffer_peaks(buf_id, n)` | `n` peak values (largest absolute sample per slice, all channels) for drawing a waveform. Works for any format scsynth can load (wav, aiff, flac, mp3, ...) | array of numbers |
@@ -2248,6 +2249,8 @@ LFOs run at control rate (`.kr`) - use them to modulate filter cutoffs, panning,
 | UGen | Description |
 |------|-------------|
 | `reverb(sig, mix, room, damp)` | Reverb (FreeVerb) |
+| `gverb(sig, room, time, damp, bw, spread, dry, early, tail, maxroom)` | GVerb (mono in), **left** output. `maxroom` (a number, default 300) sizes its real-time memory: keep it just above `room` |
+| `gverb_stereo(...)` | Same arguments, both GVerb outputs (stereo) |
 | `delay(sig, time, decay)` | Delay (CombL) |
 | `dist(sig, amount)` | Distortion (clip) |
 

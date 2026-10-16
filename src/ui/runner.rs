@@ -1817,14 +1817,38 @@ fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex
             d.mouse_y = p.y - rect.min.y;
         }
         let (x, y) = (d.mouse_x, d.mouse_y);
+        // Key presses, unless a text field has the keyboard (its own Cmd+Z etc.).
+        // Not ctx.wants_keyboard_input(): that is true for ANY focused widget,
+        // and a clicked knob or slider keeps focus.
+        let typing = ui.ctx().memory(|m| m.focused())
+            .map_or(false, |id| egui::text_edit::TextEditState::load(ui.ctx(), id).is_some());
+        if !typing {
+            let keys: Vec<super::CanvasEvent> = ui.input(|i| {
+                i.events.iter().filter_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some(super::CanvasEvent {
+                        down: true,
+                        key: Some(key.name().to_string()),
+                        cmd: modifiers.command,
+                        shift: modifiers.shift,
+                        x,
+                        y,
+                        ..Default::default()
+                    }),
+                    _ => None,
+                }).collect()
+            });
+            for k in keys {
+                d.push_event(k);
+            }
+        }
         for b in 0..2 {
             if pressed[b] && resp.hovered() {
                 d.held[b] = true;
-                d.push_event(super::CanvasEvent { down: true, button: b as u8, x, y });
+                d.push_event(super::CanvasEvent { down: true, button: b as u8, x, y, ..Default::default() });
             }
             if released[b] && d.held[b] {
                 d.held[b] = false;
-                d.push_event(super::CanvasEvent { down: false, button: b as u8, x, y });
+                d.push_event(super::CanvasEvent { down: false, button: b as u8, x, y, ..Default::default() });
             }
         }
     }

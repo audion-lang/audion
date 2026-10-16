@@ -771,3 +771,29 @@ fn test_warp() {
     assert_eq!(w.inputs[2], Some((control, 2)), "freqScale");
     assert!(def.constants.contains(&-1.0), "envbufnum -1 = built-in window");
 }
+
+#[test]
+fn test_gverb_maxroomsize() {
+    let mut args: Vec<UGenExpr> = vec![param("x")];
+    args.extend([60.0, 3.0, 0.5, 0.5, 15.0, 0.0, 0.5, 0.5].iter().map(|v| UGenExpr::Number(*v)));
+    let def = parse_synthdef(&build_synthdef("t", &["x".to_string()], &call("gverb", args.clone()), &[]).unwrap());
+    assert!(def.constants.contains(&300.0), "default max room size stays 300");
+    args.push(UGenExpr::Number(61.0));
+    let def = parse_synthdef(&build_synthdef("t", &["x".to_string()], &call("gverb", args), &[]).unwrap());
+    let gv = def.ugens.iter().find(|u| u.name == "GVerb").unwrap();
+    assert_eq!(gv.num_inputs, 10);
+    assert_eq!(gv.num_outputs, 2, "GVerb is stereo out");
+    assert!(def.constants.contains(&61.0) && !def.constants.contains(&300.0), "max room size from the 10th arg");
+}
+
+#[test]
+fn test_gverb_channels() {
+    // gverb → left channel only (as before); gverb_stereo → both. Both declare 2 outputs.
+    for (name, chans) in [("gverb", 1usize), ("gverb_stereo", 2)] {
+        let body = call("out", vec![UGenExpr::Number(0.0), call(name, vec![param("x")])]);
+        let def = parse_synthdef(&build_synthdef("t", &["x".to_string()], &body, &[]).unwrap());
+        assert_eq!(def.ugens.iter().find(|u| u.name == "GVerb").unwrap().num_outputs, 2, "{}", name);
+        let out = def.ugens.iter().find(|u| u.name == "Out").unwrap();
+        assert_eq!(out.num_inputs as usize, 1 + chans, "{}: Out(bus, {} channels)", name, chans);
+    }
+}

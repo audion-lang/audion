@@ -2010,7 +2010,8 @@ impl Interpreter {
                     "mouse_y" => return Ok(Value::Number(data.mouse_y as f64)),
                     "mouse_down" => return Ok(Value::Bool(data.held[0])),
                     "mouse_right_down" => return Ok(Value::Bool(data.held[1])),
-                    // events() → [{down, button, x, y}, ...] since the last call; button 0 = left, 1 = right.
+                    // events() → [{down, button, x, y, key, cmd, shift}, ...] since the last call;
+                    // button 0 = left, 1 = right; key = key name for a key press, nil for mouse.
                     "events" => {
                         let mut list = AudionArray::new();
                         for ev in data.events.drain(..) {
@@ -2019,6 +2020,9 @@ impl Interpreter {
                             e.set(Value::String("button".into()), Value::Number(ev.button as f64));
                             e.set(Value::String("x".into()), Value::Number(ev.x as f64));
                             e.set(Value::String("y".into()), Value::Number(ev.y as f64));
+                            e.set(Value::String("key".into()), ev.key.clone().map(Value::String).unwrap_or(Value::Nil));
+                            e.set(Value::String("cmd".into()), Value::Bool(ev.cmd));
+                            e.set(Value::String("shift".into()), Value::Bool(ev.shift));
                             list.push_auto(Value::Array(Arc::new(Mutex::new(e))));
                         }
                         return Ok(Value::Array(Arc::new(Mutex::new(list))));

@@ -182,7 +182,9 @@ c.mouse_x(); c.mouse_y()                // pointer position over the canvas
 c.mouse_down()                          // left button held on the canvas
 c.mouse_right_down()                    // right button held on the canvas
 c.events()                              // presses/releases since the last call:
-                                        // [{down, button, x, y}, ...], button 0 = left, 1 = right
+                                        // [{down, button, x, y, key, cmd, shift}, ...]
+                                        // button 0 = left, 1 = right; a key press has
+                                        // key = "Z", "Space", ... (nil for mouse), cmd = Cmd/Ctrl held
 ```
 
 Read clicks with `events()` rather than polling `mouse_down()`, a quick click can

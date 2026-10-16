@@ -202,6 +202,33 @@ impl OscClient {
         None
     }
 
+    /// Wait for scsynth's `/done <cmd>` (async buffer commands finish on its
+    /// background thread). False on timeout.
+    fn wait_done(&self, cmd: &str, timeout: std::time::Duration) -> bool {
+        let _ = self.socket.set_read_timeout(Some(timeout));
+        let mut buf = [0u8; 1024];
+        let mut ok = false;
+        loop {
+            match self.socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
+                        if msg.addr == "/done" {
+                            if let Some(rosc::OscType::String(c)) = msg.args.first() {
+                                if c == cmd {
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = self.socket.set_read_timeout(None);
+        ok
+    }
+
     /// Allocate a buffer and read a sound file into it.
     /// Blocks until scsynth confirms with /done /b_allocRead (up to 10s for large files).
     /// Returns the buffer ID.
@@ -217,26 +244,8 @@ impl OscClient {
             ],
         );
         self.allocated_buffers.lock().unwrap().push(buf_id);
-        // Wait for /done /b_allocRead confirmation so the buffer is ready to use
-        let _ = self.socket.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-        let mut buf = [0u8; 1024];
-        loop {
-            match self.socket.recv_from(&mut buf) {
-                Ok((len, _)) => {
-                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
-                        if msg.addr == "/done" {
-                            if let Some(rosc::OscType::String(cmd)) = msg.args.first() {
-                                if cmd == "/b_allocRead" {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => break, // timeout — proceed anyway
-            }
-        }
-        let _ = self.socket.set_read_timeout(None);
+        // Wait for /done /b_allocRead so the buffer is ready to use (timeout: proceed anyway)
+        self.wait_done("/b_allocRead", std::time::Duration::from_secs(10));
         buf_id
     }
 
@@ -255,28 +264,7 @@ impl OscClient {
                 OscType::Int(0),  // close the file when done
             ],
         );
-        let _ = self.socket.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-        let mut buf = [0u8; 1024];
-        let mut ok = false;
-        loop {
-            match self.socket.recv_from(&mut buf) {
-                Ok((len, _)) => {
-                    if let Ok((_, rosc::OscPacket::Message(msg))) = rosc::decoder::decode_udp(&buf[..len]) {
-                        if msg.addr == "/done" {
-                            if let Some(rosc::OscType::String(cmd)) = msg.args.first() {
-                                if cmd == "/b_write" {
-                                    ok = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = self.socket.set_read_timeout(None);
-        ok
+        self.wait_done("/b_write", std::time::Duration::from_secs(10))
     }
 
     /// Allocate an empty buffer with the given number of frames and channels.
@@ -292,6 +280,8 @@ impl OscClient {
             ],
         );
         self.allocated_buffers.lock().unwrap().push(buf_id);
+        // Ready on return: a /b_setn sent before the allocation finishes is lost.
+        self.wait_done("/b_alloc", std::time::Duration::from_secs(2));
         buf_id
     }
 
@@ -370,9 +360,14 @@ impl OscClient {
     /// Used to push a hand-drawn curve (function editor) into a buffer scsynth
     /// can scan with Phasor/BufRd at audio rate.
     pub fn buffer_setn(&self, buf_id: i32, data: &[f32]) {
+        self.buffer_setn_at(buf_id, 0, data);
+    }
+
+    /// Same, starting at sample index `start`.
+    pub fn buffer_setn_at(&self, buf_id: i32, start: i32, data: &[f32]) {
         let mut args: Vec<OscType> = vec![
             OscType::Int(buf_id),
-            OscType::Int(0),
+            OscType::Int(start),
             OscType::Int(data.len() as i32),
         ];
         args.extend(data.iter().map(|&f| OscType::Float(f)));

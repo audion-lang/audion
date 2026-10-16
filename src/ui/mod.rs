@@ -160,14 +160,19 @@ pub struct Canvas2dData {
     pub events: Vec<CanvasEvent>,
 }
 
-/// One mouse press or release on a canvas, in canvas pixels.
-#[derive(Clone, Debug)]
+/// One mouse press/release on a canvas (in canvas pixels), or a key press.
+#[derive(Clone, Debug, Default)]
 pub struct CanvasEvent {
     pub down: bool,
     /// 0 = left, 1 = right.
     pub button: u8,
     pub x: f32,
     pub y: f32,
+    /// A key press: egui's key name ("Z", "Space", "ArrowUp", ...); None for mouse events.
+    pub key: Option<String>,
+    /// Cmd on macOS, Ctrl elsewhere.
+    pub cmd: bool,
+    pub shift: bool,
 }
 
 /// Oldest events are dropped past this, so a script that never reads

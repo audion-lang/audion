@@ -206,7 +206,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
-    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks", "buffer_beats",
+    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks", "buffer_beats", "buffer_set",
     "buffer_stream_open", "buffer_stream_close",
     "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
@@ -373,6 +373,7 @@ pub fn call_builtin(
         "buffer_query" => builtin_buffer_query(args, osc),
         "buffer_peaks" => builtin_buffer_peaks(args, osc),
         "buffer_beats" => builtin_buffer_beats(args, osc),
+        "buffer_set" => builtin_buffer_set(args, osc),
         "buffer_read" => builtin_buffer_read(args, osc),
         "buffer_stream_open" => builtin_buffer_stream_open(args, osc),
         "buffer_stream_close" => builtin_buffer_stream_close(args, osc),
@@ -1704,6 +1705,26 @@ fn number_array(values: impl IntoIterator<Item = f64>) -> Value {
         arr.push_auto(Value::Number(v));
     }
     Value::Array(Arc::new(Mutex::new(arr)))
+}
+
+// buffer_set(buf_id, [v, ...]) → nil — write values into a buffer from frame 0
+// (e.g. a curve a synth reads with buf_rd).
+fn builtin_buffer_set(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
+    if args.len() < 2 {
+        return Err(AudionError::RuntimeError {
+            msg: "buffer_set() requires 2 arguments: buffer_set(buf_id, values)".to_string(),
+        });
+    }
+    let buf_id = require_number("buffer_set", &args[0])? as i32;
+    let arr = require_array("buffer_set", &args[1])?;
+    let data: Vec<f32> = arr.lock().unwrap().entries().iter()
+        .map(|(_, v)| v.as_number().unwrap_or(0.0) as f32)
+        .collect();
+    // keep each OSC message well under the UDP limit
+    for (i, chunk) in data.chunks(4096).enumerate() {
+        osc.buffer_setn_at(buf_id, (i * 4096) as i32, chunk);
+    }
+    Ok(Value::Nil)
 }
 
 // buffer_peaks(buf_id, n) → array of n peak values (0..1+), for drawing a waveform.

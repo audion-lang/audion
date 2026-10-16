@@ -45,7 +45,7 @@ pub const UGEN_NAMES: &[&str] = &[
     // LFOs
     "lfo_sine", "lfo_saw", "lfo_tri", "lfo_pulse", "lfo_noise", "lfo_step",
     // Effects
-    "reverb", "gverb", "delay", "delay_c", "delay_n", "delay_l",
+    "reverb", "gverb", "gverb_stereo", "delay", "delay_c", "delay_n", "delay_l",
     "allpass_n", "allpass_l", "allpass_c", "comb_n", "comb_c",
     "coin_gate", "pluck", "klank",
     // Distortion / dynamics
@@ -911,7 +911,7 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let damp = a(4, 0.5);
             vec![ctx.node1("FreeVerb2", Rate::Audio, vec![sig, sig2, mix, room, damp], 0)]
         }
-        "gverb" => {
+        "gverb" | "gverb_stereo" => {
             let sig = a(0, 0.0);
             let roomsize = a(1, 10.0);
             let revtime = a(2, 3.0);
@@ -921,13 +921,21 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let drylevel = a(6, 1.0);
             let earlylevel = a(7, 0.7);
             let taillevel = a(8, 0.5);
-            let maxroomsize = konst(300.0);
-            vec![ctx.node1(
+            // Sizes GVerb's delay lines (real-time memory); keep it just above
+            // the largest roomsize you use. Must be a number.
+            let maxroomsize = a(9, 300.0);
+            // GVerb is mono in, stereo out: both outputs must be declared, or it
+            // writes its second channel into memory nobody allocated. `gverb`
+            // keeps returning only the left channel (what it always gave);
+            // `gverb_stereo` returns both.
+            let outs = ctx.node(
                 "GVerb",
                 Rate::Audio,
                 vec![sig, roomsize, revtime, damping, inputbw, spread, drylevel, earlylevel, taillevel, maxroomsize],
+                2,
                 0,
-            )]
+            );
+            if name == "gverb" { vec![outs[0]] } else { outs }
         }
         "delay" => {
             let sig = a(0, 0.0);

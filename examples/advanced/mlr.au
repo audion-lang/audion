@@ -22,26 +22,45 @@
 //   group strip ......... stop all rows in that group
 //
 // Editor (bottom, selected row):
+//   green / red marker .. start / end: only the part between them plays
 //   click waveform ...... add marker          drag marker ... move it
 //   right-click marker .. delete it
+//   slice (button) ...... a marker on every detected hit, snapped to steps
+//   small yellow ticks .. detected hits
 //   segment strip ....... left half = fewer steps, right half = more
 //                         (0 steps = segment is skipped)
 //
 // Play:   loop       = play on, wrap at the loop end
+//         once       = play to the loop end, then stop
+//         trigger    = play just the pressed cell, then stop
 //         pingpong   = bounce between the loop ends
 //         random-all = every step jumps to any cell in the loop
 //         random-4   = every step: up to 2 cells left/right, or the same cell again
 //         random-2   = every step: 1 cell left/right, or the same cell again
 //
 // Modes:  vari    = speed and pitch move together (classic mlr)
+//         beats   = every cell restarts at the file's own speed: clean drums
+//         warp    = granular stretch, pitch independent ("grain" = grain size)
+//         tape    = vari that glides; stop slows down, start spins up
+//         cloud   = grains sprayed around the playhead ("spray")
 //         stretch = pitch stays put, however much a segment is stretched
 //
 // Mixer: 4 groups, each with volume, reverb send, delay send and an output
 // pair (1/2 … 63/64). Reverb and delay have their own output pairs. Every
 // output pair ends in main volume + a limiter.
 //
-// A new file gets the step length + step count that plays it at about its own
-// speed; change either to squeeze or stretch it.
+// A new file is checked for beats. Beaty: its beat count sets the steps, so it
+// plays in tempo (moving start/end keeps it in tempo while it has one
+// segment). Not beaty: the steps play it at about its own speed. Change
+// either to squeeze or stretch it.
+//
+// Envelopes (selected row), restarted on every step:
+//   amp A/D/S/R ......... volume shape; moving one switches "amp env" on
+//   filter A/D/S/R ...... moves the cutoff by "env amt" (middle = none)
+//   filter .............. off / lowpass / highpass / bandpass, freq + res
+//                         (resonance is capped so it can't run away)
+//   drive ............... up to +30 dB into the drive type: clean, analog clip,
+//                         soft sine, digital clip, waveshaper; a limiter after
 //
 // Presets are saved next to this script as <name>__mlr.json.
 
@@ -58,13 +77,37 @@ let STEP_NAMES = ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
 let SPEEDS      = [0.25, 0.5, 1, 2, 4];
 let SPEED_NAMES = ["÷4", "÷2", "×1", "×2", "×4"];
 // How a row moves on after each step.
+// Random modes must stay last (the engine checks play >= PLAY_RAND_ALL).
 let PLAY_LOOP = 0;
-let PLAY_PINGPONG = 1;
-let PLAY_RAND_ALL = 2;
-let PLAY_RAND_4 = 3;
-let PLAY_RAND_2 = 4;
-let PLAY_NAMES = ["loop", "pingpong", "random-all", "random-4", "random-2"];
-let PLAY_TAGS  = ["", "<>", "?", "?4", "?2"];      // shown on the row label
+let PLAY_ONCE = 1;
+let PLAY_TRIGGER = 2;
+let PLAY_PINGPONG = 3;
+let PLAY_RAND_ALL = 4;
+let PLAY_RAND_4 = 5;
+let PLAY_RAND_2 = 6;
+let PLAY_NAMES = ["loop", "once", "trigger", "pingpong", "random-all", "random-4", "random-2"];
+let PLAY_TAGS  = ["", "1x", "T", "<>", "?", "?4", "?2"];      // shown on the row label
+// Presets before "once" existed stored the play mode as an index into this.
+let PLAY_NAMES_V1 = ["loop", "pingpong", "random-all", "random-4", "random-2"];
+// Playback engines. Index = what presets store, so only ever append.
+let MODE_VARI    = 0;
+let MODE_STRETCH = 1;
+let MODE_BEATS   = 2;
+let MODE_WARP    = 3;
+let MODE_TAPE    = 4;
+let MODE_CLOUD   = 5;
+let MODE_NAMES = ["vari", "stretch", "beats", "warp", "tape", "cloud"];
+let TAPE_GLIDE = 0.25;                     // s, speed changes / spin-up
+let TAPE_STOP  = 0.8;                      // s, slowing down to a halt
+
+// warp + cloud play through grains (their own synth)
+fn is_grain(mode) {
+    return mode == MODE_WARP || mode == MODE_CLOUD;
+}
+
+let FILTER_NAMES = ["off", "lowpass", "highpass", "bandpass"];
+let DRIVE_NAMES  = ["clean", "analog clip", "soft sine", "digital clip", "waveshaper"];
+let DRIVE_MAX_DB = 30;
 let DLY_BEATS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 let DLY_NAMES = ["1/16", "1/8", "3/16", "1/4", "3/8", "1/2"];
 
@@ -82,33 +125,176 @@ for (let i = 0; i < N_OUTS; i += 1) { push(OUT_NAMES, "" + (2 * i + 1) + "/" + (
 let JUMP = 1;
 let STOP = 2;
 
-let GROUP_COLORS = [[230, 120, 60], [80, 170, 230], [120, 210, 110], [210, 110, 200]];
+// ── Look ────────────────────────────────────────────────────────────────────
+// One palette for the grid + editor canvas. The widgets get the same colors
+// from [__theme] in mlr.aui — change both together.
+let C_BG     = [10, 12, 14];       // window / canvas background
+let C_PANEL  = [20, 23, 27];       // row labels, buttons, editor
+let C_OFF    = [15, 17, 20];       // cells past the row's last step
+let C_CELL_A = [30, 34, 40];       // cells, alternating per segment
+let C_CELL_B = [40, 46, 54];
+let C_RANGE  = [24, 70, 58];       // cells inside a loop range
+let C_LINE   = [52, 60, 72];       // dim lines, waveform outside the selection
+let C_TEXT   = [214, 222, 228];
+let C_DIM    = [118, 128, 140];    // secondary text
+let C_ACCENT = [0, 230, 160];      // playhead, start marker, active things
+let C_WAVE   = [70, 190, 150];
+let C_INFO   = [240, 180, 60];     // tags, hit ticks, pattern state
+let C_WARN   = [255, 70, 70];      // mute, end marker
+let GROUP_COLORS = [[255, 140, 40], [60, 170, 255], [140, 230, 80], [230, 90, 230]];
 
 // ── Synths ──────────────────────────────────────────────────────────────────
 // Two read heads (a/b) on the same buffer. Every jump moves the silent head
 // and crossfades to it, so cuts don't click. `changed(j)` fires a head's
 // phasor reset whenever its jump counter changes.
+//
+// Every step restarts two ADSRs: one for volume (when a_on = 1), one moving
+// the filter cutoff by f_amt octaves. f_lp / f_hp / f_bp switch the lowpass,
+// highpass or bandpass on (at most one is 1; all 0 = no filter). Resonance is
+// limited by keeping f_rq ≥ 0.2 (set in the script).
+//
+// Two families: mlr_voice_* (read heads: vari, stretch, beats, tape) and
+// mlr_warp_* (grains: warp, cloud), each stereo (_s) and mono (_m). `glide`
+// smooths speed changes (tape). b_on/b_hold fade a beats cell out when its
+// own audio runs out.
+//
+// Drive pushes the level up to +30 dB (d_gain) into one shape: clean,
+// tanh, soft sine, hard clip or fold (d_* switches, set from the script),
+// then a 5 ms lookahead limiter. Every row always runs the limiter, so all
+// rows share the same 5 ms delay and stay in time with each other.
 
-define mlr_voice_s(buf, frames, rate, ja, pa, jb, pb, xf, ratio, shift_on, amp, bus) {
-    let r   = rate * buf_rate_scale(buf);
-    let x   = lag(xf, 0.006);
-    let sa  = buf_rd(2, buf, phasor(changed(ja), r, 0, frames, pa));
-    let sb  = buf_rd(2, buf, phasor(changed(jb), r, 0, frames, pb));
-    let sig = sa * (1 - x) + sb * x;
-    let ps  = pitch_shift(sig, 0.1, ratio);
-    let on  = lag(shift_on, 0.02);
-    out(bus, (sig * (1 - on) + ps * on) * lag(amp, 0.02));
+define mlr_voice_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+                    gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
+                    f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
+                    d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
+                    ratio, shift_on) {
+    let r    = lag(rate, glide) * buf_rate_scale(buf);
+    let x    = lag(xf, 0.006);
+    let sa   = buf_rd(2, buf, phasor(changed(ja), r, 0, frames, pa));
+    let sb   = buf_rd(2, buf, phasor(changed(jb), r, 0, frames, pb));
+    let sig  = sa * (1 - x) + sb * x;
+    let ps   = pitch_shift(sig, 0.1, ratio);
+    let on   = lag(shift_on, 0.02);
+    let dry  = sig * (1 - on) + ps * on;
+    // gate: opens on every cell (gt changes), closes after gh seconds
+    let trig = changed(gt);
+    let since = sweep(trig, 1);
+    let gate = (since < gh) * (1 - trig);
+    // beats: fade out once the cell's own audio (b_hold seconds) has run out
+    let bfade = lag(1 - b_on * (since > b_hold), 0.004);
+    let aenv = adsr(gate, a_atk, a_dec, a_sus, a_rel) * a_on + (1 - a_on);
+    let fenv = adsr(gate, f_atk, f_dec, f_sus, f_rel);
+    let fc   = Clip(f_cut * LinExp(fenv * f_amt, 0, 1, 1, 2), 20, 18000);   // f_cut · 2^(env·amt)
+    let filt = rlpf(dry, fc, f_rq) * f_lp + rhpf(dry, fc, f_rq) * f_hp + bpf(dry, fc, f_rq) * f_bp;
+    let fon  = f_lp + f_hp + f_bp;
+    let wet  = Clip(filt * f_gain, -1.5, 1.5);   // f_gain tames the resonant peak; clip = last guard
+    // drive: gain, one shape (d_* switches, all 0 = clean), then a limiter
+    let pre  = (dry * (1 - fon) + wet * fon) * aenv * bfade * lag(d_gain, 0.02);
+    let c    = Clip(pre, -1, 1);
+    let sine = c * (1.5708 - c * c * 0.6459 + c * c * c * c * 0.0797);   // ≈ sin(c·π/2)
+    let shaped = pre * d_clean + tanh(pre) * d_tanh + sine * d_sine + c * d_clip + fold(pre, -1, 1) * d_fold;
+    let y    = limiter(shaped, 0.97, 0.005) * lag(amp, 0.02);
+    out(bus, y);
 }
 
-define mlr_voice_m(buf, frames, rate, ja, pa, jb, pb, xf, ratio, shift_on, amp, bus) {
-    let r   = rate * buf_rate_scale(buf);
-    let x   = lag(xf, 0.006);
-    let sa  = buf_rd(1, buf, phasor(changed(ja), r, 0, frames, pa));
-    let sb  = buf_rd(1, buf, phasor(changed(jb), r, 0, frames, pb));
-    let sig = sa * (1 - x) + sb * x;
-    let ps  = pitch_shift(sig, 0.1, ratio);
-    let on  = lag(shift_on, 0.02);
-    out(bus, pan(0, (sig * (1 - on) + ps * on) * lag(amp, 0.02)));
+define mlr_voice_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+                    gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
+                    f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
+                    d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
+                    ratio, shift_on) {
+    let r    = lag(rate, glide) * buf_rate_scale(buf);
+    let x    = lag(xf, 0.006);
+    let sa   = buf_rd(1, buf, phasor(changed(ja), r, 0, frames, pa));
+    let sb   = buf_rd(1, buf, phasor(changed(jb), r, 0, frames, pb));
+    let sig  = sa * (1 - x) + sb * x;
+    let ps   = pitch_shift(sig, 0.1, ratio);
+    let on   = lag(shift_on, 0.02);
+    let dry  = sig * (1 - on) + ps * on;
+    // gate: opens on every cell (gt changes), closes after gh seconds
+    let trig = changed(gt);
+    let since = sweep(trig, 1);
+    let gate = (since < gh) * (1 - trig);
+    // beats: fade out once the cell's own audio (b_hold seconds) has run out
+    let bfade = lag(1 - b_on * (since > b_hold), 0.004);
+    let aenv = adsr(gate, a_atk, a_dec, a_sus, a_rel) * a_on + (1 - a_on);
+    let fenv = adsr(gate, f_atk, f_dec, f_sus, f_rel);
+    let fc   = Clip(f_cut * LinExp(fenv * f_amt, 0, 1, 1, 2), 20, 18000);   // f_cut · 2^(env·amt)
+    let filt = rlpf(dry, fc, f_rq) * f_lp + rhpf(dry, fc, f_rq) * f_hp + bpf(dry, fc, f_rq) * f_bp;
+    let fon  = f_lp + f_hp + f_bp;
+    let wet  = Clip(filt * f_gain, -1.5, 1.5);   // f_gain tames the resonant peak; clip = last guard
+    // drive: gain, one shape (d_* switches, all 0 = clean), then a limiter
+    let pre  = (dry * (1 - fon) + wet * fon) * aenv * bfade * lag(d_gain, 0.02);
+    let c    = Clip(pre, -1, 1);
+    let sine = c * (1.5708 - c * c * 0.6459 + c * c * c * c * 0.0797);   // ≈ sin(c·π/2)
+    let shaped = pre * d_clean + tanh(pre) * d_tanh + sine * d_sine + c * d_clip + fold(pre, -1, 1) * d_fold;
+    let y    = limiter(shaped, 0.97, 0.005) * lag(amp, 0.02);
+    out(bus, pan(0, y));
+}
+
+define mlr_warp_s(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+                    gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
+                    f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
+                    d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
+                    w_freq, w_size, w_rand, w_spray) {
+    let r    = lag(rate, glide) * buf_rate_scale(buf);
+    let x    = lag(xf, 0.006);
+    let pha  = phasor(changed(ja), r, 0, frames, pa);
+    let phb  = phasor(changed(jb), r, 0, frames, pb);
+    let sel  = x > 0.5;                       // grains follow the live head
+    let ptr  = (pha * (1 - sel) + phb * sel) / frames + white() * w_spray;
+    let dry  = warp(2, buf, ptr, w_freq, w_size, 8, w_rand);
+    // gate: opens on every cell (gt changes), closes after gh seconds
+    let trig = changed(gt);
+    let since = sweep(trig, 1);
+    let gate = (since < gh) * (1 - trig);
+    // beats: fade out once the cell's own audio (b_hold seconds) has run out
+    let bfade = lag(1 - b_on * (since > b_hold), 0.004);
+    let aenv = adsr(gate, a_atk, a_dec, a_sus, a_rel) * a_on + (1 - a_on);
+    let fenv = adsr(gate, f_atk, f_dec, f_sus, f_rel);
+    let fc   = Clip(f_cut * LinExp(fenv * f_amt, 0, 1, 1, 2), 20, 18000);   // f_cut · 2^(env·amt)
+    let filt = rlpf(dry, fc, f_rq) * f_lp + rhpf(dry, fc, f_rq) * f_hp + bpf(dry, fc, f_rq) * f_bp;
+    let fon  = f_lp + f_hp + f_bp;
+    let wet  = Clip(filt * f_gain, -1.5, 1.5);   // f_gain tames the resonant peak; clip = last guard
+    // drive: gain, one shape (d_* switches, all 0 = clean), then a limiter
+    let pre  = (dry * (1 - fon) + wet * fon) * aenv * bfade * lag(d_gain, 0.02);
+    let c    = Clip(pre, -1, 1);
+    let sine = c * (1.5708 - c * c * 0.6459 + c * c * c * c * 0.0797);   // ≈ sin(c·π/2)
+    let shaped = pre * d_clean + tanh(pre) * d_tanh + sine * d_sine + c * d_clip + fold(pre, -1, 1) * d_fold;
+    let y    = limiter(shaped, 0.97, 0.005) * lag(amp, 0.02);
+    out(bus, y);
+}
+
+define mlr_warp_m(buf, frames, rate, glide, ja, pa, jb, pb, xf, amp, bus,
+                    gt, gh, b_on, b_hold, a_on, a_atk, a_dec, a_sus, a_rel,
+                    f_lp, f_hp, f_bp, f_cut, f_rq, f_gain, f_amt, f_atk, f_dec, f_sus, f_rel,
+                    d_gain, d_clean, d_tanh, d_sine, d_clip, d_fold,
+                    w_freq, w_size, w_rand, w_spray) {
+    let r    = lag(rate, glide) * buf_rate_scale(buf);
+    let x    = lag(xf, 0.006);
+    let pha  = phasor(changed(ja), r, 0, frames, pa);
+    let phb  = phasor(changed(jb), r, 0, frames, pb);
+    let sel  = x > 0.5;                       // grains follow the live head
+    let ptr  = (pha * (1 - sel) + phb * sel) / frames + white() * w_spray;
+    let dry  = warp(1, buf, ptr, w_freq, w_size, 8, w_rand);
+    // gate: opens on every cell (gt changes), closes after gh seconds
+    let trig = changed(gt);
+    let since = sweep(trig, 1);
+    let gate = (since < gh) * (1 - trig);
+    // beats: fade out once the cell's own audio (b_hold seconds) has run out
+    let bfade = lag(1 - b_on * (since > b_hold), 0.004);
+    let aenv = adsr(gate, a_atk, a_dec, a_sus, a_rel) * a_on + (1 - a_on);
+    let fenv = adsr(gate, f_atk, f_dec, f_sus, f_rel);
+    let fc   = Clip(f_cut * LinExp(fenv * f_amt, 0, 1, 1, 2), 20, 18000);   // f_cut · 2^(env·amt)
+    let filt = rlpf(dry, fc, f_rq) * f_lp + rhpf(dry, fc, f_rq) * f_hp + bpf(dry, fc, f_rq) * f_bp;
+    let fon  = f_lp + f_hp + f_bp;
+    let wet  = Clip(filt * f_gain, -1.5, 1.5);   // f_gain tames the resonant peak; clip = last guard
+    // drive: gain, one shape (d_* switches, all 0 = clean), then a limiter
+    let pre  = (dry * (1 - fon) + wet * fon) * aenv * bfade * lag(d_gain, 0.02);
+    let c    = Clip(pre, -1, 1);
+    let sine = c * (1.5708 - c * c * 0.6459 + c * c * c * c * 0.0797);   // ≈ sin(c·π/2)
+    let shaped = pre * d_clean + tanh(pre) * d_tanh + sine * d_sine + c * d_clip + fold(pre, -1, 1) * d_fold;
+    let y    = limiter(shaped, 0.97, 0.005) * lag(amp, 0.02);
+    out(bus, pan(0, y));
 }
 
 define mlr_group(inb, amp, rev, dly, outb, revb, dlyb) {
@@ -148,10 +334,13 @@ let r_node   = filled(N_ROWS, -1);
 let r_frames = filled(N_ROWS, 0);
 let r_sr     = filled(N_ROWS, 44100);
 let r_peaks  = filled(N_ROWS, []);
-// segments: marks = start frame of each segment (first is always 0),
-// steps = steps given to each segment
+let r_onsets = filled(N_ROWS, []);         // frames of detected hits
+let r_fbpm   = filled(N_ROWS, 0);          // the file's own tempo, 0 = not beaty
+// segments: marks = start frame of each segment (the first is the start
+// marker), steps = steps given to each segment; r_end = end marker
 let r_marks  = filled(N_ROWS, [0]);
 let r_steps  = filled(N_ROWS, [MAX_STEPS]);
+let r_end    = filled(N_ROWS, 0);
 // derived from the segments, for drawing (UI thread)
 let r_total  = filled(N_ROWS, 0);
 let r_mini   = filled(N_ROWS, []);         // 3 waveform bars per cell
@@ -162,10 +351,24 @@ let r_speed_i = filled(N_ROWS, 2);         // index into SPEEDS
 let r_pitch   = filled(N_ROWS, 0);         // semitones
 let r_rev     = filled(N_ROWS, false);
 let r_play    = filled(N_ROWS, PLAY_LOOP);
-let r_mode    = filled(N_ROWS, 0);         // 0 vari, 1 stretch
+let r_mode    = filled(N_ROWS, MODE_VARI); // index into MODE_NAMES
+let r_grain   = filled(N_ROWS, 0.5);       // warp/cloud grain size, knob 0..1
+let r_spray   = filled(N_ROWS, 0.3);       // cloud spray, knob 0..1
+let r_chans   = filled(N_ROWS, 2);
+let r_keep    = filled(N_ROWS, false);     // UI swapped the synth: keep playing
 let r_grp     = filled(N_ROWS, 0);
 let r_mute    = filled(N_ROWS, false);
 let r_vol     = filled(N_ROWS, 0.8);
+// envelopes + filter, knob positions 0..1 (see env_params)
+let r_aon     = filled(N_ROWS, false);     // amp envelope on
+let r_aenv    = filled(N_ROWS, [0.1, 0.5, 1, 0.3]);    // attack, decay, sustain, release
+let r_fenv    = filled(N_ROWS, [0.1, 0.5, 0, 0.3]);
+let r_ftype   = filled(N_ROWS, 0);         // index into FILTER_NAMES
+let r_fcut    = filled(N_ROWS, 0.8);
+let r_fres    = filled(N_ROWS, 0.2);
+let r_famt    = filled(N_ROWS, 0.5);       // 0.5 = no envelope movement
+let r_drive   = filled(N_ROWS, 0);         // knob 0..1 = 0..DRIVE_MAX_DB dB
+let r_dtype   = filled(N_ROWS, 0);         // index into DRIVE_NAMES
 let r_lo      = filled(N_ROWS, -1);        // loop range in steps, -1 = none
 let r_hi      = filled(N_ROWS, -1);
 // playback (row threads)
@@ -207,13 +410,13 @@ let dly_node = -1;
 // A segment is [f0, f1, steps, first_step, mark_index]; 0-step segments are
 // left out. Total steps are capped at MAX_STEPS.
 
-fn seg_table(marks, steps, frames) {
+fn seg_table(marks, steps, end) {
     let segs = [];
     let cs = 0;
     let n = count(marks);
     for (let k = 0; k < n; k += 1) {
         let f0 = marks[k];
-        let f1 = frames;
+        let f1 = end;
         if (k + 1 < n) { f1 = marks[k + 1]; }
         let s = math_min(steps[k], MAX_STEPS - cs);
         if (s > 0 && f1 > f0) {
@@ -242,17 +445,90 @@ fn frame_at(seg, p) {
     return seg[0] + (p - seg[3]) / seg[2] * (seg[1] - seg[0]);
 }
 
-// [rate, pitch-shift ratio, shift on 0/1] for playing `seg` stretched to its
-// steps. rate is relative to the file's own speed.
+// Synth params for playing `seg` (stretched to its steps) in the row's mode.
+// rate is relative to the file's own speed; negative = backwards.
 fn voice_params(r, seg, step_secs, spd, d) {
     let natural = (seg[1] - seg[0]) / (seg[2] * step_secs) / r_sr[r];
-    let rr = natural * spd;
-    let ratio = math_pow(2, r_pitch[r] / 12);
-    if (r_mode[r] == 1) { ratio = ratio / rr; }
+    let rr = natural * spd;                     // speed that fits the steps
+    let pitch = math_pow(2, r_pitch[r] / 12);
+    let mode = r_mode[r];
+    let rate = rr * d;
+    let ratio = pitch;
+    if (mode == MODE_STRETCH) { ratio = pitch / rr; }
+    if (mode == MODE_BEATS) {
+        rate = pitch * d;                       // the file's own speed, cells restart on time
+        ratio = 1;
+    }
+    if (is_grain(mode)) { ratio = 1; }          // grains get the pitch as w_freq
     ratio = math_clamp(ratio, 0.05, 4);
     let on = 0;
-    if (math_abs(ratio - 1) > 0.001) { on = 1; }
-    return [rr * d, ratio, on];
+    if (mode != MODE_BEATS && !is_grain(mode) && math_abs(ratio - 1) > 0.001) { on = 1; }
+    let glide = 0;
+    if (mode == MODE_TAPE) { glide = TAPE_GLIDE; }
+    // grains: size 20 ms .. 400 ms; cloud also sprays up to 0.5 s around the playhead
+    let w_rand = 0.05;
+    let w_spray = 0;
+    if (mode == MODE_CLOUD) {
+        w_rand = 0.4;
+        w_spray = r_spray[r] * 0.5 * r_sr[r] / r_frames[r];
+    }
+    return ["rate" => rate, "ratio" => ratio, "shift_on" => on, "glide" => glide,
+            "w_freq" => pitch, "w_size" => 0.02 * math_pow(20, r_grain[r]),
+            "w_rand" => w_rand, "w_spray" => w_spray];
+}
+
+// Synth for row r: grain or read-head family, stereo or mono.
+fn voice_def(r) {
+    let fam = "mlr_voice_";
+    if (is_grain(r_mode[r])) { fam = "mlr_warp_"; }
+    if (r_chans[r] == 1) { return fam + "m"; }
+    return fam + "s";
+}
+
+// Mode moved between the read-head and grain families: new synth, same row,
+// keeps playing (the row thread jumps it to the playhead).
+fn swap_voice(r) {
+    let old = r_node[r];
+    if (old < 0) { return; }
+    let node = synth(voice_def(r), buf: r_buf[r], frames: r_frames[r], rate: 1, ratio: 1, shift_on: 0,
+                     amp: 0, bus: BUS_GROUP + 2 * r_grp[r], d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
+    r_keep[r] = true;
+    r_node[r] = node;
+    free(old);
+}
+
+fn bool_num(b) {
+    if (b) { return 1; }
+    return 0;
+}
+
+// Knob 0..1 → seconds, 1 ms .. 2 s.
+fn knob_time(v) {
+    return 0.001 * math_pow(2000, v);
+}
+
+// Envelope + filter + drive synth params for row r, for a cell that plays
+// cell_secs. The gate closes early enough for the release to finish inside it.
+fn env_params(r, cell_secs) {
+    let a = r_aenv[r];
+    let f = r_fenv[r];
+    let rel = knob_time(f[3]);
+    if (r_aon[r]) { rel = knob_time(a[3]); }
+    let a_on = 0;
+    if (r_aon[r]) { a_on = 1; }
+    return [
+        "gh" => math_max(0.002, cell_secs - rel), "a_on" => a_on,
+        "a_atk" => knob_time(a[0]), "a_dec" => knob_time(a[1]), "a_sus" => a[2], "a_rel" => knob_time(a[3]),
+        "f_lp" => bool_num(r_ftype[r] == 1), "f_hp" => bool_num(r_ftype[r] == 2),
+        "f_bp" => bool_num(r_ftype[r] == 3), "f_cut" => 20 * math_pow(900, r_fcut[r]),
+        "f_rq" => 1 - 0.8 * r_fres[r], "f_gain" => math_sqrt(1 - 0.8 * r_fres[r]),
+        "f_amt" => (r_famt[r] - 0.5) * 10,
+        "f_atk" => knob_time(f[0]), "f_dec" => knob_time(f[1]), "f_sus" => f[2], "f_rel" => knob_time(f[3]),
+        "d_gain" => math_pow(10, r_drive[r] * DRIVE_MAX_DB / 20),
+        "d_clean" => bool_num(r_dtype[r] == 0), "d_tanh" => bool_num(r_dtype[r] == 1),
+        "d_sine" => bool_num(r_dtype[r] == 2), "d_clip" => bool_num(r_dtype[r] == 3),
+        "d_fold" => bool_num(r_dtype[r] == 4),
+    ];
 }
 
 // ── Row engine ──────────────────────────────────────────────────────────────
@@ -304,16 +580,22 @@ fn row_loop(r) {
     let was_playing = false;
     let bounce = 1;             // pingpong: -1 while running against the row's direction
     let last = 0;               // cell played in the previous step
+    let gt = 0;                 // envelope trigger counter
+    let trig_cell = -1;         // trigger mode: the cell to play
+    let env_cell = -1;          // cell the envelopes last restarted for
+    let tape_off = -1;          // tape: beat at which the slowed-down row goes silent
     loop {
         let dur = STEP_LENS[r_len_i[r]];
         let rem = dur - math_fmod(t, dur);
         let node = r_node[r];
         if (node != last_node) {
             last_node = node;
-            was_playing = false;
-            r_playing[r] = false;
+            was_playing = false;           // forces a jump on the new synth
+            env_cell = -1;
+            if (r_keep[r]) { r_keep[r] = false; }
+            else { r_playing[r] = false; }
         }
-        let tab = seg_table(r_marks[r], r_steps[r], r_frames[r]);
+        let tab = seg_table(r_marks[r], r_steps[r], r_end[r]);
         let segs = tab["segs"];
         let total = tab["total"];
         if (node < 0 || total == 0) {
@@ -346,6 +628,13 @@ fn row_loop(r) {
             record_press(t, r, kind, step);
         }
         let need_jump = false;
+        if (kind == JUMP) { trig_cell = step; }
+        // trigger mode = once, over just the pressed cell
+        if (play == PLAY_TRIGGER && trig_cell >= 0 && trig_cell < total) {
+            lo = trig_cell;
+            hi = trig_cell + 1;
+        }
+        let stops = play == PLAY_ONCE || play == PLAY_TRIGGER;
         if (kind == STOP) { r_playing[r] = false; }
         if (kind == JUMP && step < total) {
             r_playing[r] = true;
@@ -355,8 +644,21 @@ fn row_loop(r) {
         }
 
         if (!r_playing[r]) {
-            if (was_playing) { set(node, amp: 0); }
+            if (was_playing) {
+                if (r_mode[r] == MODE_TAPE) {
+                    // tape stop: slow down to a halt, silence once it's stopped
+                    set(node, rate: 0, glide: TAPE_STOP);
+                    tape_off = t + TAPE_STOP * bpm() / 60;
+                } else {
+                    set(node, amp: 0);
+                }
+            }
+            if (tape_off >= 0 && t >= tape_off) {
+                set(node, amp: 0);
+                tape_off = -1;
+            }
             was_playing = false;
+            env_cell = -1;
             r_ph[r] = -1;
             wait(rem);
             t += rem;
@@ -364,12 +666,23 @@ fn row_loop(r) {
         }
         if (!was_playing) { need_jump = true; }
         was_playing = true;
+        tape_off = -1;
         // a step that ended exactly on a loop end: pingpong turns around
         if (play == PLAY_PINGPONG && ((d > 0 && p >= hi - 0.000001) || (d < 0 && p <= lo + 0.000001))) {
             bounce = -bounce;
             d = -d;
         }
-        if ((d > 0 && (p < lo || p >= hi)) || (d < 0 && (p <= lo || p > hi))) {
+        let past_end = (d > 0 && (p < lo || p >= hi)) || (d < 0 && (p <= lo || p > hi));
+        if (past_end && stops && kind != JUMP) {
+            r_playing[r] = false;
+            set(node, amp: 0);
+            was_playing = false;
+            r_ph[r] = -1;
+            wait(rem);
+            t += rem;
+            continue;
+        }
+        if (past_end) {
             p = lo;
             if (d < 0) { p = hi; }
             need_jump = true;
@@ -390,12 +703,20 @@ fn row_loop(r) {
         if (r_mute[r]) { amp = 0; }
         let bus = BUS_GROUP + 2 * r_grp[r];
 
-        // play through this step, re-aiming at every segment or loop edge
+        // how long one cell plays at this speed: the envelope's time
+        let cell_secs = step_secs / spd;
+
+        // play through this step, stopping at every cell, segment or loop edge
         let left = rem;
         while (left > 0.000001) {
             let seg = segs[seg_at(segs, p, d)];
             let vp = voice_params(r, seg, step_secs, spd, d);
             let frame = frame_at(seg, p);
+            let cell = math_floor(p + 0.000001);
+            if (d < 0) { cell = math_ceil(p - 0.000001) - 1; }
+            // beats: every cell restarts at its own start
+            if (r_mode[r] == MODE_BEATS && cell != env_cell) { need_jump = true; }
+            let jumped = need_jump;
             if (need_jump) {
                 head = 1 - head;
                 jn += 1;
@@ -403,14 +724,40 @@ fn row_loop(r) {
                 else           { set(node, jb: jn, pb: frame, xf: 1); }
                 need_jump = false;
             }
-            set(node, rate: vp[0], ratio: vp[1], shift_on: vp[2], amp: amp, bus: bus);
+            set(node, rate: vp["rate"], ratio: vp["ratio"], shift_on: vp["shift_on"], glide: vp["glide"],
+                w_freq: vp["w_freq"], w_size: vp["w_size"], w_rand: vp["w_rand"], w_spray: vp["w_spray"],
+                amp: amp, bus: bus);
             r_ph[r] = p;
             r_pf[r] = frame;
-            r_cell[r] = math_floor(p + 0.000001 * d);
-            if (d < 0) { r_cell[r] = math_ceil(p - 0.000001) - 1; }
+            r_cell[r] = cell;
 
-            let edge = math_min(seg[3] + seg[2], hi);
-            if (d < 0) { edge = math_max(seg[3], lo); }
+            // one envelope per cell: entering a new cell, or any jump (incl. a repeat)
+            if (jumped || cell != env_cell) {
+                let ep = env_params(r, cell_secs);
+                // beats: the cell's own audio lasts this long at its natural speed
+                let b_on = bool_num(r_mode[r] == MODE_BEATS);
+                let b_hold = (seg[1] - seg[0]) / seg[2] / (r_sr[r] * math_abs(vp["rate"]));
+                gt += 1;
+                set(node, gt: gt, gh: ep["gh"], b_on: b_on, b_hold: b_hold, a_on: ep["a_on"],
+                    a_atk: ep["a_atk"], a_dec: ep["a_dec"], a_sus: ep["a_sus"], a_rel: ep["a_rel"],
+                    f_lp: ep["f_lp"], f_hp: ep["f_hp"], f_bp: ep["f_bp"],
+                    f_cut: ep["f_cut"], f_rq: ep["f_rq"], f_gain: ep["f_gain"], f_amt: ep["f_amt"],
+                    f_atk: ep["f_atk"], f_dec: ep["f_dec"], f_sus: ep["f_sus"], f_rel: ep["f_rel"],
+                    d_gain: ep["d_gain"], d_clean: ep["d_clean"], d_tanh: ep["d_tanh"], d_sine: ep["d_sine"],
+                    d_clip: ep["d_clip"], d_fold: ep["d_fold"]);
+                env_cell = cell;
+            }
+            jumped = false;
+
+            // next stop: segment or loop edge (needs a jump), or a cell border (doesn't)
+            let seg_edge = math_min(seg[3] + seg[2], hi);
+            let cell_edge = cell + 1;
+            if (d < 0) {
+                seg_edge = math_max(seg[3], lo);
+                cell_edge = cell;
+            }
+            let edge = seg_edge;
+            if ((d > 0 && cell_edge < seg_edge) || (d < 0 && cell_edge > seg_edge)) { edge = cell_edge; }
             let dt = math_abs(edge - p) / spd * dur;
             if (dt >= left - 0.000001) {
                 p += d * spd * left / dur;
@@ -422,7 +769,19 @@ fn row_loop(r) {
                 t += dt;
                 left -= dt;
                 p = edge;
+                if (edge != seg_edge) { continue; }   // just a new cell: play on
                 if ((d > 0 && p >= hi) || (d < 0 && p <= lo)) {
+                    if (stops) {
+                        // reached the end: silence for the rest of this step
+                        r_playing[r] = false;
+                        set(node, amp: 0);
+                        was_playing = false;
+                        r_ph[r] = -1;
+                        wait(left);
+                        t += left;
+                        left = 0;
+                        continue;
+                    }
                     if (play == PLAY_PINGPONG) {
                         bounce = -bounce;
                         d = -d;
@@ -477,7 +836,7 @@ fn file_name(path) {
 // Recompute total steps, cell → segment and the small waveform bars.
 fn rebuild_row(r) {
     let frames = r_frames[r];
-    let tab = seg_table(r_marks[r], r_steps[r], frames);
+    let tab = seg_table(r_marks[r], r_steps[r], r_end[r]);
     let segs = tab["segs"];
     let total = tab["total"];
     let peaks = r_peaks[r];
@@ -510,12 +869,36 @@ fn unload_row(r) {
     r_node[r] = -1;
     r_file[r] = "";
     r_total[r] = 0;
+    // slice data belongs to the file
+    r_marks[r] = [0];
+    r_steps[r] = [MAX_STEPS];
+    r_end[r] = 0;
+    r_lo[r] = -1;
+    r_hi[r] = -1;
+    r_onsets[r] = [];
+    r_fbpm[r] = 0;
+    r_peaks[r] = [];
     if (old_node >= 0) { free(old_node); }
     if (old_buf >= 0) {
         sleep_ms(latency() + 100);    // let the free land before the buffer goes
         buffer_free(old_buf);
     }
     r_buf[r] = -1;
+}
+
+// Shortest step length whose 16 steps cover `beats`.
+fn len_for_beats(beats) {
+    let li = count(STEP_LENS) - 1;
+    for (let i = count(STEP_LENS) - 1; i >= 0; i -= 1) {
+        if (beats / STEP_LENS[i] <= MAX_STEPS) { li = i; }
+    }
+    return li;
+}
+
+// Beats between the start and end markers, 0 when the file isn't beaty.
+fn sel_beats(r) {
+    if (r_fbpm[r] <= 0) { return 0; }
+    return (r_end[r] - r_marks[r][0]) / r_sr[r] * r_fbpm[r] / 60;
 }
 
 fn load_row(r, path) {
@@ -533,26 +916,32 @@ fn load_row(r, path) {
     r_frames[r] = info[0];
     r_sr[r] = info[2];
     r_peaks[r] = peaks;
-    // Pick step length + steps so the file plays at about its own speed:
-    // the shortest step length whose 16 steps cover the file.
+    // Beaty file: its own beat count sets the steps, so it plays in tempo.
+    // Otherwise: steps that play it at about its own speed.
+    let found = ["onsets" => [], "beats" => 0, "bpm" => 0];
+    try { found = buffer_beats(buf); }
+    catch (e) { }
+    r_onsets[r] = found["onsets"];
+    r_fbpm[r] = found["bpm"];
     let beats = info[0] / info[2] * bpm() / 60;
-    let li = count(STEP_LENS) - 1;
-    for (let i = count(STEP_LENS) - 1; i >= 0; i -= 1) {
-        if (beats / STEP_LENS[i] <= MAX_STEPS) { li = i; }
-    }
+    if (found["beats"] > 0) { beats = found["beats"]; }
+    let li = len_for_beats(beats);
     r_len_i[r] = li;
     r_marks[r] = [0];
+    r_end[r] = info[0];
     r_steps[r] = [math_clamp(math_round(beats / STEP_LENS[li]), 1, MAX_STEPS)];
     if (r == sel) { w_step.set(li); }
     r_lo[r] = -1;
     r_hi[r] = -1;
     r_file[r] = path;
     rebuild_row(r);
-    let def = "mlr_voice_s";
-    if (info[1] == 1) { def = "mlr_voice_m"; }
-    r_node[r] = synth(def, buf: buf, frames: info[0], rate: 1, ratio: 1,
-                      shift_on: 0, amp: 0, bus: BUS_GROUP + 2 * r_grp[r]);
+    r_chans[r] = info[1];
+    r_node[r] = synth(voice_def(r), buf: buf, frames: info[0], rate: 1, ratio: 1, shift_on: 0,
+                      amp: 0, bus: BUS_GROUP + 2 * r_grp[r], d_gain: 1, d_clean: 1, w_freq: 1, w_size: 0.1);
     status_text = "row " + (r + 1) + ": " + file_name(path);
+    if (r_fbpm[r] > 0) {
+        status_text += "  (" + found["beats"] + " beats, " + math_round(r_fbpm[r] * 10) / 10 + " bpm)";
+    }
     return true;
 }
 
@@ -601,7 +990,7 @@ fn main_update() {
 // ── UI ──────────────────────────────────────────────────────────────────────
 
 let ui = ui_desktop();
-ui.window("mlr", 1250, 900);
+ui.window("mlr", 1520, 900);
 
 let CW = 900;
 let CH = 650;
@@ -637,9 +1026,32 @@ w_pitch.max(24);
 let w_dir   = ui.widgets.dropdown("dir", "forward", "reverse");
 let w_play  = ui.widgets.dropdown("play", "-");
 w_play.set_options(PLAY_NAMES);
-let w_mode  = ui.widgets.dropdown("mode", "vari", "stretch");
+let w_mode  = ui.widgets.dropdown("mode", "-");
+w_mode.set_options(MODE_NAMES);
+let w_grain = ui.widgets.knob("grain");
+let w_spray = ui.widgets.knob("spray");
 let w_group = ui.widgets.dropdown("group", "G1", "G2", "G3", "G4");
 let w_vol   = ui.widgets.slider("vol");
+let w_slice = ui.widgets.button("slice");
+
+// envelopes + filter (selected row): two ADSR columns, then filter knobs
+let w_amp_on = ui.widgets.toggle("amp_env");
+let w_aa = ui.widgets.knob("amp_a");
+let w_ad = ui.widgets.knob("amp_d");
+let w_as = ui.widgets.knob("amp_s");
+let w_ar = ui.widgets.knob("amp_r");
+let w_fa = ui.widgets.knob("flt_a");
+let w_fd = ui.widgets.knob("flt_d");
+let w_fs = ui.widgets.knob("flt_s");
+let w_fr = ui.widgets.knob("flt_r");
+let w_ftype = ui.widgets.dropdown("flt_type", "-");
+w_ftype.set_options(FILTER_NAMES);
+let w_fcut = ui.widgets.knob("flt_freq");
+let w_fres = ui.widgets.knob("flt_res");
+let w_famt = ui.widgets.knob("flt_env");
+let w_drive = ui.widgets.knob("drive");
+let w_dtype = ui.widgets.dropdown("drive_type", "-");
+w_dtype.set_options(DRIVE_NAMES);
 
 // patterns
 let w_p1_rec  = ui.widgets.toggle("p1_rec");
@@ -691,7 +1103,9 @@ w_dfb.max(0.95);
 let sel = 0;
 let drag_row = -1;        // row a cell drag started in
 let drag_cell = -1;
-let drag_mark = -1;       // marker being dragged in the editor
+let NO_MARK = -1;
+let END_MARK = -2;
+let drag_mark = NO_MARK;  // marker being dragged in the editor: index, END_MARK or NO_MARK
 let preset_names = [];
 
 fn sync_row_widgets() {
@@ -704,8 +1118,19 @@ fn sync_row_widgets() {
     if (r_rev[sel]) { w_dir.set(1); }
     w_play.set(r_play[sel]);
     w_mode.set(r_mode[sel]);
+    w_grain.set(r_grain[sel]);
+    w_spray.set(r_spray[sel]);
     w_group.set(r_grp[sel]);
     w_vol.set(r_vol[sel]);
+    w_amp_on.set(r_aon[sel]);
+    w_aa.set(r_aenv[sel][0]); w_ad.set(r_aenv[sel][1]); w_as.set(r_aenv[sel][2]); w_ar.set(r_aenv[sel][3]);
+    w_fa.set(r_fenv[sel][0]); w_fd.set(r_fenv[sel][1]); w_fs.set(r_fenv[sel][2]); w_fr.set(r_fenv[sel][3]);
+    w_ftype.set(r_ftype[sel]);
+    w_fcut.set(r_fcut[sel]);
+    w_fres.set(r_fres[sel]);
+    w_famt.set(r_famt[sel]);
+    w_drive.set(r_drive[sel]);
+    w_dtype.set(r_dtype[sel]);
 }
 
 fn sync_mixer_widgets() {
@@ -780,13 +1205,60 @@ fn frame_to_x(f) {
     return EX + f / r_frames[sel] * EW;
 }
 
-// Marker index (>0) within 6 px of x, or -1.
+// Marker within 6 px of x: its index (0 = start marker), END_MARK, or NO_MARK.
+// Inner markers win over start/end when they overlap.
 fn mark_near(x) {
     let marks = r_marks[sel];
     for (let k = 1; k < count(marks); k += 1) {
         if (math_abs(frame_to_x(marks[k]) - x) <= 6) { return k; }
     }
-    return -1;
+    if (math_abs(frame_to_x(marks[0]) - x) <= 6) { return 0; }
+    if (math_abs(frame_to_x(r_end[sel]) - x) <= 6) { return END_MARK; }
+    return NO_MARK;
+}
+
+// Beaty file with a single segment: keep it in tempo when start/end move.
+fn fit_steps(r) {
+    let beats = sel_beats(r);
+    if (beats <= 0 || count(r_marks[r]) > 1) { return; }
+    let steps = math_clamp(math_round(beats / STEP_LENS[r_len_i[r]]), 1, MAX_STEPS);
+    r_steps[r] = [steps];
+}
+
+// Marker on every detected hit between start and end, snapped to the step
+// grid: hits that land on the same step are merged. A beaty file also gets
+// its step count from the selection's beats.
+fn slice_row(r) {
+    let start = r_marks[r][0];
+    let end = r_end[r];
+    let total = r_total[r];
+    let beats = sel_beats(r);
+    if (beats > 0) { total = math_clamp(math_round(beats / STEP_LENS[r_len_i[r]]), 1, MAX_STEPS); }
+    let marks = [start];
+    let bounds = [0];
+    let onsets = r_onsets[r];
+    for (let i = 0; i < count(onsets); i += 1) {
+        let o = onsets[i];
+        if (o <= start + 64 || o >= end - 64) { continue; }
+        let b = math_round(total * (o - start) / (end - start));
+        if (b > bounds[count(bounds) - 1] && b < total) {
+            push(marks, o);
+            push(bounds, b);
+        }
+    }
+    if (count(marks) == 1) {
+        status_text = "no hits found between the markers";
+        return;
+    }
+    push(bounds, total);
+    let steps = [];
+    for (let k = 0; k + 1 < count(bounds); k += 1) { push(steps, bounds[k + 1] - bounds[k]); }
+    r_marks[r] = marks;
+    r_steps[r] = steps;
+    r_lo[r] = -1;
+    r_hi[r] = -1;
+    rebuild_row(r);
+    status_text = "row " + (r + 1) + ": " + count(marks) + " slices";
 }
 
 fn add_mark(x) {
@@ -794,9 +1266,10 @@ fn add_mark(x) {
     let marks = r_marks[sel];
     let steps = r_steps[sel];
     let n = count(marks);
+    if (f < marks[0] || f > r_end[sel]) { return; }
     let k = 0;                                  // segment f falls in
     while (k + 1 < n && marks[k + 1] <= f) { k += 1; }
-    let f1 = r_frames[sel];
+    let f1 = r_end[sel];
     if (k + 1 < n) { f1 = marks[k + 1]; }
     if (f - marks[k] < 64 || f1 - f < 64) { return; }
     // split the segment's steps by length, keep the total ≤ MAX_STEPS
@@ -839,11 +1312,20 @@ fn delete_mark(k) {
 
 fn move_mark(k, x) {
     let marks = r_marks[sel];
-    let lo = marks[k - 1] + 64;
-    let hi = r_frames[sel] - 64;
-    if (k + 1 < count(marks)) { hi = marks[k + 1] - 64; }
-    marks[k] = math_clamp(math_round(x_to_frame(x)), lo, hi);
-    r_marks[sel] = marks;
+    let n = count(marks);
+    let f = math_round(x_to_frame(x));
+    if (k == END_MARK) {
+        r_end[sel] = math_clamp(f, marks[n - 1] + 64, r_frames[sel]);
+        fit_steps(sel);
+    } else {
+        let lo = 0;
+        if (k > 0) { lo = marks[k - 1] + 64; }
+        let hi = r_end[sel] - 64;
+        if (k + 1 < n) { hi = marks[k + 1] - 64; }
+        marks[k] = math_clamp(f, lo, hi);
+        r_marks[sel] = marks;
+        if (k == 0) { fit_steps(sel); }
+    }
     rebuild_row(sel);
 }
 
@@ -853,9 +1335,10 @@ fn seg_strip_click(x) {
     let marks = r_marks[sel];
     let steps = r_steps[sel];
     let n = count(marks);
+    if (f < marks[0] || f > r_end[sel]) { return; }
     let k = 0;
     while (k + 1 < n && marks[k + 1] <= f) { k += 1; }
-    let f1 = r_frames[sel];
+    let f1 = r_end[sel];
     if (k + 1 < n) { f1 = marks[k + 1]; }
     let used = 0;
     for (let i = 0; i < n; i += 1) { used += steps[i]; }
@@ -879,7 +1362,7 @@ fn editor_down(x, y, button) {
         if (k > 0) { delete_mark(k); }
         return;
     }
-    if (k > 0) { drag_mark = k; }
+    if (k != NO_MARK) { drag_mark = k; }
     else { add_mark(x); }
 }
 
@@ -892,7 +1375,7 @@ fn handle_mouse() {
         if (!e["down"]) {
             if (e["button"] == 0) {
                 grid_up(x);
-                drag_mark = -1;
+                drag_mark = NO_MARK;
             }
             continue;
         }
@@ -910,7 +1393,7 @@ fn handle_mouse() {
             editor_down(x, y, e["button"]);
         }
     }
-    if (drag_mark > 0 && cv.mouse_down()) { move_mark(drag_mark, cv.mouse_x()); }
+    if (drag_mark != NO_MARK && cv.mouse_down()) { move_mark(drag_mark, cv.mouse_x()); }
 }
 
 // ── UI: widgets ─────────────────────────────────────────────────────────────
@@ -940,8 +1423,12 @@ fn save_preset(name) {
         push(rows, [
             "file" => r_file[r], "marks" => r_marks[r], "steps" => r_steps[r],
             "step_len" => r_len_i[r], "speed" => r_speed_i[r], "pitch" => r_pitch[r],
-            "reverse" => r_rev[r], "play" => r_play[r], "mode" => r_mode[r], "group" => r_grp[r],
+            "reverse" => r_rev[r], "play" => PLAY_NAMES[r_play[r]], "mode" => r_mode[r], "group" => r_grp[r],
             "mute" => r_mute[r], "vol" => r_vol[r], "lo" => r_lo[r], "hi" => r_hi[r],
+            "end" => r_end[r], "amp_env_on" => r_aon[r], "amp_env" => r_aenv[r], "flt_env" => r_fenv[r],
+            "flt_type" => r_ftype[r], "flt_freq" => r_fcut[r], "flt_res" => r_fres[r], "flt_amt" => r_famt[r],
+            "drive" => r_drive[r], "drive_type" => DRIVE_NAMES[r_dtype[r]],
+            "grain" => r_grain[r], "spray" => r_spray[r],
         ]);
     }
     let pats = [];
@@ -967,6 +1454,23 @@ fn save_preset(name) {
     refresh_presets();
 }
 
+// Play mode of a saved row: stored by name, or by index in older presets.
+fn play_index(row) {
+    if (!has_key(row, "play")) { return PLAY_LOOP; }
+    let name = row["play"];
+    if (name == "" + name) {
+        for (let i = 0; i < count(PLAY_NAMES); i += 1) {
+            if (PLAY_NAMES[i] == name) { return i; }
+        }
+        return PLAY_LOOP;
+    }
+    let old = PLAY_NAMES_V1[name];
+    for (let i = 0; i < count(PLAY_NAMES); i += 1) {
+        if (PLAY_NAMES[i] == old) { return i; }
+    }
+    return PLAY_LOOP;
+}
+
 fn load_preset(name) {
     let text = file_read(preset_path(name));
     if (!text) { status_text = "can't read " + name; return; }
@@ -989,24 +1493,56 @@ fn load_preset(name) {
     let missing = 0;
     for (let r = 0; r < N_ROWS; r += 1) {
         let row = data["rows"][r];
-        r_len_i[r] = row["step_len"];
+        // settings that don't depend on the file (kept even if it's missing)
         r_speed_i[r] = row["speed"];
         r_pitch[r] = row["pitch"];
         r_rev[r] = row["reverse"];
-        r_play[r] = PLAY_LOOP;
-        if (has_key(row, "play")) { r_play[r] = row["play"]; }
+        r_play[r] = play_index(row);
         r_mode[r] = row["mode"];
         r_grp[r] = row["group"];
         r_mute[r] = row["mute"];
         r_vol[r] = row["vol"];
-        if (row["file"] == "") { unload_row(r); continue; }
-        if (!file_exists(row["file"]) || !load_row(r, row["file"])) {
+        r_aon[r] = false;
+        r_aenv[r] = [0.1, 0.5, 1, 0.3];
+        r_fenv[r] = [0.1, 0.5, 0, 0.3];
+        r_ftype[r] = 0;
+        r_fcut[r] = 0.8;
+        r_fres[r] = 0.2;
+        r_famt[r] = 0.5;
+        r_drive[r] = 0;
+        r_dtype[r] = 0;
+        r_grain[r] = 0.5;
+        r_spray[r] = 0.3;
+        if (has_key(row, "grain")) {
+            r_grain[r] = row["grain"];
+            r_spray[r] = row["spray"];
+        }
+        if (has_key(row, "drive")) {
+            r_drive[r] = row["drive"];
+            for (let i = 0; i < count(DRIVE_NAMES); i += 1) {
+                if (DRIVE_NAMES[i] == row["drive_type"]) { r_dtype[r] = i; }
+            }
+        }
+        if (has_key(row, "amp_env")) {
+            r_aon[r] = row["amp_env_on"];
+            r_aenv[r] = row["amp_env"];
+            r_fenv[r] = row["flt_env"];
+            r_ftype[r] = row["flt_type"];
+            r_fcut[r] = row["flt_freq"];
+            r_fres[r] = row["flt_res"];
+            r_famt[r] = row["flt_amt"];
+        }
+        if (row["file"] == "" || !file_exists(row["file"]) || !load_row(r, row["file"])) {
             unload_row(r);
-            missing += 1;
+            r_len_i[r] = row["step_len"];
+            if (row["file"] != "") { missing += 1; }
             continue;
         }
+        // tied to the file; after load_row, which sets its own for a fresh file
+        r_len_i[r] = row["step_len"];
         r_marks[r] = row["marks"];
         r_steps[r] = row["steps"];
+        if (has_key(row, "end")) { r_end[r] = row["end"]; }
         r_lo[r] = row["lo"];
         r_hi[r] = row["hi"];
         rebuild_row(r);
@@ -1044,14 +1580,46 @@ fn pattern_rec_toggle(k, on) {
 
 fn handle_widgets() {
     if (w_file.has_changed() && w_file.value() != "") { load_row(sel, w_file.value()); }
-    if (w_step.has_changed())  { r_len_i[sel] = int(w_step.value()); }
+    if (w_step.has_changed())  {
+        r_len_i[sel] = int(w_step.value());
+        fit_steps(sel);
+        rebuild_row(sel);
+    }
     if (w_speed.has_changed()) { r_speed_i[sel] = int(w_speed.value()); }
     if (w_pitch.has_changed()) { r_pitch[sel] = math_round(w_pitch.value()); }
     if (w_dir.has_changed())   { r_rev[sel] = int(w_dir.value()) == 1; }
     if (w_play.has_changed())  { r_play[sel] = int(w_play.value()); }
-    if (w_mode.has_changed())  { r_mode[sel] = int(w_mode.value()); }
+    if (w_mode.has_changed())  {
+        let was_grain = is_grain(r_mode[sel]);
+        r_mode[sel] = int(w_mode.value());
+        if (is_grain(r_mode[sel]) != was_grain) { swap_voice(sel); }
+    }
+    if (w_grain.has_changed()) { r_grain[sel] = w_grain.value(); }
+    if (w_spray.has_changed()) { r_spray[sel] = w_spray.value(); }
     if (w_group.has_changed()) { r_grp[sel] = int(w_group.value()); }
     if (w_vol.has_changed())   { r_vol[sel] = w_vol.value(); }
+    if (w_slice.has_changed() && r_node[sel] >= 0) { slice_row(sel); }
+    if (w_amp_on.has_changed()) { r_aon[sel] = w_amp_on.value(); }
+    // moving an amp knob switches the amp envelope on
+    let amp_moved = false;
+    if (w_aa.has_changed()) { r_aenv[sel][0] = w_aa.value(); amp_moved = true; }
+    if (w_ad.has_changed()) { r_aenv[sel][1] = w_ad.value(); amp_moved = true; }
+    if (w_as.has_changed()) { r_aenv[sel][2] = w_as.value(); amp_moved = true; }
+    if (w_ar.has_changed()) { r_aenv[sel][3] = w_ar.value(); amp_moved = true; }
+    if (amp_moved && !r_aon[sel]) {
+        r_aon[sel] = true;
+        w_amp_on.set(true);
+    }
+    if (w_fa.has_changed()) { r_fenv[sel][0] = w_fa.value(); }
+    if (w_fd.has_changed()) { r_fenv[sel][1] = w_fd.value(); }
+    if (w_fs.has_changed()) { r_fenv[sel][2] = w_fs.value(); }
+    if (w_fr.has_changed()) { r_fenv[sel][3] = w_fr.value(); }
+    if (w_ftype.has_changed()) { r_ftype[sel] = int(w_ftype.value()); }
+    if (w_fcut.has_changed()) { r_fcut[sel] = w_fcut.value(); }
+    if (w_fres.has_changed()) { r_fres[sel] = w_fres.value(); }
+    if (w_famt.has_changed()) { r_famt[sel] = w_famt.value(); }
+    if (w_drive.has_changed()) { r_drive[sel] = w_drive.value(); }
+    if (w_dtype.has_changed()) { r_dtype[sel] = int(w_dtype.value()); }
 
     if (w_p1_rec.has_changed())  { pattern_rec_toggle(0, w_p1_rec.value()); }
     if (w_p2_rec.has_changed())  { pattern_rec_toggle(1, w_p2_rec.value()); }
@@ -1096,18 +1664,22 @@ fn handle_widgets() {
 
 // ── UI: drawing ─────────────────────────────────────────────────────────────
 
+fn box(x, y, w, h, c) { cv.rect(x, y, w, h, c[0], c[1], c[2]); }
+fn txt(x, y, s, size, c) { cv.text(x, y, s, size, c[0], c[1], c[2]); }
+fn ln(x1, y1, x2, y2, c, w) { cv.line(x1, y1, x2, y2, c[0], c[1], c[2], w); }
+
 fn draw_row(r) {
     let y = GY + r * ROW_STEP;
     let gc = GROUP_COLORS[r_grp[r]];
     let total = r_total[r];
 
     // label
-    if (r == sel) { cv.rect(4, y, GX - 10, ROW_H, 60, 60, 72); }
-    else { cv.rect(4, y, GX - 10, ROW_H, 30, 30, 36); }
-    cv.rect(4, y, 4, ROW_H, gc[0], gc[1], gc[2]);
-    cv.text(14, y + 4, "" + (r + 1), 14, 230, 230, 230);
-    cv.text(GX - 30, y + 4, PLAY_TAGS[r_play[r]], 11, 200, 200, 120);
-    if (r_file[r] != "") { cv.text(14, y + 23, str_substr(file_name(r_file[r]), 0, 9), 10, 150, 150, 160); }
+    if (r == sel) { box(4, y, GX - 10, ROW_H, C_CELL_B); }
+    else { box(4, y, GX - 10, ROW_H, C_PANEL); }
+    box(4, y, 3, ROW_H, gc);
+    txt(14, y + 4, "" + (r + 1), 14, C_TEXT);
+    txt(GX - 30, y + 4, PLAY_TAGS[r_play[r]], 11, C_INFO);
+    if (r_file[r] != "") { txt(14, y + 23, str_substr(file_name(r_file[r]), 0, 9), 10, C_DIM); }
 
     // cells
     let cur = r_cell[r];
@@ -1118,44 +1690,42 @@ fn draw_row(r) {
     for (let c = 0; c < MAX_STEPS; c += 1) {
         let x = GX + c * CELL;
         if (c >= total) {
-            cv.rect(x, y, CELL - 3, ROW_H, 20, 20, 24);
+            box(x, y, CELL - 3, ROW_H, C_OFF);
             continue;
         }
-        let shade = 38;
-        if (cellseg[c] % 2 == 1) { shade = 52; }
-        let cr = shade;
-        let cg = shade;
-        let cb = shade + 10;
-        if (in_range && c >= r_lo[r] && c <= r_hi[r]) { cr += 18; cg += 18; cb += 4; }
-        if (c == cur && r_playing[r]) { cr = 235; cg = 190; cb = 70; }
-        cv.rect(x, y, CELL - 3, ROW_H, cr, cg, cb);
-        if (c > 0 && cellseg[c] != cellseg[c - 1]) { cv.rect(x - 3, y, 3, ROW_H, gc[0], gc[1], gc[2]); }
+        let col = C_CELL_A;
+        if (cellseg[c] % 2 == 1) { col = C_CELL_B; }
+        if (in_range && c >= r_lo[r] && c <= r_hi[r]) { col = C_RANGE; }
+        let bar = C_WAVE;
+        if (c == cur && r_playing[r]) { col = C_ACCENT; bar = C_BG; }
+        box(x, y, CELL - 3, ROW_H, col);
+        if (c > 0 && cellseg[c] != cellseg[c - 1]) { box(x - 3, y, 3, ROW_H, gc); }
         let mid = y + ROW_H / 2;
         for (let j = 0; j < 3; j += 1) {
             let h = mini[c * 3 + j] * (ROW_H / 2 - 4);
             let lx = x + 8 + j * 13;
-            cv.line(lx, mid - h, lx, mid + h, 140, 150, 170, 3);
+            ln(lx, mid - h, lx, mid + h, bar, 3);
         }
     }
 
     // mute, stop, group
-    if (r_mute[r]) { cv.rect(MX, y, BOX, ROW_H, 200, 60, 60); }
-    else { cv.rect(MX, y, BOX, ROW_H, 40, 40, 46); }
-    cv.text(MX + 8, y + 12, "M", 13, 230, 230, 230);
-    if (r_playing[r]) { cv.rect(SX, y, BOX, ROW_H, 60, 160, 90); }
-    else { cv.rect(SX, y, BOX, ROW_H, 40, 40, 46); }
-    cv.rect(SX + 9, y + 15, 10, 10, 230, 230, 230);
-    cv.rect(GBX, y, BOX, ROW_H, gc[0], gc[1], gc[2]);
-    cv.text(GBX + 5, y + 12, "G" + (r_grp[r] + 1), 12, 20, 20, 20);
+    if (r_mute[r]) { box(MX, y, BOX, ROW_H, C_WARN); }
+    else { box(MX, y, BOX, ROW_H, C_PANEL); }
+    txt(MX + 9, y + 12, "M", 13, C_TEXT);
+    if (r_playing[r]) { box(SX, y, BOX, ROW_H, C_ACCENT); box(SX + 9, y + 15, 10, 10, C_BG); }
+    else { box(SX, y, BOX, ROW_H, C_PANEL); box(SX + 9, y + 15, 10, 10, C_DIM); }
+    box(GBX, y, BOX, ROW_H, C_PANEL);
+    box(GBX, y + ROW_H - 3, BOX, 3, gc);
+    txt(GBX + 4, y + 12, "G" + (r_grp[r] + 1), 12, gc);
 }
 
 fn draw_strip() {
     for (let g = 0; g < 4; g += 1) {
         let gc = GROUP_COLORS[g];
         let x = GX + g * 120;
-        cv.rect(x, STRIP_Y, 112, 26, 34, 34, 40);
-        cv.rect(x, STRIP_Y, 4, 26, gc[0], gc[1], gc[2]);
-        cv.text(x + 12, STRIP_Y + 6, "stop G" + (g + 1), 12, 220, 220, 220);
+        box(x, STRIP_Y, 112, 26, C_PANEL);
+        box(x, STRIP_Y, 3, 26, gc);
+        txt(x + 12, STRIP_Y + 6, "stop G" + (g + 1), 12, C_TEXT);
     }
     let info = "";
     for (let k = 0; k < 2; k += 1) {
@@ -1164,14 +1734,19 @@ fn draw_strip() {
         else if (pat_play[k] && pat_len[k] > 0) { s = "play " + pat_len[k] + "b"; }
         info += "  P" + (k + 1) + ": " + s;
     }
-    cv.text(GX + 4 * 120 + 10, STRIP_Y + 6, info, 12, 200, 200, 120);
+    txt(GX + 4 * 120 + 10, STRIP_Y + 6, info, 12, C_INFO);
+}
+
+fn beat_info(r) {
+    if (r_fbpm[r] <= 0) { return "   not beaty"; }
+    return "   " + math_round(r_fbpm[r] * 10) / 10 + " bpm, " + math_round(sel_beats(r) * 100) / 100 + " beats selected";
 }
 
 fn draw_editor() {
-    cv.rect(EX, EY, EW, EH, 18, 18, 22);
-    cv.rect(EX, SEG_Y, EW, SEG_H, 26, 26, 32);
+    box(EX, EY, EW, EH, C_OFF);
+    box(EX, SEG_Y, EW, SEG_H, C_PANEL);
     if (r_node[sel] < 0) {
-        cv.text(EX + 12, EY + 12, "row " + (sel + 1) + ": pick a file on the right", 14, 160, 160, 170);
+        txt(EX + 12, EY + 12, "row " + (sel + 1) + ": pick a file on the right", 14, C_DIM);
         return;
     }
     let frames = r_frames[sel];
@@ -1181,21 +1756,21 @@ fn draw_editor() {
     let n = count(marks);
     let gc = GROUP_COLORS[r_grp[sel]];
 
-    // segment backgrounds + step counts
+    // segment backgrounds + step counts (outside start..end stays dark)
     for (let k = 0; k < n; k += 1) {
         let x0 = frame_to_x(marks[k]);
-        let x1 = EX + EW;
+        let x1 = frame_to_x(r_end[sel]);
         if (k + 1 < n) { x1 = frame_to_x(marks[k + 1]); }
-        let shade = 24;
-        if (k % 2 == 1) { shade = 34; }
-        if (steps[k] == 0) { shade = 10; }
-        cv.rect(x0, EY, x1 - x0, EH, shade, shade, shade + 8);
+        let col = C_PANEL;
+        if (k % 2 == 1) { col = C_CELL_A; }
+        if (steps[k] == 0) { col = C_BG; }
+        box(x0, EY, x1 - x0, EH, col);
         let cx = (x0 + x1) / 2;
         if (x1 - x0 > 54) {
-            cv.text(x0 + 6, SEG_Y + 5, "−", 14, 200, 120, 120);
-            cv.text(x1 - 16, SEG_Y + 5, "+", 14, 120, 200, 120);
+            txt(x0 + 6, SEG_Y + 5, "-", 14, C_WARN);
+            txt(x1 - 16, SEG_Y + 5, "+", 14, C_ACCENT);
         }
-        cv.text(cx - 6, SEG_Y + 5, "" + steps[k], 13, 230, 230, 230);
+        txt(cx - 6, SEG_Y + 5, "" + steps[k], 13, C_TEXT);
     }
 
     // waveform
@@ -1203,33 +1778,54 @@ fn draw_editor() {
     let scale = EH / 2 - 6;
     let top = 0.0001;
     for (let i = 0; i < count(peaks); i += 1) { top = math_max(top, peaks[i]); }
+    let xs = frame_to_x(marks[0]);
+    let xe = frame_to_x(r_end[sel]);
     for (let i = 0; i < count(peaks); i += 2) {
         let h = math_max(peaks[i], peaks[i + 1]) / top * scale;
         let x = EX + i * EW / PEAKS;
-        cv.line(x, mid - h, x, mid + h, 130, 160, 200, 2);
+        if (x >= xs && x <= xe) { ln(x, mid - h, x, mid + h, C_WAVE, 2); }
+        else { ln(x, mid - h, x, mid + h, C_LINE, 2); }
     }
 
-    // markers
+    // detected hits: small ticks under the waveform
+    let onsets = r_onsets[sel];
+    for (let i = 0; i < count(onsets); i += 1) {
+        let x = frame_to_x(onsets[i]);
+        ln(x, EY + EH - 8, x, EY + EH, C_INFO, 1);
+    }
+
+    // start (green) and end (red) markers
+    let ws = 2;
+    if (drag_mark == 0) { ws = 4; }
+    ln(xs, EY, xs, SEG_Y + SEG_H, C_ACCENT, ws);
+    box(xs, EY, 10, 12, C_ACCENT);
+    let we = 2;
+    if (drag_mark == END_MARK) { we = 4; }
+    ln(xe, EY, xe, SEG_Y + SEG_H, C_WARN, we);
+    box(xe - 10, EY, 10, 12, C_WARN);
+
+    // segment markers
     for (let k = 1; k < n; k += 1) {
         let x = frame_to_x(marks[k]);
         let w = 1;
         if (k == drag_mark) { w = 3; }
-        cv.line(x, EY, x, SEG_Y + SEG_H, gc[0], gc[1], gc[2], w);
-        cv.rect(x - 4, EY, 8, 10, gc[0], gc[1], gc[2]);
+        ln(x, EY, x, SEG_Y + SEG_H, gc, w);
+        box(x - 4, EY, 8, 10, gc);
     }
 
     // playhead
     if (r_playing[sel]) {
         let x = frame_to_x(r_pf[sel]);
-        cv.line(x, EY, x, EY + EH, 235, 190, 70, 2);
+        ln(x, EY, x, EY + EH, C_TEXT, 1);
     }
     let total = r_total[sel];
-    cv.text(EX, SEG_Y + SEG_H + 8, file_name(r_file[sel]) + "   " + total + " steps × "
-        + STEP_NAMES[r_len_i[sel]] + "   " + math_round(frames / r_sr[sel] * 100) / 100 + " s", 12, 170, 170, 180);
+    txt(EX, SEG_Y + SEG_H + 8, file_name(r_file[sel]) + "   " + total + " steps x "
+        + STEP_NAMES[r_len_i[sel]] + "   " + math_round(frames / r_sr[sel] * 100) / 100 + " s"
+        + beat_info(sel), 12, C_DIM);
 }
 
 fn draw() {
-    cv.fill(12, 12, 15);
+    cv.fill(C_BG[0], C_BG[1], C_BG[2]);
     for (let r = 0; r < N_ROWS; r += 1) { draw_row(r); }
     draw_strip();
     draw_editor();

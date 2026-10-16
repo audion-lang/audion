@@ -354,6 +354,7 @@ fn render_widgets(
     last_rects: &Arc<std::sync::Mutex<std::collections::HashMap<String, (egui::Rect, egui::Rect)>>>,
 ) {
     let order: Vec<String> = handle.widget_order.lock().unwrap().clone();
+    let theme = handle.theme();
     // Clone the Arc map so we don't hold the widgets mutex during rendering
     let widget_map: std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<super::WidgetState>>> = {
         handle.widgets.lock().unwrap().clone()
@@ -505,7 +506,7 @@ fn render_widgets(
             let resp = area.show(ctx, |ui| {
                 let cap_w = {
                     let s = state_arc.lock().unwrap();
-                    s.config.style.width.unwrap_or(240.0)
+                    s.config.style.width.or(theme.width).unwrap_or(240.0)
                 };
                 ui.set_max_width(cap_w);
 
@@ -535,12 +536,12 @@ fn render_widgets(
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             }
                             let mut state = state_arc.lock().unwrap();
-                            render_widget(ui, &mut state, three_supported);
+                            render_widget(ui, &mut state, three_supported, &theme);
                             render_resize_handle(ui, &mut state);
                         });
                 } else {
                     let mut state = state_arc.lock().unwrap();
-                    render_widget(ui, &mut state, three_supported);
+                    render_widget(ui, &mut state, three_supported, &theme);
                 }
             });
 
@@ -559,7 +560,7 @@ fn render_widgets(
         } else {
             // Flow layout (no position set)
             let mut state = state_arc.lock().unwrap();
-            render_widget(ui, &mut state, three_supported);
+            render_widget(ui, &mut state, three_supported, &theme);
             ui.add_space(4.0);
         }
     }
@@ -621,25 +622,98 @@ fn render_widgets(
     }
 }
 
-fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState, three_supported: bool) {
-    // Apply per-widget style overrides inside a scoped child Ui so visuals don't leak.
-    let style = state.config.style.clone();
+fn render_widget(ui: &mut egui::Ui, state: &mut super::WidgetState, three_supported: bool, theme: &super::WidgetStyle) {
+    // The widget's own style, unset keys from the window theme. Applied inside
+    // a scoped child Ui so visuals don't leak to other widgets.
+    let style = state.config.style.with_fallback(theme);
     ui.scope(|ui| {
-        if let Some([r, g, b]) = style.color {
-            let c = egui::Color32::from_rgb(r, g, b);
-            ui.visuals_mut().selection.bg_fill              = c;
-            ui.visuals_mut().widgets.active.bg_fill         = c;
-            ui.visuals_mut().widgets.hovered.bg_fill        = c.gamma_multiply(0.8);
-            ui.visuals_mut().widgets.inactive.bg_fill       = c.gamma_multiply(0.5);
-            ui.visuals_mut().hyperlink_color                = c;
-        }
-        if let Some([r, g, b]) = style.bg_color {
-            let c = egui::Color32::from_rgb(r, g, b);
-            ui.visuals_mut().extreme_bg_color = c;
-            ui.visuals_mut().faint_bg_color   = c.gamma_multiply(1.1);
-        }
+        apply_style(ui, &style);
         render_widget_inner(ui, state, three_supported, &style);
     });
+}
+
+/// One toggle cell of an array widget, `width` wide when given. True when clicked.
+fn cell_toggle(ui: &mut egui::Ui, on: &mut bool, text: &str, width: Option<f32>) -> bool {
+    match width {
+        Some(w) => {
+            let clicked = ui.add_sized([w, ui.spacing().interact_size.y], egui::SelectableLabel::new(*on, text)).clicked();
+            if clicked { *on = !*on; }
+            clicked
+        }
+        None => ui.toggle_value(on, text).changed(),
+    }
+}
+
+/// A button that takes the style's width when set.
+fn sized_button(ui: &mut egui::Ui, text: &str, style: &super::WidgetStyle) -> egui::Response {
+    match style.width {
+        Some(w) => ui.add_sized([w, ui.spacing().interact_size.y], egui::Button::new(text)),
+        None => ui.button(text),
+    }
+}
+
+fn rgb(c: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// Turn a widget style into egui visuals/spacing for the current scope.
+fn apply_style(ui: &mut egui::Ui, style: &super::WidgetStyle) {
+    let v = ui.visuals_mut();
+    if let Some(c) = style.color.map(rgb) {
+        v.selection.bg_fill = c;
+        v.hyperlink_color = c;
+        // egui fills buttons with weak_bg_fill, sliders/toggles with bg_fill
+        for (w, shade) in [(&mut v.widgets.active, 1.0), (&mut v.widgets.hovered, 0.8), (&mut v.widgets.inactive, 0.5)] {
+            w.bg_fill = c.gamma_multiply(shade);
+            w.weak_bg_fill = c.gamma_multiply(shade);
+        }
+    }
+    if let Some(c) = style.bg_color.map(rgb) {
+        v.extreme_bg_color = c;
+        v.faint_bg_color = c.gamma_multiply(1.1);
+    }
+    if let Some(c) = style.fill_color.map(rgb) {
+        for w in [&mut v.widgets.inactive, &mut v.widgets.open] {
+            w.bg_fill = c;
+            w.weak_bg_fill = c;
+        }
+    }
+    if let Some(c) = style.hover_color.map(rgb) {
+        v.widgets.hovered.bg_fill = c;
+        v.widgets.hovered.weak_bg_fill = c;
+    }
+    if let Some(c) = style.text_color.map(rgb) {
+        v.override_text_color = Some(c);
+    }
+    if let Some(r) = style.rounding {
+        let r = egui::CornerRadius::same(r.round().clamp(0.0, 255.0) as u8);
+        for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered,
+                  &mut v.widgets.active, &mut v.widgets.open] {
+            w.corner_radius = r;
+        }
+        v.menu_corner_radius = r;
+    }
+    if style.border_color.is_some() || style.border_width.is_some() {
+        let width = style.border_width.unwrap_or(1.0);
+        let color = style.border_color.map(rgb).unwrap_or(v.widgets.inactive.bg_stroke.color);
+        for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+            w.bg_stroke = egui::Stroke::new(width, color);
+        }
+    }
+    if let Some(size) = style.font_size {
+        for font in ui.style_mut().text_styles.values_mut() {
+            font.size = size;
+        }
+    }
+    if style.mono == Some(true) {
+        for font in ui.style_mut().text_styles.values_mut() {
+            font.family = egui::FontFamily::Monospace;
+        }
+    }
+    // Minimum height for buttons, toggles, dropdowns, number boxes, sliders.
+    if let Some(h) = style.height {
+        ui.spacing_mut().interact_size.y = h;
+    }
 }
 
 fn render_widget_inner(
@@ -697,8 +771,9 @@ fn render_widget_inner(
         }
 
         WidgetKind::Button => {
-            let resp = if let Some(w) = style.width {
-                ui.add_sized([w, ui.spacing().interact_size.y], egui::Button::new(&label))
+            let resp = if style.width.is_some() || style.height.is_some() {
+                let size = [style.width.unwrap_or(ui.spacing().interact_size.x), ui.spacing().interact_size.y];
+                ui.add_sized(size, egui::Button::new(&label))
             } else {
                 ui.button(&label)
             };
@@ -710,7 +785,13 @@ fn render_widget_inner(
 
         WidgetKind::Toggle => {
             if let WidgetValue::Bool(b) = &mut state.value {
-                if ui.toggle_value(b, &label).changed() {
+                if let Some(w) = style.width {
+                    let size = [w, ui.spacing().interact_size.y];
+                    if ui.add_sized(size, egui::SelectableLabel::new(*b, &label)).clicked() {
+                        *b = !*b;
+                        state.dirty = true;
+                    }
+                } else if ui.toggle_value(b, &label).changed() {
                     state.dirty = true;
                 }
             }
@@ -730,10 +811,12 @@ fn render_widget_inner(
             if let WidgetValue::Float(v) = &mut state.value {
                 ui.horizontal(|ui| {
                     ui.label(&label);
-                    if ui.add(
-                        egui::DragValue::new(v)
-                            .range(state.config.min..=state.config.max),
-                    ).changed() {
+                    let drag = egui::DragValue::new(v).range(state.config.min..=state.config.max);
+                    let resp = match style.width {
+                        Some(w) => ui.add_sized([w, ui.spacing().interact_size.y], drag),
+                        None => ui.add(drag),
+                    };
+                    if resp.changed() {
                         state.dirty = true;
                     }
                 });
@@ -745,8 +828,11 @@ fn render_widget_inner(
                 let options = state.config.options.clone();
                 let selected = (*idx as usize).min(options.len().saturating_sub(1));
                 let current = options.get(selected).map(|s| s.as_str()).unwrap_or("—");
-                egui::ComboBox::from_label(&label)
-                    .selected_text(current)
+                let mut combo = egui::ComboBox::from_label(&label).selected_text(current);
+                if let Some(w) = style.width {
+                    combo = combo.width(w);
+                }
+                combo
                     .show_ui(ui, |ui| {
                         for (i, opt) in options.iter().enumerate() {
                             if ui.selectable_value(idx, i as f64, opt).changed() {
@@ -758,10 +844,18 @@ fn render_widget_inner(
         }
 
         WidgetKind::TextLabel => {
-            if let WidgetValue::Str(s) = &state.value {
-                ui.label(s.as_str());
+            let text = if let WidgetValue::Str(s) = &state.value { s.clone() } else { label.clone() };
+            if style.width.is_some() || style.height.is_some() {
+                let size = egui::vec2(
+                    style.width.unwrap_or(ui.available_width()),
+                    style.height.unwrap_or(ui.spacing().interact_size.y),
+                );
+                ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_size(size);
+                    ui.label(text);
+                });
             } else {
-                ui.label(&label);
+                ui.label(text);
             }
         }
 
@@ -769,7 +863,11 @@ fn render_widget_inner(
             if let WidgetValue::Str(s) = &mut state.value {
                 ui.horizontal(|ui| {
                     ui.label(&label);
-                    if ui.text_edit_singleline(s).changed() {
+                    let mut edit = egui::TextEdit::singleline(s);
+                    if let Some(w) = style.width {
+                        edit = edit.desired_width(w);
+                    }
+                    if ui.add(edit).changed() {
                         state.dirty = true;
                     }
                 });
@@ -787,6 +885,8 @@ fn render_widget_inner(
                     let hl_color = style.highlight_color
                         .map(|[r,g,b]| egui::Color32::from_rgb(r,g,b))
                         .unwrap_or(egui::Color32::from_rgb(255, 230, 60));
+                    // width = the whole row; split over the cells (the –/+ buttons take ~40 px)
+                    let cell_w = style.width.map(|w| ((w - 40.0) / bits.len() as f32).max(8.0));
 
                     for i in 0..bits.len() {
                         let is_lit = highlighted.contains(&i);
@@ -796,11 +896,11 @@ fn render_widget_inner(
                                 ui.visuals_mut().widgets.inactive.bg_fill = hl_color.gamma_multiply(0.5);
                                 ui.visuals_mut().widgets.active.bg_fill   = hl_color;
                                 ui.visuals_mut().widgets.hovered.bg_fill  = hl_color.gamma_multiply(0.9);
-                                if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
+                                if cell_toggle(ui, &mut bits[i], &i.to_string(), cell_w) {
                                     state.dirty = true;
                                 }
                             });
-                        } else if ui.toggle_value(&mut bits[i], i.to_string()).changed() {
+                        } else if cell_toggle(ui, &mut bits[i], &i.to_string(), cell_w) {
                             state.dirty = true;
                         }
                     }
@@ -861,8 +961,14 @@ fn render_widget_inner(
                         nums.pop();
                         state.dirty = true;
                     }
+                    let cell_w = style.width.map(|w| ((w - 40.0) / nums.len() as f32).max(16.0));
                     for v in nums.iter_mut() {
-                        if ui.add(egui::DragValue::new(v).speed(0.1)).changed() {
+                        let drag = egui::DragValue::new(v).speed(0.1);
+                        let resp = match cell_w {
+                            Some(w) => ui.add_sized([w, ui.spacing().interact_size.y], drag),
+                            None => ui.add(drag),
+                        };
+                        if resp.changed() {
                             state.dirty = true;
                         }
                     }
@@ -878,7 +984,7 @@ fn render_widget_inner(
             let path = if let WidgetValue::Str(s) = &state.value { s.clone() } else { String::new() };
             ui.horizontal(|ui| {
                 let btn_label = if path.is_empty() { format!("📂  {}", label) } else { "📂  …".to_string() };
-                if ui.button(&btn_label).clicked() {
+                if sized_button(ui, &btn_label, style).clicked() {
                     let mut dialog = rfd::FileDialog::new();
                     for ext in &filters {
                         dialog = dialog.add_filter(ext, &[ext.as_str()]);
@@ -902,7 +1008,7 @@ fn render_widget_inner(
             let path = if let WidgetValue::Str(s) = &state.value { s.clone() } else { String::new() };
             ui.horizontal(|ui| {
                 let btn_label = if path.is_empty() { format!("📁  {}", label) } else { "📁  …".to_string() };
-                if ui.button(&btn_label).clicked() {
+                if sized_button(ui, &btn_label, style).clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         state.value = WidgetValue::Str(p.to_string_lossy().into_owned());
                         state.dirty = true;
@@ -936,7 +1042,7 @@ fn render_widget_inner(
 
         WidgetKind::Canvas2d => {
             if let WidgetValue::Canvas2d(data_arc) = &state.value {
-                render_canvas2d(ui, data_arc, style.width, style.height);
+                render_canvas2d(ui, data_arc, style.width, style.height, style.mono == Some(true));
             }
         }
 
@@ -1134,7 +1240,7 @@ fn range_slider(
     let track_height = 4.0_f32;
     let handle_r     = 8.0_f32;
     let min_gap_px   = handle_r * 2.0 + 2.0; // handles can't be closer than this
-    let widget_h     = handle_r * 2.0 + 6.0;
+    let widget_h     = style.height.unwrap_or(handle_r * 2.0 + 6.0);
 
     let width = style.width.unwrap_or_else(|| ui.available_width()).max(120.0);
     let (rect, _) = ui.allocate_exact_size(
@@ -1689,7 +1795,7 @@ fn render_piano(
 // 2D canvas — replay DrawCmd list via egui Painter
 // ---------------------------------------------------------------------------
 
-fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex<super::Canvas2dData>>, override_w: Option<f32>, override_h: Option<f32>) {
+fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex<super::Canvas2dData>>, override_w: Option<f32>, override_h: Option<f32>, mono: bool) {
     use super::DrawCmd;
 
     let (cmds, w, h) = {
@@ -1769,7 +1875,7 @@ fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::Align2::LEFT_TOP,
                     s.as_str(),
-                    egui::FontId::proportional(*size),
+                    if mono { egui::FontId::monospace(*size) } else { egui::FontId::proportional(*size) },
                     egui::Color32::from_rgb(*r, *g, *b),
                 );
             }

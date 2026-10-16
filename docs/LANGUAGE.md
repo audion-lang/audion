@@ -1862,6 +1862,7 @@ thread listener {
 | `buffer_free(buf_id)` | Free a buffer on scsynth | nil |
 | `buffer_alloc(frames, channels?)` | Allocate an empty buffer (channels defaults to 1) | buffer ID (number) |
 | `buffer_read(buf_id, path)` | Read a sound file into an existing buffer | nil |
+| `buffer_beats(buf_id)` | Hits and beat count of the buffer: `["onsets" => [frame, ...], "beats" => n, "bpm" => x, "confidence" => c]`. `beats` is 0 when the sound isn't beaty. Works best on loops cut to whole beats | array |
 | `buffer_peaks(buf_id, n)` | `n` peak values (largest absolute sample per slice, all channels) for drawing a waveform. Works for any format scsynth can load (wav, aiff, flac, mp3, ...) | array of numbers |
 
 `buffer_load()` is the simplest way to load a sample - it allocates and reads in one step. Pass the returned buffer ID to synths via the `bufnum` named argument, and swap samples live with `set()`.
@@ -2197,6 +2198,7 @@ define string(freq, amp, gate) {
 | `phasor(trig, rate, start, end)` | Ramp from `start` to `end`, wrapping; jumps to 0 when `trig` goes from ≤0 to >0 |
 | `phasor(trig, rate, start, end, reset_pos)` | Same, but jumps to `reset_pos` |
 | `buf_rd(channels, buf, phase)` | Read `buf` at frame `phase` (`channels` must be a number) |
+| `warp(channels, buf, pointer, pitch, window, overlaps, rand)` | Granular playback (SC `Warp1`): reads grains at `pointer` (0..1 through the buffer) with pitch independent of how fast `pointer` moves — a time-stretch. `window` = grain size in seconds, `overlaps` (a number) = grains at once, `rand` = 0..1 grain size randomness |
 | `changed(x)` | 1 for one block whenever `x` changes, else 0 |
 
 `set()` only changes values, so it can't fire a trigger directly. Use `changed()` on a counter param to turn every `set()` into a trigger:
@@ -2226,6 +2228,7 @@ set(n, jump: 2, pos: 0);       // jump back to the start
 |------|-------------|
 | `env(gate)` | ASR envelope (defaults: atk=0.01, sus=1, rel=0.3) |
 | `env(gate, atk, sus, rel)` | ASR envelope with custom times. Use sus=0 for percussive envelopes |
+| `adsr(gate, atk, dec, sus, rel)` | ADSR envelope (sus is a level). Restarts each time `gate` goes from 0 to >0 and never frees the synth, so one synth can be retriggered with `set()` |
 
 #### LFOs (control rate)
 

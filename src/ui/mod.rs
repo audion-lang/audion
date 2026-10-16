@@ -47,6 +47,79 @@ pub struct WidgetStyle {
     /// near the top — useful for wide-range params (e.g. delay time from a few ms
     /// to 60s). <1 = logarithmic (inverse skew). Driven by `.style("curve", n)`.
     pub curve: Option<f64>,
+    /// Text color (labels, button text, values).
+    pub text_color: Option<[u8; 3]>,
+    /// Text size in points, for all text in the widget.
+    pub font_size: Option<f32>,
+    /// Corner radius in pixels.
+    pub rounding: Option<f32>,
+    /// Outline color and width.
+    pub border_color: Option<[u8; 3]>,
+    pub border_width: Option<f32>,
+    /// Background while the pointer is over the widget.
+    pub hover_color: Option<[u8; 3]>,
+    /// Resting background of buttons, dropdowns, toggles (off) and number boxes.
+    pub fill_color: Option<[u8; 3]>,
+    /// Monospace text (also for text drawn on a canvas).
+    pub mono: Option<bool>,
+}
+
+/// Keys accepted by `widget.style(key, ...)`, `ui.theme(key, ...)` and the
+/// `.aui` file. Colors take r, g, b (0-255); the rest take one number.
+pub const STYLE_KEYS: &[&str] = &[
+    "color", "bg_color", "highlight_color", "text_color", "border_color", "hover_color", "fill_color",
+    "width", "height", "font_size", "rounding", "border_width", "mono", "visible", "curve",
+];
+
+impl WidgetStyle {
+    /// Set one style key from its numbers (r, g, b for colors, else one value).
+    pub fn set_key(&mut self, key: &str, nums: &[f64]) -> Result<(), String> {
+        let color = || -> [u8; 3] {
+            let c = |i: usize| nums.get(i).copied().unwrap_or(255.0).clamp(0.0, 255.0) as u8;
+            [c(0), c(1), c(2)]
+        };
+        let one = || nums.first().copied();
+        match key {
+            "color" => self.color = Some(color()),
+            "bg_color" => self.bg_color = Some(color()),
+            "highlight_color" => self.highlight_color = Some(color()),
+            "text_color" => self.text_color = Some(color()),
+            "border_color" => self.border_color = Some(color()),
+            "hover_color" => self.hover_color = Some(color()),
+            "fill_color" => self.fill_color = Some(color()),
+            "mono" => self.mono = one().map(|v| v != 0.0),
+            "width" => self.width = one().map(|v| v as f32),
+            "height" => self.height = one().map(|v| v as f32),
+            "font_size" => self.font_size = one().map(|v| v as f32),
+            "rounding" => self.rounding = one().map(|v| v as f32),
+            "border_width" => self.border_width = one().map(|v| v as f32),
+            "visible" => self.visible = one().map(|v| v != 0.0),
+            "curve" => self.curve = one(),
+            _ => return Err(format!("unknown style key '{}' — available: {}", key, STYLE_KEYS.join(", "))),
+        }
+        Ok(())
+    }
+
+    /// This style, with every unset key taken from `base` (a theme).
+    pub fn with_fallback(&self, base: &WidgetStyle) -> WidgetStyle {
+        WidgetStyle {
+            color: self.color.or(base.color),
+            bg_color: self.bg_color.or(base.bg_color),
+            width: self.width.or(base.width),
+            height: self.height.or(base.height),
+            highlight_color: self.highlight_color.or(base.highlight_color),
+            visible: self.visible.or(base.visible),
+            curve: self.curve.or(base.curve),
+            text_color: self.text_color.or(base.text_color),
+            font_size: self.font_size.or(base.font_size),
+            rounding: self.rounding.or(base.rounding),
+            border_color: self.border_color.or(base.border_color),
+            border_width: self.border_width.or(base.border_width),
+            hover_color: self.hover_color.or(base.hover_color),
+            fill_color: self.fill_color.or(base.fill_color),
+            mono: self.mono.or(base.mono),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +549,10 @@ pub struct UiHandle {
     pub config: Mutex<WindowConfig>,
     /// Ordered list of widget IDs for stable render order
     pub widget_order: Mutex<Vec<String>>,
+    /// Window-wide style defaults: `[__theme]` in the .aui file, and
+    /// `ui.theme(...)` from the script (which wins over the file).
+    pub theme_file: Mutex<WidgetStyle>,
+    pub theme_script: Mutex<WidgetStyle>,
 }
 
 impl std::fmt::Debug for UiHandle {
@@ -497,7 +574,14 @@ impl UiHandle {
             widgets: Mutex::new(HashMap::new()),
             config: Mutex::new(WindowConfig::default()),
             widget_order: Mutex::new(Vec::new()),
+            theme_file: Mutex::new(WidgetStyle::default()),
+            theme_script: Mutex::new(WidgetStyle::default()),
         }
+    }
+
+    /// The theme every widget in this window falls back to.
+    pub fn theme(&self) -> WidgetStyle {
+        self.theme_script.lock().unwrap().with_fallback(&self.theme_file.lock().unwrap())
     }
 }
 

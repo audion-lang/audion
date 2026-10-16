@@ -737,3 +737,37 @@ fn test_smoothers_follow_input_rate() {
         assert_eq!(def.ugens.iter().find(|u| u.name == ugen).unwrap().rate, 2, "{} on audio", fname);
     }
 }
+
+#[test]
+fn test_adsr() {
+    let body = call("adsr", vec![param("gate"), UGenExpr::Number(0.01), UGenExpr::Number(0.2),
+                                 UGenExpr::Number(0.5), UGenExpr::Number(0.3)]);
+    let bytes = build_synthdef("test", &["gate".to_string()], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let eg = def.ugens.iter().find(|u| u.name == "EnvGen").unwrap();
+    assert_eq!(eg.rate, 2, "audio rate");
+    // gate, levelScale, levelBias, timeScale, doneAction, initLevel, numSegs, releaseNode, loopNode + 3 segments * 4
+    assert_eq!(eg.num_inputs, 9 + 3 * 4);
+    assert!(def.constants.contains(&2.0), "releaseNode 2 (sustain stage)");
+    assert!(def.constants.contains(&0.5), "sustain level");
+    // doneAction must be 0 so the synth survives the release
+    let done_idx = 4;
+    assert_eq!(eg.inputs[done_idx], None);
+}
+
+#[test]
+fn test_warp() {
+    let body = call("warp", vec![UGenExpr::Number(2.0), param("buf"), param("ptr"), param("pitch"),
+                                 UGenExpr::Number(0.1), UGenExpr::Number(8.0), UGenExpr::Number(0.05)]);
+    let names = ["buf", "ptr", "pitch"].iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let bytes = build_synthdef("test", &names, &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let w = def.ugens.iter().find(|u| u.name == "Warp1").unwrap();
+    assert_eq!(w.num_outputs, 2, "stereo");
+    assert_eq!(w.num_inputs, 8);
+    let control = def.ugens.iter().position(|u| u.name == "Control").unwrap() as i32;
+    assert_eq!(w.inputs[0], Some((control, 0)), "bufnum");
+    assert_eq!(w.inputs[1], Some((control, 1)), "pointer");
+    assert_eq!(w.inputs[2], Some((control, 2)), "freqScale");
+    assert!(def.constants.contains(&-1.0), "envbufnum -1 = built-in window");
+}

@@ -1,0 +1,377 @@
+[__window]
+width = 1710
+height = 1041
+bg_color = [10, 12, 14]
+
+[preset_name]
+label = "preset"
+width = 268.61328
+height = 20.25
+x = 930
+y = 530
+
+[amp_s]
+label = "amp S"
+width = 60
+x = 1198.5117
+y = 209.58203
+
+[slice]
+label = "slice"
+width = 120
+x = 930
+y = 690
+
+[load]
+label = "load"
+width = 120
+height = 20
+x = 1062.9883
+y = 572.58984
+
+[amp_d]
+label = "amp D"
+width = 60
+x = 1198.5117
+y = 129.58203
+
+[rev_out]
+label = "reverb out"
+x = 513.4219
+y = 820.0469
+
+[flt_r]
+label = "flt R"
+width = 60
+x = 1298.5117
+y = 289.58203
+
+[amp_env]
+label = "amp env"
+x = 1198.5117
+y = 13.582031
+
+[g4_dly]
+label = "G4 dly"
+color = [230, 90, 230]
+width = 60
+x = 824
+y = 680
+
+[grid]
+width = 900
+height = 650
+x = 16
+y = 16
+
+[dir]
+label = "direction"
+x = 930
+y = 214
+
+[p2_play]
+label = "P2 play"
+x = 1080
+y = 470
+
+[g3_vol]
+label = "G3 vol"
+color = [140, 230, 80]
+width = 60
+x = 454
+y = 680
+
+[g1_out]
+label = "G1 out"
+color = [255, 140, 40]
+x = 9.921875
+y = 777.01953
+
+[g2_vol]
+label = "G2 vol"
+color = [60, 170, 255]
+width = 60
+x = 232
+y = 680
+
+[speed]
+label = "speed"
+x = 930
+y = 134
+
+[file]
+label = "file"
+x = 930
+y = 44
+
+[pitch]
+min = -24
+max = 24
+label = "pitch (st)"
+width = 280
+x = 930
+y = 174
+
+[mode]
+label = "mode"
+x = 930
+y = 294
+
+[p2_rec]
+label = "P2 rec"
+color = [255, 70, 70]
+x = 930
+y = 470
+
+[play]
+label = "play"
+x = 930
+y = 254
+
+[group]
+label = "group"
+x = 930
+y = 334
+
+[g1_dly]
+label = "G1 dly"
+color = [255, 140, 40]
+width = 60
+x = 158
+y = 680
+
+[main]
+label = "main volume"
+width = 260
+x = 10
+y = 820
+
+[flt_env]
+label = "env amt"
+width = 60
+x = 1378.5117
+y = 379.58203
+
+[__theme]
+color = [0, 200, 140]
+bg_color = [14, 16, 19]
+text_color = [214, 222, 228]
+font_size = 12
+rounding = 2
+border_color = [52, 60, 72]
+border_width = 1
+hover_color = [38, 44, 52]
+
+[g4_vol]
+label = "G4 vol"
+color = [230, 90, 230]
+width = 60
+x = 676
+y = 680
+
+[flt_a]
+label = "flt A"
+width = 60
+x = 1298.5117
+y = 49.58203
+
+[g2_out]
+label = "G2 out"
+color = [60, 170, 255]
+x = 233.17969
+y = 778.0156
+
+[presets]
+label = "presets"
+x = 930
+y = 610
+
+[p1_play]
+label = "P1 play"
+x = 1080
+y = 430
+
+[drive]
+label = "drive"
+width = 60
+x = 1199
+y = 520
+
+[g2_rev]
+label = "G2 rev"
+color = [60, 170, 255]
+width = 60
+x = 306
+y = 680
+
+[dly_fb]
+label = "delay fb"
+width = 60
+x = 840
+y = 800
+
+[dly_out]
+label = "delay out"
+x = 920
+y = 820
+
+[g2_dly]
+label = "G2 dly"
+color = [60, 170, 255]
+width = 60
+x = 380
+y = 680
+
+[row_title]
+label = "selected row"
+x = 930
+y = 14
+
+[flt_res]
+label = "res"
+width = 60
+x = 1298.5117
+y = 379.58203
+
+[g3_dly]
+label = "G3 dly"
+color = [140, 230, 80]
+width = 60
+x = 602
+y = 680
+
+[flt_freq]
+label = "freq"
+width = 60
+x = 1198.5117
+y = 379.58203
+
+[bpm]
+label = "bpm"
+x = 284.59375
+y = 820.8789
+
+[g3_rev]
+label = "G3 rev"
+color = [140, 230, 80]
+width = 60
+x = 528
+y = 680
+
+[dly_time]
+label = "delay time"
+x = 702.1172
+y = 820.9219
+
+[g1_rev]
+label = "G1 rev"
+color = [255, 140, 40]
+width = 60
+x = 84
+y = 680
+
+[flt_d]
+label = "flt D"
+width = 60
+x = 1298.5117
+y = 129.58203
+
+[status]
+x = 930
+y = 650
+
+[vol]
+label = "row volume"
+width = 280
+x = 930
+y = 374
+
+[amp_a]
+label = "amp A"
+width = 60
+x = 1198.5117
+y = 49.58203
+
+[save]
+label = "save"
+width = 120
+x = 930
+y = 570
+
+[g4_rev]
+label = "G4 rev"
+color = [230, 90, 230]
+width = 60
+x = 750
+y = 680
+
+[rev_room]
+label = "reverb size"
+width = 60
+x = 440
+y = 800
+
+[p1_rec]
+label = "P1 rec"
+color = [255, 70, 70]
+x = 930
+y = 430
+
+[amp_r]
+label = "amp R"
+width = 60
+x = 1198.5117
+y = 289.58203
+
+[drive_type]
+label = "drive type"
+x = 1299
+y = 540
+
+[flt_type]
+label = "filter"
+x = 1198.5117
+y = 469.58203
+
+[g3_out]
+label = "G3 out"
+color = [140, 230, 80]
+x = 454.1797
+y = 775.1211
+
+[flt_s]
+label = "flt S"
+width = 60
+x = 1298.5117
+y = 209.58203
+
+[step]
+label = "step length"
+x = 930
+y = 94
+
+[g4_out]
+label = "G4 out"
+color = [230, 90, 230]
+x = 676.7461
+y = 774.6367
+
+[g1_vol]
+label = "G1 vol"
+color = [255, 140, 40]
+width = 60
+x = 10
+y = 680
+
+
+[grain]
+label = "grain"
+width = 60
+x = 1199
+y = 600
+
+[spray]
+label = "spray"
+width = 60
+x = 1299
+y = 600

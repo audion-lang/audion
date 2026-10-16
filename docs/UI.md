@@ -113,7 +113,52 @@ widget.style("color", 255, 102, 0)  // accent color r,g,b 0-255
 widget.style("bg_color", 20, 20, 30)
 widget.style("width", 240)          // explicit pixel width
 widget.style("height", 60)          // explicit pixel height
+widget.style("text_color", 230, 230, 240)
+widget.style("font_size", 16)
+widget.style("rounding", 6)         // corner radius, px
+widget.style("border_color", 90, 90, 120)
+widget.style("border_width", 1.5)
+widget.style("hover_color", 60, 60, 80)
 ```
+
+### Styling
+
+| key | values | what it styles |
+|-----|--------|----------------|
+| `color` | r, g, b | accent: slider fill, buttons, toggles on, dropdowns, knob arc |
+| `bg_color` | r, g, b | deep background: slider rail, text fields |
+| `fill_color` | r, g, b | resting background of buttons, dropdowns, toggles (off), number boxes |
+| `hover_color` | r, g, b | background under the pointer |
+| `text_color` | r, g, b | all text in the widget |
+| `font_size` | points | all text in the widget |
+| `rounding` | px | corner radius (also dropdown menus) |
+| `border_color` | r, g, b | outline color (width 1 if not set) |
+| `border_width` | px | outline width |
+| `mono` | 0 / 1 (`true`/`false` in .aui) | monospace text, also for text drawn on a canvas |
+| `width` / `height` | px | size; height also sets the minimum height of buttons, toggles, dropdowns, number boxes |
+| `highlight_color` | r, g, b | lit cells in array widgets |
+| `visible` | 0 / 1 | show or hide |
+| `curve` | number | knob response |
+
+An unknown key is an error that lists the valid keys.
+
+**Window theme** — the same keys as defaults for every widget in the window:
+
+```au
+ui.theme("rounding", 6);
+ui.theme("text_color", 220, 220, 230);
+```
+
+or in the `.aui` file:
+
+```toml
+[__theme]
+rounding   = 6
+font_size  = 14
+text_color = [220, 220, 230]
+```
+
+Priority: a widget's own style (`.style()` or its `.aui` section) → `ui.theme()` → `[__theme]`.
 
 ### 2D canvas widget
 

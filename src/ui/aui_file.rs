@@ -44,6 +44,14 @@ struct AuiEntry {
     height:          Option<f32>,
     x:               Option<f32>,
     y:               Option<f32>,
+    text_color:      Option<[u8; 3]>,
+    font_size:       Option<f32>,
+    rounding:        Option<f32>,
+    border_color:    Option<[u8; 3]>,
+    border_width:    Option<f32>,
+    hover_color:     Option<[u8; 3]>,
+    fill_color:      Option<[u8; 3]>,
+    mono:            Option<bool>,
     /// Window-only background image fields (used in [__window] section).
     bg_image:        Option<String>,
     bg_image_mode:   Option<String>,
@@ -78,21 +86,40 @@ pub fn load_widget_config(path: &Path, id: &str, mut default: WidgetConfig) -> W
     if let Some(v) = entry.x      { default.x = Some(v); }
     if let Some(v) = entry.y      { default.y = Some(v); }
 
-    let widget_bg = entry.bg_color.as_deref().and_then(|v| match v {
+    default.style = entry_style(entry);
+    default
+}
+
+/// The style keys of one .aui entry.
+fn entry_style(entry: &AuiEntry) -> WidgetStyle {
+    let bg = entry.bg_color.as_deref().and_then(|v| match v {
         [r, g, b] | [r, g, b, _] => Some([*r, *g, *b]),
         _ => None,
     });
-    default.style = WidgetStyle {
-        color:    entry.color,
-        bg_color: widget_bg,
-        width:    entry.width,
-        height:   entry.height,
-        highlight_color: None,
-        visible:  None,
-        curve:    None,
-    };
+    WidgetStyle {
+        color:        entry.color,
+        bg_color:     bg,
+        width:        entry.width,
+        height:       entry.height,
+        text_color:   entry.text_color,
+        font_size:    entry.font_size,
+        rounding:     entry.rounding,
+        border_color: entry.border_color,
+        border_width: entry.border_width,
+        hover_color:  entry.hover_color,
+        fill_color:   entry.fill_color,
+        mono:         entry.mono,
+        ..Default::default()
+    }
+}
 
-    default
+/// The `[__theme]` section: style defaults for every widget in the window.
+pub fn load_theme(path: &Path) -> WidgetStyle {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| toml::from_str::<AuiFile>(&content).ok())
+        .and_then(|file| file.get("__theme").map(entry_style))
+        .unwrap_or_default()
 }
 
 /// Write widget defaults back to the `.aui` file for any widget not yet present.
@@ -111,8 +138,7 @@ pub fn save_widget_defaults(path: &Path, id: &str, config: &WidgetConfig) {
         bg_color: config.style.bg_color.map(|[r, g, b]| vec![r, g, b]),
         width: config.style.width, height: config.style.height,
         x: config.x, y: config.y,
-        default: None,
-        bg_image: None, bg_image_mode: None, bg_image_alpha: None,
+        ..Default::default()
     });
 
     let mut out = existing_str;
@@ -192,6 +218,16 @@ pub fn save_layout(
         if let Some(v) = entry.height   { out.push_str(&format!("height = {}\n", v)); }
         if let Some(v) = entry.x        { out.push_str(&format!("x = {}\n", v)); }
         if let Some(v) = entry.y        { out.push_str(&format!("y = {}\n", v)); }
+        if let Some(v) = entry.default  { out.push_str(&format!("default = {}\n", v)); }
+        let rgb = |c: [u8; 3]| format!("[{}, {}, {}]", c[0], c[1], c[2]);
+        if let Some(c) = entry.text_color   { out.push_str(&format!("text_color = {}\n", rgb(c))); }
+        if let Some(v) = entry.font_size    { out.push_str(&format!("font_size = {}\n", v)); }
+        if let Some(v) = entry.rounding     { out.push_str(&format!("rounding = {}\n", v)); }
+        if let Some(c) = entry.border_color { out.push_str(&format!("border_color = {}\n", rgb(c))); }
+        if let Some(v) = entry.border_width { out.push_str(&format!("border_width = {}\n", v)); }
+        if let Some(c) = entry.hover_color  { out.push_str(&format!("hover_color = {}\n", rgb(c))); }
+        if let Some(c) = entry.fill_color   { out.push_str(&format!("fill_color = {}\n", rgb(c))); }
+        if let Some(m) = entry.mono         { out.push_str(&format!("mono = {}\n", m)); }
         out.push('\n');
     }
 

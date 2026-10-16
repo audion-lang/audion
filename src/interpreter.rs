@@ -1117,6 +1117,17 @@ impl Interpreter {
         use crate::ui::{self, WidgetConfig, WidgetKind};
 
         match receiver {
+            // ui.theme("key", ...) — style default for every widget in this window
+            // (same keys as widget.style(); a widget's own style wins).
+            Value::UiContext(handle) if method == "theme" => {
+                let key = args.first()
+                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .ok_or_else(|| AudionError::RuntimeError { msg: "ui.theme() requires a key, e.g. ui.theme(\"rounding\", 6)".to_string() })?;
+                let nums: Vec<f64> = args.iter().skip(1).filter_map(|v| v.as_number()).collect();
+                handle.theme_script.lock().unwrap().set_key(&key, &nums)
+                    .map_err(|msg| AudionError::RuntimeError { msg })?;
+                Ok(Value::Nil)
+            }
             // ui.window("title", w, h)
             Value::UiContext(handle) if method == "window" => {
                 let title = args.first().and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
@@ -1249,6 +1260,7 @@ impl Interpreter {
                     config = aui_file::load_widget_config(&aui_path, &id, config);
                     let mut cfg = handle.config.lock().unwrap();
                     if cfg.aui_path.is_none() {
+                        *handle.theme_file.lock().unwrap() = aui_file::load_theme(&aui_path);
                         cfg.aui_path = Some(aui_path);
                     }
                 }
@@ -1883,44 +1895,6 @@ impl Interpreter {
                             .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
                             .unwrap_or("");
                         match key {
-                            "color" => {
-                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
-                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
-                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
-                                state.config.style.color = Some([r, g, b]);
-                            }
-                            "bg_color" => {
-                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
-                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
-                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(30.0) as u8;
-                                state.config.style.bg_color = Some([r, g, b]);
-                            }
-                            "highlight_color" => {
-                                let r = args.get(1).and_then(|v| v.as_number()).unwrap_or(255.0) as u8;
-                                let g = args.get(2).and_then(|v| v.as_number()).unwrap_or(230.0) as u8;
-                                let b = args.get(3).and_then(|v| v.as_number()).unwrap_or(60.0) as u8;
-                                state.config.style.highlight_color = Some([r, g, b]);
-                            }
-                            "width" => {
-                                if let Some(w) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.style.width = Some(w as f32);
-                                }
-                            }
-                            "height" => {
-                                if let Some(h) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.style.height = Some(h as f32);
-                                }
-                            }
-                            "visible" => {
-                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.style.visible = Some(v != 0.0);
-                                }
-                            }
-                            "curve" => {
-                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.style.curve = Some(v);
-                                }
-                            }
                             // Absolute placement from script — same x/y field the
                             // drag-to-arrange edit mode (Ctrl+E) and .aui file already use,
                             // just settable up front so a script can lay out a grid instead
@@ -1939,7 +1913,11 @@ impl Interpreter {
                                     state.config.y = Some(v as f32);
                                 }
                             }
-                            _ => {}
+                            _ => {
+                                let nums: Vec<f64> = args.iter().skip(1).filter_map(|v| v.as_number()).collect();
+                                state.config.style.set_key(key, &nums)
+                                    .map_err(|msg| AudionError::RuntimeError { msg })?;
+                            }
                         }
                     }
                     _ => {}

@@ -206,7 +206,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
-    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks",
+    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks", "buffer_beats",
     "buffer_stream_open", "buffer_stream_close",
     "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
@@ -372,6 +372,7 @@ pub fn call_builtin(
         "buffer_alloc" => builtin_buffer_alloc(args, osc),
         "buffer_query" => builtin_buffer_query(args, osc),
         "buffer_peaks" => builtin_buffer_peaks(args, osc),
+        "buffer_beats" => builtin_buffer_beats(args, osc),
         "buffer_read" => builtin_buffer_read(args, osc),
         "buffer_stream_open" => builtin_buffer_stream_open(args, osc),
         "buffer_stream_close" => builtin_buffer_stream_close(args, osc),
@@ -1683,9 +1684,29 @@ fn builtin_buffer_query(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
     }
 }
 
+// Have scsynth write a buffer to a temp float WAV (so any format scsynth can
+// load works), read it back, delete the temp file.
+fn read_buffer(fn_name: &str, buf_id: i32, osc: &Arc<OscClient>) -> Result<crate::sampler::FloatWav> {
+    let tmp = std::env::temp_dir().join(format!("audion_buf_{}_{}.wav", std::process::id(), buf_id));
+    if !osc.buffer_write_float(buf_id, &tmp.to_string_lossy()) {
+        return Err(AudionError::RuntimeError {
+            msg: format!("{}(): scsynth did not write buffer {}", fn_name, buf_id),
+        });
+    }
+    let wav = crate::sampler::read_float_wav(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    wav.map_err(|e| AudionError::RuntimeError { msg: format!("{}(): {}", fn_name, e) })
+}
+
+fn number_array(values: impl IntoIterator<Item = f64>) -> Value {
+    let mut arr = AudionArray::new();
+    for v in values {
+        arr.push_auto(Value::Number(v));
+    }
+    Value::Array(Arc::new(Mutex::new(arr)))
+}
+
 // buffer_peaks(buf_id, n) → array of n peak values (0..1+), for drawing a waveform.
-// scsynth writes the buffer to a temp float WAV (so any format scsynth can load
-// works), then we read it back and reduce it to n slices.
 fn builtin_buffer_peaks(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
     if args.len() < 2 {
         return Err(AudionError::RuntimeError {
@@ -1694,21 +1715,27 @@ fn builtin_buffer_peaks(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
     }
     let buf_id = require_number("buffer_peaks", &args[0])? as i32;
     let n = require_number("buffer_peaks", &args[1])?.max(0.0) as usize;
-    let tmp = std::env::temp_dir().join(format!("audion_peaks_{}_{}.wav", std::process::id(), buf_id));
-    let tmp_str = tmp.to_string_lossy().to_string();
-    if !osc.buffer_write_float(buf_id, &tmp_str) {
+    let wav = read_buffer("buffer_peaks", buf_id, osc)?;
+    Ok(number_array(crate::sampler::wav_peaks(&wav, n).into_iter().map(|p| p as f64)))
+}
+
+// buffer_beats(buf_id) → ["onsets" => [frame, ...], "beats" => n, "bpm" => x, "confidence" => c]
+// Hits in the buffer, and how many beats it spans (0 when it isn't beaty).
+fn builtin_buffer_beats(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
+    if args.is_empty() {
         return Err(AudionError::RuntimeError {
-            msg: format!("buffer_peaks(): scsynth did not write buffer {}", buf_id),
+            msg: "buffer_beats() requires a buffer ID".to_string(),
         });
     }
-    let peaks = crate::sampler::float_wav_peaks(&tmp, n);
-    let _ = std::fs::remove_file(&tmp);
-    let peaks = peaks.map_err(|e| AudionError::RuntimeError { msg: format!("buffer_peaks(): {}", e) })?;
-    let mut arr = AudionArray::new();
-    for p in peaks {
-        arr.push_auto(Value::Number(p as f64));
-    }
-    Ok(Value::Array(Arc::new(Mutex::new(arr))))
+    let buf_id = require_number("buffer_beats", &args[0])? as i32;
+    let wav = read_buffer("buffer_beats", buf_id, osc)?;
+    let b = crate::sampler::detect_beats(&wav.mono(), wav.sample_rate);
+    let mut out = AudionArray::new();
+    out.set(Value::String("onsets".into()), number_array(b.onsets.iter().map(|&f| f as f64)));
+    out.set(Value::String("beats".into()), Value::Number(b.beats as f64));
+    out.set(Value::String("bpm".into()), Value::Number(b.bpm));
+    out.set(Value::String("confidence".into()), Value::Number(b.confidence));
+    Ok(Value::Array(Arc::new(Mutex::new(out))))
 }
 
 // buffer_alloc(num_frames, num_channels) → buffer ID (number)

@@ -41,7 +41,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "lpf", "hpf", "bpf", "rlpf", "rhpf", "resonz", "moog_ff", "brf", "formlet",
     "lag", "leak_dc", "ringz", "one_pole", "two_pole", "ramp", "mid_eq", "slew",
     // Envelopes
-    "env", "env_perc", "line", "xline", "decay", "linen",
+    "env", "env_perc", "adsr", "line", "xline", "decay", "linen",
     // LFOs
     "lfo_sine", "lfo_saw", "lfo_tri", "lfo_pulse", "lfo_noise", "lfo_step",
     // Effects
@@ -61,7 +61,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "in", "out", "pan", "pan4", "splay", "balance2",
     "local_in", "local_out",
     // Buffer
-    "PlayBuf", "buf_rd", "phasor", "buf_wr", "record_buf", "local_buf", "buf_rate_scale",
+    "PlayBuf", "buf_rd", "warp", "phasor", "buf_wr", "record_buf", "local_buf", "buf_rate_scale",
     // Granular
     "Dust", "Impulse", "TRand", "GrainBuf", "GrainSin", "GrainFM", "grains_t",
     // Signal processing
@@ -814,11 +814,18 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let sus_is_zero = matches!(args.get(2), Some(Input::Constant(v)) if *v == 0.0);
             let rel = a(3, 0.3);
             if sus_is_zero {
-                vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, konst(-4.0)), gate, 2.0)]
+                vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, konst(-4.0)), gate, 2.0, Rate::Control)]
             } else {
                 let sus = a(2, 1.0);
-                vec![emit_env_gen(ctx, EnvShape::Asr(atk, sus, rel), gate, 2.0)]
+                vec![emit_env_gen(ctx, EnvShape::Asr(atk, sus, rel), gate, 2.0, Rate::Control)]
             }
+        }
+        // Retriggerable ADSR: restarts every time `gate` goes from ≤0 to >0,
+        // never frees the synth. Audio rate so short attacks stay clean.
+        "adsr" => {
+            let gate = a(0, 1.0);
+            let shape = EnvShape::Adsr(a(1, 0.01), a(2, 0.3), a(3, 0.5), a(4, 1.0));
+            vec![emit_env_gen(ctx, shape, gate, 0.0, Rate::Audio)]
         }
         "line" => {
             let start = a(0, 0.0);
@@ -853,7 +860,7 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let rel = a(2, 0.3);
             let curve = a(3, -4.0);
             let done_action = args.get(4).copied().unwrap_or_else(|| konst(2.0));
-            vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, curve), gate, done_action_f(done_action))]
+            vec![emit_env_gen(ctx, EnvShape::Perc(atk, rel, curve), gate, done_action_f(done_action), Rate::Control)]
         }
         "linen" => {
             let gate = a(0, 1.0);
@@ -1318,6 +1325,21 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let interp = a(3, 4.0);
             ctx.node("BufRd", Rate::Audio, vec![bufnum, phase, konst(1.0), interp], numchans, 0)
         }
+        // Granular playback: warp(channels, buf, pointer 0..1, freq_scale,
+        // window_secs, overlaps, rand_ratio). `channels` and `overlaps` must be
+        // numbers (fixed when the synth starts); channels = the buffer's channels.
+        "warp" => {
+            let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
+            let bufnum = a(1, 0.0);
+            let pointer = a(2, 0.0);
+            let freq_scale = a(3, 1.0);
+            let window = a(4, 0.2);
+            let overlaps = a(5, 8.0);
+            let rand_ratio = a(6, 0.0);
+            // Warp1 inputs: bufnum, pointer, freqScale, windowSize, envbufnum (-1 = Hann), overlaps, windowRandRatio, interp
+            ctx.node("Warp1", Rate::Audio,
+                vec![bufnum, pointer, freq_scale, window, konst(-1.0), overlaps, rand_ratio, konst(4.0)], numchans, 0)
+        }
         "PlayBuf" => {
             let numchans = args.first().and_then(|v| if let Input::Constant(c) = v { Some(*c as u32) } else { None }).unwrap_or(2);
             let bufnum = a(1, 0.0);
@@ -1449,11 +1471,13 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
 /// (SCClassLibrary/Common/Audio/Env.sc):
 ///   Env.perc(atk, rel, level=1, curve=-4)  -> levels [0, level, 0], no release node
 ///   Env.asr(atk, susLevel, rel, curve=-4)  -> levels [0, susLevel, 0], releaseNode=1
+///   Env.adsr(atk, dec, susLevel, rel, curve=-4) -> levels [0, 1, susLevel, 0], releaseNode=2
 /// (`sus` in `env()`/Env.asr is a sustain LEVEL, not a hold duration — the
 /// envelope holds indefinitely at that level until `gate` drops.)
 enum EnvShape {
     Perc(Input, Input, Input), // atk, rel, curve
     Asr(Input, Input, Input),  // atk, susLevel, rel
+    Adsr(Input, Input, Input, Input), // atk, dec, susLevel, rel
 }
 
 fn done_action_f(input: Input) -> f32 {
@@ -1472,10 +1496,13 @@ fn done_action_f(input: Input) -> f32 {
 /// doesn't expose them). A plain numeric curve (as opposed to a named
 /// shape like \sine) always encodes as shapeCode 5 with the number itself
 /// as curveValue.
-fn emit_env_gen(ctx: &mut BuildCtx, shape: EnvShape, gate: Input, done_action: f32) -> Input {
+fn emit_env_gen(ctx: &mut BuildCtx, shape: EnvShape, gate: Input, done_action: f32, rate: Rate) -> Input {
     let (seg_levels, times, curve, release_node): (Vec<Input>, Vec<Input>, Input, f32) = match shape {
         EnvShape::Perc(atk, rel, curve) => (vec![konst(1.0), konst(0.0)], vec![atk, rel], curve, -99.0),
         EnvShape::Asr(atk, sus_level, rel) => (vec![sus_level, konst(0.0)], vec![atk, rel], konst(-4.0), 1.0),
+        EnvShape::Adsr(atk, dec, sus_level, rel) => (
+            vec![konst(1.0), sus_level, konst(0.0)], vec![atk, dec, rel], konst(-4.0), 2.0,
+        ),
     };
 
     let n = times.len();
@@ -1496,7 +1523,7 @@ fn emit_env_gen(ctx: &mut BuildCtx, shape: EnvShape, gate: Input, done_action: f
         inputs.push(konst(5.0)); // shapeCode 5 = numeric curve
         inputs.push(curve);          // curveValue
     }
-    ctx.node1("EnvGen", Rate::Control, inputs, 0)
+    ctx.node1("EnvGen", rate, inputs, 0)
 }
 
 /// `sig.linlin(inMin, inMax, outMin, outMax)` lowered to `MulAdd`:

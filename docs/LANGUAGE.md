@@ -1641,7 +1641,7 @@ Listen for incoming MIDI messages and respond with custom code. Perfect for buil
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `midi_listen(port, callback)` | Listen for MIDI input on port, call callback(event) for each message. **Blocks** until shutdown - wrap in a `thread` block | nil |
+| `midi_listen(port, callback)` | Listen for MIDI input on port (an index, or a name: the first input containing it, e.g. `"Launchpad"`), call callback(event) for each message. **Blocks** until shutdown - wrap in a `thread` block | nil |
 | `midi_bpm_sync(port, enable)` | Auto-sync BPM to incoming MIDI clock (24 PPQN). `true` = enable, `false` = disable and restore previous BPM | bool |
 
 #### Event Structure

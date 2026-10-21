@@ -3069,7 +3069,6 @@ fn builtin_midi_listen(
         });
     }
 
-    let port = require_number("midi_listen", &args[0])? as usize;
     let callback = args[1].clone();
 
     // Verify callback is a function
@@ -3086,9 +3085,18 @@ fn builtin_midi_listen(
     })?;
 
     let in_ports = midi_in.ports();
+    let names: Vec<String> = in_ports.iter().map(|p| midi_in.port_name(p).unwrap_or_default()).collect();
+    // port: index, or a name (first input whose name contains it, case-insensitive)
+    let port = match &args[0] {
+        Value::String(want) => names.iter().position(|n| n.to_lowercase().contains(&want.to_lowercase()))
+            .ok_or_else(|| AudionError::RuntimeError {
+                msg: format!("MIDI input '{}' not found (available: {})", want, names.join(", ")),
+            })?,
+        other => require_number("midi_listen", other)? as usize,
+    };
     if port >= in_ports.len() {
         return Err(AudionError::RuntimeError {
-            msg: format!("MIDI input port {} not found (available: {})", port, in_ports.len()),
+            msg: format!("MIDI input port {} not found (available: {})", port, names.join(", ")),
         });
     }
 

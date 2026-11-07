@@ -18,3 +18,6 @@ HARMONY.md
 graphics/logo.af~lock~
 
 *__mlr.json
+
+# compiled synthdef cache
+*.adc

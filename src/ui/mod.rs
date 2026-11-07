@@ -158,6 +158,13 @@ pub struct Canvas2dData {
     pub held: [bool; 2],
     /// Presses and releases since the script last called `events()`.
     pub events: Vec<CanvasEvent>,
+    /// File dialog the script asked for with `pick_file(exts..)`; the UI
+    /// thread opens it (macOS dialogs must run there) and fills `file_result`.
+    pub file_request: Option<Vec<String>>,
+    /// Dialog outcome for `picked()`: a path, or "" if cancelled.
+    pub file_result: Option<String>,
+    /// The canvas's own widget entry, for `style()` (x/y, mono, visible...).
+    pub widget: std::sync::Weak<Mutex<WidgetState>>,
 }
 
 /// One mouse press/release on a canvas (in canvas pixels), or a key press.
@@ -373,6 +380,8 @@ pub struct PianoData {
     /// `key_released` events, which can repeat or land on a frame this
     /// widget doesn't observe (audible as missed/delayed notes).
     pub kb_held: std::collections::HashSet<u8>,
+    /// Keys lit by `piano.flash(note, delay_ms)`: note -> when its glow starts.
+    pub flashes: std::collections::HashMap<u8, std::time::Instant>,
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +476,7 @@ impl Default for PianoData {
             octaves:       2,
             start_note:    60,  // C4
             kb_held:       Default::default(),
+            flashes:       Default::default(),
         }
     }
 }
@@ -645,6 +655,7 @@ pub fn create_canvas2d(
         highlighted: Vec::new(),
     };
     let state_arc = Arc::new(Mutex::new(state));
+    data_arc.lock().unwrap().widget = Arc::downgrade(&state_arc);
     widgets.insert(id.to_string(), state_arc);
     drop(widgets);
     handle.widget_order.lock().unwrap().push(id.to_string());

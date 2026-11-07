@@ -1855,6 +1855,24 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
 
+            // piano.flash(note) / piano.flash(note, delay_ms) — light a key for a
+            // moment (shows a note that plays without being pressed). The delay
+            // lets a lookahead thread light it when the note actually sounds.
+            Value::WidgetRef(state_arc) if method == "flash" => {
+                let state = state_arc.lock().unwrap();
+                if let crate::ui::WidgetValue::Piano(piano_arc) = &state.value {
+                    let note = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0);
+                    let delay = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0).max(0.0);
+                    if (0.0..=127.0).contains(&note) {
+                        let at = std::time::Instant::now() + std::time::Duration::from_secs_f64(delay / 1000.0);
+                        piano_arc.lock().unwrap().flashes.insert(note as u8, at);
+                    }
+                    Ok(Value::Nil)
+                } else {
+                    Err(AudionError::RuntimeError { msg: "widget.flash() is only valid on a piano() widget".to_string() })
+                }
+            }
+
             // widget.min() / widget.max() with no argument act as getters
             // (return the current bound) instead of setters.
             Value::WidgetRef(state_arc) if args.is_empty() && matches!(method, "min" | "max") => {
@@ -1890,36 +1908,7 @@ impl Interpreter {
                             state.config.style.height = Some(h as f32);
                         }
                     }
-                    "style" => {
-                        let key = args.first()
-                            .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
-                            .unwrap_or("");
-                        match key {
-                            // Absolute placement from script — same x/y field the
-                            // drag-to-arrange edit mode (Ctrl+E) and .aui file already use,
-                            // just settable up front so a script can lay out a grid instead
-                            // of the default vertical flow. Runs after the .aui file is
-                            // loaded for this widget, so it overrides any saved position —
-                            // a script-positioned widget can still be dragged in edit mode,
-                            // but that new position won't stick past the next run unless
-                            // the script's own x/y call is removed or updated to match.
-                            "x" => {
-                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.x = Some(v as f32);
-                                }
-                            }
-                            "y" => {
-                                if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
-                                    state.config.y = Some(v as f32);
-                                }
-                            }
-                            _ => {
-                                let nums: Vec<f64> = args.iter().skip(1).filter_map(|v| v.as_number()).collect();
-                                state.config.style.set_key(key, &nums)
-                                    .map_err(|msg| AudionError::RuntimeError { msg })?;
-                            }
-                        }
-                    }
+                    "style" => apply_style(&mut state, &args)?,
                     _ => {}
                 }
                 Ok(Value::Nil)
@@ -1928,6 +1917,15 @@ impl Interpreter {
             // canvas2d.clear() / .fill(r,g,b) / .rect(...) / .circle(...) / .line(...) / .text(...)
             Value::Canvas2dRef(data_arc) => {
                 use crate::ui::DrawCmd;
+                // canvas.style("x", 10) etc. — same keys as any widget. The data
+                // lock is dropped first: the UI thread locks state, then data.
+                if method == "style" {
+                    let widget = data_arc.lock().unwrap().widget.upgrade();
+                    if let Some(state_arc) = widget {
+                        apply_style(&mut state_arc.lock().unwrap(), &args)?;
+                    }
+                    return Ok(Value::Nil);
+                }
                 let mut data = data_arc.lock().unwrap();
                 match method {
                     "clear" => {
@@ -2027,8 +2025,18 @@ impl Interpreter {
                         }
                         return Ok(Value::Array(Arc::new(Mutex::new(list))));
                     }
+                    // pick_file("wav", "aif") opens the system file dialog on the UI
+                    // thread; picked() → nil while it's open, then the path ("" = cancelled), once.
+                    "pick_file" => {
+                        data.file_request = Some(args.iter().filter_map(|v| match v {
+                            Value::String(s) => Some(s.clone()),
+                            _ => None,
+                        }).collect());
+                        data.file_result = None;
+                    }
+                    "picked" => return Ok(data.file_result.take().map(Value::String).unwrap_or(Value::Nil)),
                     _ => return Err(AudionError::RuntimeError {
-                        msg: format!("unknown canvas method '{}' — available: clear, fill, rect, rect_outline, circle, circle_outline, line, text, size, mouse_x, mouse_y, mouse_down, mouse_right_down, events", method),
+                        msg: format!("unknown canvas method '{}' — available: clear, fill, rect, rect_outline, circle, circle_outline, line, text, size, mouse_x, mouse_y, mouse_down, mouse_right_down, events, pick_file, picked, style", method),
                     }),
                 }
                 Ok(Value::Nil)
@@ -2795,3 +2803,35 @@ impl Interpreter {
     }
 }
 
+/// `widget.style(key, ...)` — shared by widgets and canvases.
+fn apply_style(state: &mut crate::ui::WidgetState, args: &[Value]) -> Result<()> {
+    let key = args.first()
+        .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+        .unwrap_or("");
+    match key {
+        // Absolute placement from script — same x/y field the
+        // drag-to-arrange edit mode (Ctrl+E) and .aui file already use,
+        // just settable up front so a script can lay out a grid instead
+        // of the default vertical flow. Runs after the .aui file is
+        // loaded for this widget, so it overrides any saved position —
+        // a script-positioned widget can still be dragged in edit mode,
+        // but that new position won't stick past the next run unless
+        // the script's own x/y call is removed or updated to match.
+        "x" => {
+            if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                state.config.x = Some(v as f32);
+            }
+        }
+        "y" => {
+            if let Some(v) = args.get(1).and_then(|v| v.as_number()) {
+                state.config.y = Some(v as f32);
+            }
+        }
+        _ => {
+            let nums: Vec<f64> = args.iter().skip(1).filter_map(|v| v.as_number()).collect();
+            state.config.style.set_key(key, &nums)
+                .map_err(|msg| AudionError::RuntimeError { msg })?;
+        }
+    }
+    Ok(())
+}

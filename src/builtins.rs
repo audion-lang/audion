@@ -199,6 +199,7 @@ fn remove_file_handle(id: u64) {
 /// Used by Interpreter::new() for registration and available for introspection.
 pub const BUILTIN_NAMES: &[&str] = &[
     "print", "bpm", "wait", "wait_ms", "latency", "sleep_ms",
+    "beat_now", "beat_cursor", "beat_cursor_set",
     "synth", "free", "set",
     "rand", "seed", "array_rand", "time",
     "count", "push", "pop", "keys", "has_key", "remove",
@@ -206,7 +207,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "file_open", "file_line", "file_read_chunk", "file_write_handle", "file_seek", "file_tell", "file_close",
     "dir_scan", "dir_exists", "dir_create", "dir_delete",
     "json_encode", "json_decode",
-    "buffer_load", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks", "buffer_beats", "buffer_set",
+    "buffer_load", "buffer_load_stereo", "buffer_free", "buffer_alloc", "buffer_read", "buffer_query", "buffer_peaks", "buffer_beats", "buffer_set",
     "buffer_stream_open", "buffer_stream_close",
     "record_start", "record_stop", "record_path",
     "net_connect", "net_listen", "net_accept",
@@ -334,6 +335,13 @@ pub fn call_builtin(
         "wait" => builtin_wait(args, clock),
         "wait_ms" => builtin_wait_ms(args, clock),
         "latency" => builtin_latency(args, clock),
+        "beat_now" => Ok(Value::Number(clock.now_beats())),
+        "beat_cursor" => Ok(Value::Number(clock.logical_beat())),
+        "beat_cursor_set" => {
+            let beat = require_number("beat_cursor_set", args.first().unwrap_or(&Value::Nil))?;
+            clock.seed_logical_beat(beat);
+            Ok(Value::Nil)
+        }
         "sleep_ms" => builtin_sleep_ms(args),
         "synth" => builtin_synth(args, named_args, osc),
         "free" => builtin_free(args, osc),
@@ -368,6 +376,7 @@ pub fn call_builtin(
         "json_encode" => builtin_json_encode(args),
         "json_decode" => builtin_json_decode(args),
         "buffer_load" => builtin_buffer_load(args, osc),
+        "buffer_load_stereo" => builtin_buffer_load_stereo(args, osc),
         "buffer_free" => builtin_buffer_free(args, osc),
         "buffer_alloc" => builtin_buffer_alloc(args, osc),
         "buffer_query" => builtin_buffer_query(args, osc),
@@ -1649,6 +1658,28 @@ fn builtin_buffer_load(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
     };
     let buf_id = osc.buffer_alloc_read(&abs_path);
     Ok(Value::Number(buf_id as f64))
+}
+
+// buffer_load_stereo("path.wav") → buffer ID (number)
+// Like buffer_load, but the buffer always has 2 channels, so one buf_rd(2, ...)
+// define plays any file: mono is doubled, more than 2 channels keep the first 2.
+fn builtin_buffer_load_stereo(args: &[Value], osc: &Arc<OscClient>) -> Result<Value> {
+    let id = builtin_buffer_load(args, osc)?;
+    let buf_id = require_number("buffer_load_stereo", &id)? as i32;
+    let path = require_string("buffer_load_stereo", &args[0])?;
+    let abs_path = if std::path::Path::new(&path).is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(&path).to_string_lossy().to_string())
+            .unwrap_or(path)
+    };
+    match osc.buffer_query(buf_id) {
+        Some((_, 1, _)) => osc.buffer_read_channels(buf_id, &abs_path, &[0, 0]),
+        Some((_, chans, _)) if chans > 2 => osc.buffer_read_channels(buf_id, &abs_path, &[0, 1]),
+        _ => {}
+    }
+    Ok(id)
 }
 
 // buffer_free(buf_id) → nil

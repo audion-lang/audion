@@ -259,6 +259,40 @@ fn test_with_envelope() {
 }
 
 #[test]
+fn test_env_timed_ends_and_frees() {
+    let body = UGenExpr::UGenCall {
+        name: "out".to_string(),
+        args: vec![
+            UGenExpr::Number(0.0),
+            UGenExpr::UGenCall {
+                name: "env_timed".to_string(),
+                args: vec![
+                    UGenExpr::Number(0.25),
+                    UGenExpr::Number(0.5),
+                    UGenExpr::Number(0.75),
+                    UGenExpr::Number(3.0),
+                    UGenExpr::Number(7.0),
+                ],
+                named_args: na(),
+            },
+        ],
+        named_args: na(),
+    };
+    let bytes = build_synthdef("test_env_timed", &[], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    let env_gen = def.ugens.iter().find(|u| u.name == "EnvGen").unwrap();
+    assert_eq!(env_gen.rate, 2, "env_timed should be audio-rate");
+    // 9 fixed inputs + 4 segments * 4 = 25
+    assert_eq!(env_gen.num_inputs, 25);
+    for time in [0.25, 0.5, 0.75, 3.0, 7.0] {
+        assert!(def.constants.contains(&time), "missing {time}");
+    }
+    // doneAction 2 frees the voice; no release node, so it never waits for a gate
+    assert!(def.constants.contains(&2.0));
+    assert!(def.constants.contains(&-99.0));
+}
+
+#[test]
 fn test_param_defaults() {
     let body = UGenExpr::UGenCall {
         name: "out".to_string(),
@@ -795,5 +829,27 @@ fn test_gverb_channels() {
         assert_eq!(def.ugens.iter().find(|u| u.name == "GVerb").unwrap().num_outputs, 2, "{}", name);
         let out = def.ugens.iter().find(|u| u.name == "Out").unwrap();
         assert_eq!(out.num_inputs as usize, 1 + chans, "{}: Out(bus, {} channels)", name, chans);
+    }
+}
+
+#[test]
+fn test_curve_k_runs_at_control_rate() {
+    let body = UGenExpr::UGenCall {
+        name: "out".to_string(),
+        args: vec![
+            UGenExpr::Number(0.0),
+            UGenExpr::UGenCall {
+                name: "curve_k".to_string(),
+                args: vec![UGenExpr::Number(3.0), UGenExpr::Number(2.0), UGenExpr::Number(1.0)],
+                named_args: na(),
+            },
+        ],
+        named_args: na(),
+    };
+    let bytes = build_synthdef("test_curve_k", &[], &body, &[]).unwrap();
+    let def = parse_synthdef(&bytes);
+    for name in ["Sweep", "Wrap", "Clip", "BufRd"] {
+        let u = def.ugens.iter().find(|u| u.name == name).unwrap();
+        assert_eq!(u.rate, 1, "{} should be control-rate", name);
     }
 }

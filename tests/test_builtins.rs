@@ -741,3 +741,14 @@ fn test_bpm_through_link() {
         _ => panic!("expected number"),
     }
 }
+
+#[test]
+fn test_beat_cursor_set_moves_this_threads_clock() {
+    // a thread's cursor starts at the real clock; setting it is what a paused
+    // sequencer thread does to jump forward on resume
+    let val = eval("let now = beat_now(); beat_cursor_set(now + 8); beat_cursor() - now;");
+    match val {
+        Value::Number(n) => assert!((n - 8.0).abs() < 1e-9, "cursor should be now + 8, got now + {}", n),
+        _ => panic!("expected number"),
+    }
+}

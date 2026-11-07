@@ -249,6 +249,21 @@ impl OscClient {
         buf_id
     }
 
+    /// Re-read a sound file into an existing buffer, keeping only `channels`
+    /// (a channel may repeat: [0, 0] makes a stereo buffer from a mono file).
+    /// Blocks until scsynth confirms, like `buffer_alloc_read`.
+    pub fn buffer_read_channels(&self, buf_id: i32, path: &str, channels: &[i32]) {
+        let mut args = vec![
+            OscType::Int(buf_id),
+            OscType::String(path.to_string()),
+            OscType::Int(0), // start frame
+            OscType::Int(0), // num frames (0 = entire file)
+        ];
+        args.extend(channels.iter().map(|c| OscType::Int(*c)));
+        self.send("/b_allocReadChannel", args);
+        self.wait_done("/b_allocReadChannel", std::time::Duration::from_secs(10));
+    }
+
     /// Write a whole buffer to `path` as a 32-bit float WAV and wait (up to
     /// 10s) for scsynth's `/done /b_write`. Returns false on timeout.
     pub fn buffer_write_float(&self, buf_id: i32, path: &str) -> bool {

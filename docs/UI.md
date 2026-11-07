@@ -160,6 +160,18 @@ text_color = [220, 220, 230]
 
 Priority: a widget's own style (`.style()` or its `.aui` section) → `ui.theme()` → `[__theme]`.
 
+### Piano widget
+
+```au
+let p = ui.widgets.piano("id", octaves, start_note)   // e.g. 3, 48 = C3..B5
+p.value()                  // notes held right now, [60, 64, ...]
+p.keyboard(true)           // play it from the computer keyboard (asdf.., z/x octave)
+p.hold(true)               // click toggles a note instead of holding it
+p.flash(note)              // light a key for a moment (a note that played)
+p.flash(note, delay_ms)    // ...starting delay_ms from now
+p.style("highlight_color", 255, 190, 60)   // the flash color
+```
+
 ### 2D canvas widget
 
 ```au
@@ -176,6 +188,7 @@ c.line(x1, y1, x2, y2, r, g, b)        // line (default width 1)
 c.line(x1, y1, x2, y2, r, g, b, w)     // line with explicit width
 c.text(x, y, "string", size, r, g, b)  // text at position
 c.size(w, h)                            // resize the canvas
+c.style("x", 0); c.style("mono", 1)     // same style keys as any widget (x/y, mono, visible...)
 
 // Mouse (canvas pixels):
 c.mouse_x(); c.mouse_y()                // pointer position over the canvas
@@ -185,6 +198,10 @@ c.events()                              // presses/releases since the last call:
                                         // [{down, button, x, y, key, cmd, shift}, ...]
                                         // button 0 = left, 1 = right; a key press has
                                         // key = "Z", "Space", ... (nil for mouse), cmd = Cmd/Ctrl held
+
+// File dialog (opened by the UI thread, so poll for the answer):
+c.pick_file("wav", "aif")               // open the system file dialog, filtered by extension
+c.picked()                              // nil while open, then the path once ("" = cancelled)
 ```
 
 Read clicks with `events()` rather than polling `mouse_down()`, a quick click can

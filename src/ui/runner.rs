@@ -1759,11 +1759,30 @@ fn render_piano(
         .unwrap_or(egui::Color32::from_gray(18));
     let pressed_black = pressed_color.gamma_multiply(0.75);
     let border_color  = white_key_color.gamma_multiply(0.35);
+    let flash_color = style.highlight_color
+        .map(|[r,g,b]| egui::Color32::from_rgb(r,g,b))
+        .unwrap_or(egui::Color32::from_rgb(255, 190, 60));
+
+    // flash(): each lit key glows for FLASH_MS after its start time, fading out
+    const FLASH_MS: f32 = 180.0;
+    let now = std::time::Instant::now();
+    piano.flashes.retain(|_, at| now < *at || now.duration_since(*at).as_secs_f32() * 1000.0 < FLASH_MS);
+    let glow = |note: &u8| -> Option<f32> {
+        piano.flashes.get(note).and_then(|at| {
+            if now < *at { return None; }
+            Some(1.0 - now.duration_since(*at).as_secs_f32() * 1000.0 / FLASH_MS)
+        })
+    };
+    let lerp = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
+        let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+        egui::Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+    };
 
     // --- Draw white keys ---
     for (note, kr) in &white_keys {
         let active = piano.active_notes.contains(note);
-        let fill = if active { pressed_color } else { white_key_color };
+        let mut fill = if active { pressed_color } else { white_key_color };
+        if let Some(t) = glow(note) { fill = lerp(fill, flash_color, t); }
         painter.rect_filled(*kr, 2.0, fill);
         painter.rect_stroke(*kr, 2.0, egui::Stroke::new(1.0, border_color), egui::StrokeKind::Middle);
         // Dot on every C for orientation
@@ -1780,7 +1799,8 @@ fn render_piano(
     // --- Draw black keys (on top) ---
     for (note, kr) in &black_keys {
         let active = piano.active_notes.contains(note);
-        let fill = if active { pressed_black } else { black_key_color };
+        let mut fill = if active { pressed_black } else { black_key_color };
+        if let Some(t) = glow(note) { fill = lerp(fill, flash_color, t); }
         painter.rect_filled(*kr, 2.0, fill);
         if active {
             painter.rect_stroke(*kr, 2.0, egui::Stroke::new(1.5, pressed_color), egui::StrokeKind::Middle);
@@ -1804,6 +1824,17 @@ fn render_canvas2d(ui: &mut egui::Ui, data_arc: &std::sync::Arc<std::sync::Mutex
     };
 
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::click_and_drag());
+    // A file dialog asked for by the script. Not opened under the lock: the
+    // dialog blocks, and the script thread keeps drawing meanwhile.
+    let request = data_arc.lock().unwrap().file_request.take();
+    if let Some(exts) = request {
+        let mut dialog = rfd::FileDialog::new();
+        if !exts.is_empty() {
+            dialog = dialog.add_filter(exts.join(", "), &exts);
+        }
+        let path = dialog.pick_file().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        data_arc.lock().unwrap().file_result = Some(path);
+    }
     {
         let (pos, pressed, released) = ui.input(|i| (
             i.pointer.interact_pos(),

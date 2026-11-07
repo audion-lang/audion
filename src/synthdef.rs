@@ -41,7 +41,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "lpf", "hpf", "bpf", "rlpf", "rhpf", "resonz", "moog_ff", "brf", "formlet",
     "lag", "leak_dc", "ringz", "one_pole", "two_pole", "ramp", "mid_eq", "slew",
     // Envelopes
-    "env", "env_perc", "adsr", "line", "xline", "decay", "linen",
+    "env", "env_perc", "env_timed", "adsr", "line", "xline", "decay", "linen",
     // LFOs
     "lfo_sine", "lfo_saw", "lfo_tri", "lfo_pulse", "lfo_noise", "lfo_step",
     // Effects
@@ -61,7 +61,7 @@ pub const UGEN_NAMES: &[&str] = &[
     "in", "out", "pan", "pan4", "splay", "balance2",
     "local_in", "local_out",
     // Buffer
-    "PlayBuf", "buf_rd", "warp", "phasor", "buf_wr", "record_buf", "local_buf", "buf_rate_scale",
+    "PlayBuf", "buf_rd", "curve_k", "warp", "phasor", "buf_wr", "record_buf", "local_buf", "buf_rate_scale",
     // Granular
     "Dust", "Impulse", "TRand", "GrainBuf", "GrainSin", "GrainFM", "grains_t",
     // Signal processing
@@ -827,6 +827,13 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let shape = EnvShape::Adsr(a(1, 0.01), a(2, 0.3), a(3, 0.5), a(4, 1.0));
             vec![emit_env_gen(ctx, shape, gate, 0.0, Rate::Audio)]
         }
+        // Runs once with no gate: attack, decay to `sus`, hold there for `hold`
+        // seconds, release. `done` (default 2 = free the synth) must be a number.
+        "env_timed" => {
+            let shape = EnvShape::Timed(a(0, 0.01), a(1, 0.1), a(2, 1.0), a(3, 1.0), a(4, 0.3));
+            let done = args.get(5).copied().unwrap_or_else(|| konst(2.0));
+            vec![emit_env_gen(ctx, shape, konst(1.0), done_action_f(done), Rate::Audio)]
+        }
         "line" => {
             let start = a(0, 0.0);
             let end = a(1, 1.0);
@@ -1333,6 +1340,24 @@ fn ugen_call_scalar(ctx: &mut BuildCtx, name: &str, args: &[Input]) -> Vec<Input
             let interp = a(3, 4.0);
             ctx.node("BufRd", Rate::Audio, vec![bufnum, phase, konst(1.0), interp], numchans, 0)
         }
+        // A drawn curve at control rate: curve_k(buf, passes per second, once,
+        // size). once = 0 loops it, once = 1 plays one pass and stays at the end.
+        "curve_k" => {
+            let bufnum = a(0, 0.0);
+            let hz = a(1, 1.0);
+            let once = a(2, 0.0);
+            let size = a(3, 128.0);
+            let sweep = ctx.node1("Sweep", Rate::Control, vec![konst(0.0), hz], 0);
+            let looped = ctx.node1("Wrap", Rate::Control, vec![sweep, konst(0.0), konst(1.0)], 0);
+            let single = ctx.node1("Clip", Rate::Control, vec![sweep, konst(0.0), konst(1.0)], 0);
+            let keep = ctx.binop(binop::SUB, konst(1.0), once);
+            let a_part = ctx.binop(binop::MUL, looped, keep);
+            let b_part = ctx.binop(binop::MUL, single, once);
+            let phase = ctx.binop(binop::ADD, a_part, b_part);
+            let last = ctx.binop(binop::SUB, size, konst(1.0));
+            let frame = ctx.binop(binop::MUL, phase, last);
+            ctx.node("BufRd", Rate::Control, vec![bufnum, frame, konst(0.0), konst(2.0)], 1, 0)
+        }
         // Granular playback: warp(channels, buf, pointer 0..1, freq_scale,
         // window_secs, overlaps, rand_ratio). `channels` and `overlaps` must be
         // numbers (fixed when the synth starts); channels = the buffer's channels.
@@ -1486,6 +1511,7 @@ enum EnvShape {
     Perc(Input, Input, Input), // atk, rel, curve
     Asr(Input, Input, Input),  // atk, susLevel, rel
     Adsr(Input, Input, Input, Input), // atk, dec, susLevel, rel
+    Timed(Input, Input, Input, Input, Input), // atk, dec, susLevel, hold, rel
 }
 
 fn done_action_f(input: Input) -> f32 {
@@ -1510,6 +1536,9 @@ fn emit_env_gen(ctx: &mut BuildCtx, shape: EnvShape, gate: Input, done_action: f
         EnvShape::Asr(atk, sus_level, rel) => (vec![sus_level, konst(0.0)], vec![atk, rel], konst(-4.0), 1.0),
         EnvShape::Adsr(atk, dec, sus_level, rel) => (
             vec![konst(1.0), sus_level, konst(0.0)], vec![atk, dec, rel], konst(-4.0), 2.0,
+        ),
+        EnvShape::Timed(atk, dec, sus_level, hold, rel) => (
+            vec![konst(1.0), sus_level, sus_level, konst(0.0)], vec![atk, dec, hold, rel], konst(-4.0), -99.0,
         ),
     };
 

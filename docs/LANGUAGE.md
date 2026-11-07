@@ -800,6 +800,19 @@ wait_ms(500);       // wait exactly 500ms regardless of BPM
 
 BPM changes take effect immediately across all threads.
 
+**Lookahead.** Under `audion run`, a `wait` shorter than `latency()` (default
+500 ms) doesn't really sleep: it moves the calling thread's own beat cursor
+ahead, and notes are stamped with that cursor. Threads that react to input
+(UI, MIDI in) should use `sleep_ms`, which always really sleeps.
+
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `latency()` / `latency(ms)` | Get / set the lookahead | ms / nil |
+| `sleep_ms(ms)` | Really sleep, leave the beat cursor alone | nil |
+| `beat_now()` | The real clock, in beats | number |
+| `beat_cursor()` | This thread's beat cursor | number |
+| `beat_cursor_set(b)` | Move this thread's beat cursor (e.g. after a pause, so it doesn't race to catch up) | nil |
+
 ### Utility
 
 | Function | Description | Returns |
@@ -1859,6 +1872,7 @@ thread listener {
 | Function | Description | Returns |
 |----------|-------------|---------|
 | `buffer_load(path)` | Allocate a buffer and read a sound file into it | buffer ID (number) |
+| `buffer_load_stereo(path)` | Like `buffer_load`, but the buffer always has 2 channels (mono is doubled, extra channels are dropped) | buffer ID (number) |
 | `buffer_free(buf_id)` | Free a buffer on scsynth | nil |
 | `buffer_alloc(frames, channels?)` | Allocate an empty buffer (channels defaults to 1). Waits until scsynth has it ready | buffer ID (number) |
 | `buffer_set(buf_id, [v, ...])` | Write values into a buffer from frame 0 (e.g. a curve a synth reads with `buf_rd`) | nil |
@@ -2199,6 +2213,7 @@ define string(freq, amp, gate) {
 | `phasor(trig, rate, start, end)` | Ramp from `start` to `end`, wrapping; jumps to 0 when `trig` goes from ≤0 to >0 |
 | `phasor(trig, rate, start, end, reset_pos)` | Same, but jumps to `reset_pos` |
 | `buf_rd(channels, buf, phase)` | Read `buf` at frame `phase` (`channels` must be a number) |
+| `curve_k(buf, hz, once, size)` | Read a drawn curve at control rate, `hz` passes per second from the synth's start. `once` = 0 loops it, 1 plays one pass and stays at the end. `size` = frames in `buf`, default 128 |
 | `warp(channels, buf, pointer, pitch, window, overlaps, rand)` | Granular playback (SC `Warp1`): reads grains at `pointer` (0..1 through the buffer) with pitch independent of how fast `pointer` moves — a time-stretch. `window` = grain size in seconds, `overlaps` (a number) = grains at once, `rand` = 0..1 grain size randomness |
 | `changed(x)` | 1 for one block whenever `x` changes, else 0 |
 
@@ -2230,6 +2245,7 @@ set(n, jump: 2, pos: 0);       // jump back to the start
 | `env(gate)` | ASR envelope (defaults: atk=0.01, sus=1, rel=0.3) |
 | `env(gate, atk, sus, rel)` | ASR envelope with custom times. Use sus=0 for percussive envelopes |
 | `adsr(gate, atk, dec, sus, rel)` | ADSR envelope (sus is a level). Restarts each time `gate` goes from 0 to >0 and never frees the synth, so one synth can be retriggered with `set()` |
+| `env_timed(atk, dec, sus, hold, rel, done)` | Runs once with no gate: attack, decay to `sus`, hold there for `hold` seconds, release. `done` = 2 (default) frees the synth at the end, 0 doesn't; must be a number |
 
 #### LFOs (control rate)
 

@@ -169,3 +169,11 @@ fn test_synthdef_no_let_stays_flat() {
         panic!("expected synthdef");
     }
 }
+
+#[test]
+fn test_define_body_compares_with_eq() {
+    let stmts = common::parse_source("define d(a) { out(0, sine(440) * (a == 1) * (a != 2)); }");
+    let text = format!("{:?}", stmts);
+    assert!(text.contains("op: Eq"), "{}", text);
+    assert!(text.contains("op: NotEq"), "{}", text);
+}

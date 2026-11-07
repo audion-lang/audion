@@ -326,6 +326,8 @@ impl Parser {
                 TokenKind::LtEq => BinOp::LtEq,
                 TokenKind::Gt   => BinOp::Gt,
                 TokenKind::Lt   => BinOp::Lt,
+                TokenKind::EqEq => BinOp::Eq,
+                TokenKind::BangEq => BinOp::NotEq,
                 _ => break,
             };
             self.advance();

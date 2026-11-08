@@ -2233,3 +2233,21 @@ fn test_power_fractional() {
     let result = eval("9.0 ** 0.5;"); // sqrt(9)
     assert_eq!(result, Value::Number(3.0));
 }
+
+#[test]
+fn let_from_map_keeps_each_functions_own_body() {
+    // two different functions stored in a map, each read back through the
+    // same `let` and called: each must run its own body
+    assert_eq!(
+        eval(r#"
+            fn a(n) { return fn(x) { return "A" + n; }; }
+            fn b(n) { return fn(x) { return "B" + n; }; }
+            let store = [];
+            store["a"] = a("1");
+            store["b"] = b("2");
+            fn call(k) { let c = store[k]; return c(0); }
+            call("a") + call("b");
+        "#),
+        Value::String("A1B2".to_string())
+    );
+}

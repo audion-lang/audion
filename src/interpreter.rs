@@ -448,8 +448,14 @@ impl Interpreter {
                 // function fresh off an `Expr::FnExpr` (qualified_path still
                 // unset); a `let` that just rebinds an existing function
                 // value is not a new declaration site.
+                // Only a literal `fn` on the right is a declaration site. A
+                // function read from somewhere (`let f = handlers[k];`) is
+                // also anonymous with no path, but tagging it would make every
+                // function later read through this `let` run the body of
+                // the first one registered here.
+                let is_literal = matches!(init, Some(Expr::FnExpr { .. }));
                 let val = if let Value::Function { name: fname, params, body, closure, file, qualified_path: None } = &val {
-                    if fname == "<anonymous>" {
+                    if is_literal && fname == "<anonymous>" {
                         let qualified_path = self.qualify_path(name);
                         self.fn_registry
                             .lock()
